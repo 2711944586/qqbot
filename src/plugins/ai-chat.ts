@@ -372,39 +372,12 @@ function callLLM(config: AIConfig, messages: ChatMessage[], useVision: boolean =
 }
 
 // ============ 工具函数 ============
-function getTimeInfo(): string {
-  const now = new Date();
-  const timeStr = now.toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' });
-  const weekDays = ['日', '一', '二', '三', '四', '五', '六'];
-  const weekDay = weekDays[now.getDay()];
-  const hour = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Shanghai' })).getHours();
-
-  let period = '';
-  if (hour >= 0 && hour < 6) period = '凌晨';
-  else if (hour >= 6 && hour < 9) period = '早上';
-  else if (hour >= 9 && hour < 12) period = '上午';
-  else if (hour >= 12 && hour < 14) period = '中午';
-  else if (hour >= 14 && hour < 18) period = '下午';
-  else if (hour >= 18 && hour < 22) period = '晚上';
-  else period = '深夜';
-
-  return `当前: ${timeStr} 星期${weekDay} (${period})`;
-}
 
 function buildSystemPrompt(config: AIConfig, groupId: number, extraContext: string = ''): string {
   const preset = config.presets[config.active_preset] || Object.values(config.presets)[0];
-  if (!preset) return '你是QQ群里的网友「玩机器」。说话简短有梗，像真人。';
+  if (!preset) return '你是QQ群里的网友「玩机器」。正常聊天就行。';
 
   let prompt = preset.system_prompt;
-  prompt += `\n\n[环境信息]\n${getTimeInfo()}\n群号: ${groupId}`;
-
-  // 时段行为暗示（简化，不要太啰嗦）
-  const hour = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Shanghai' })).getHours();
-  if (hour >= 0 && hour < 7) {
-    prompt += '\n(现在是凌晨)';
-  } else if (hour >= 23) {
-    prompt += '\n(现在是深夜)';
-  }
 
   if (extraContext) {
     prompt += '\n' + extraContext;
@@ -512,8 +485,8 @@ const cooldownManager = new CooldownManager();
 function getContextManager(config: AIConfig): ContextManager {
   if (!contextManager) {
     contextManager = new ContextManager(
-      config.max_context_messages || config.max_context_rounds * 2,
-      config.context_expire_minutes || 60
+      config.max_context_messages || 500,
+      config.context_expire_minutes || 120
     );
   }
   return contextManager;
@@ -561,7 +534,8 @@ export const aiChatPlugin: Plugin = {
         : `${senderName}: [发了图片]`;
       parts.push({ type: 'text', text: textPart });
       for (const url of imageUrls) {
-        parts.push({ type: 'image_url', image_url: { url, detail: 'auto' } });
+        // MiMo V2.5 原生支持图像理解，使用high detail获得更好识别
+        parts.push({ type: 'image_url', image_url: { url, detail: 'high' } });
       }
       recordContent = parts;
     } else {
@@ -642,8 +616,6 @@ export const aiChatPlugin: Plugin = {
     const messages: ChatMessage[] = [
       { role: 'system', content: systemPrompt },
       ...history,
-      // 最后加一条隐性提示
-      { role: 'system', content: '[你是群友「玩机器」，正常说话就行，不要套用固定句式，自然回复]' },
     ];
 
     try {
