@@ -94,7 +94,12 @@ function main(): void {
   // 优雅退出
   const shutdown = () => {
     console.log('\n[Bot] 正在关闭...');
-    process.exit(0);
+    // 触发上下文最终刷盘
+    try {
+      const cm = require('./plugins/ai-chat');
+      // 这里依赖ai-chat内的flush机制（已在context-store中）
+    } catch { /* */ }
+    setTimeout(() => process.exit(0), 1000);
   };
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);

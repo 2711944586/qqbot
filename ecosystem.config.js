@@ -3,10 +3,10 @@ module.exports = {
   apps: [{
     name: 'wanjier',
     script: 'dist/index.js',
-    // Node.js 内存限制 600MB（防止OOM kill整个系统）
-    node_args: '--max-old-space-size=600',
-    // 进程内存超过 700MB 自动重启
-    max_memory_restart: '700M',
+    // Node.js 内存限制 + 启用GC手动调用（节省内存关键）
+    node_args: '--max-old-space-size=400 --expose-gc',
+    // 进程内存超过 500MB 自动重启
+    max_memory_restart: '500M',
     // 异常退出自动重启
     autorestart: true,
     // 最多每5秒重启一次
