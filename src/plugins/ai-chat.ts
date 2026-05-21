@@ -564,39 +564,8 @@ export const aiChatPlugin: Plugin = {
     if (mentionsBot) cm.addMention(sessionId);
 
     // ===== 触发判断 =====
-    let shouldTrigger = false;
-
-    // 命令触发
-    if (ctx.command === 'ai' || ctx.command === 'chat' || ctx.command === 'ask') {
-      shouldTrigger = true;
-    }
-    // @触发 - 必回
-    else if (isAtBot(ctx.event)) {
-      shouldTrigger = true;
-    }
-    // 回复bot消息 - 必回
-    else if (ctx.isReplyToBot) {
-      shouldTrigger = true;
-    }
-    // 图片+相关文字 - 触发识图
-    else if (hasVisionContent && /玩机器|机器|看看|这是啥|这是什么|什么图|看图|帮我看/.test(ctx.rawText)) {
-      shouldTrigger = true;
-    }
-    // smart模式 智能判断
-    else if (config.trigger_mode === 'smart' && ctx.rawText.length > 0 && !ctx.command) {
-      const activity = cm.getRecentActivity(sessionId);
-      const silent = cm.getSilentCount(sessionId);
-      const mentions = cm.getMentionCount(sessionId);
-      if (shouldSmartTrigger(ctx.rawText, config, activity, silent, mentions)) {
-        shouldTrigger = true;
-      }
-    }
-    // all模式
-    else if (config.trigger_mode === 'all' && ctx.rawText.length > 0 && !ctx.command) {
-      if (Math.random() < config.trigger_probability) {
-        shouldTrigger = true;
-      }
-    }
+    // 所有消息都回复
+    let shouldTrigger = true;
 
     if (!shouldTrigger) return false;
     if (!ctx.rawText.trim() && !hasVisionContent) return false;
