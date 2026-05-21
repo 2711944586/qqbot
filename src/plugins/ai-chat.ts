@@ -307,6 +307,23 @@ function buildApiMessages(messages: ChatMessage[], hasVision: boolean): ChatMess
   return mergeConsecutiveMessages(result);
 }
 
+// ============ LLM API 调用（带重试）============
+async function callLLMWithRetry(config: AIConfig, messages: ChatMessage[], useVision: boolean = false, maxRetries: number = 2): Promise<string> {
+  let lastError: Error | null = null;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      return await callLLM(config, messages, useVision);
+    } catch (err) {
+      lastError = err instanceof Error ? err : new Error(String(err));
+      if (attempt < maxRetries) {
+        // 等一下再重试
+        await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
+      }
+    }
+  }
+  throw lastError;
+}
+
 // ============ LLM API 调用 ============
 function callLLM(config: AIConfig, messages: ChatMessage[], useVision: boolean = false): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -599,7 +616,7 @@ export const aiChatPlugin: Plugin = {
     ];
 
     try {
-      const reply = await callLLM(config, messages, hasVisionContent);
+      const reply = await callLLMWithRetry(config, messages, hasVisionContent);
       const cleaned = postProcessReply(reply);
 
       if (!cleaned) return true;
@@ -615,12 +632,9 @@ export const aiChatPlugin: Plugin = {
         sendSmartReply(ctx, cleaned);
       }
     } catch (err) {
+      // 出错时完全静默，不回复任何东西
       const errMsg = err instanceof Error ? err.message : String(err);
-      console.error('[AI] 调用失败:', errMsg);
-      // 只在被@时才回复错误，其他情况静默
-      if (isAtBot(ctx.event) || ctx.isReplyToBot) {
-        ctx.reply('没听清 再说一遍');
-      }
+      console.error(`[AI] 群${ctx.event.group_id} 调用失败:`, errMsg);
     }
 
     return true;
