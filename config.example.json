@@ -12,7 +12,7 @@
     "vision_model": "mimo-v2.5-pro",
     "active_preset": "wanjier",
     "max_context_rounds": 100,
-    "max_context_messages": 500,
+    "max_context_messages": 80,
     "context_send_messages": 45,
     "max_tokens": 512,
     "temperature": 0.85,
