@@ -98,6 +98,14 @@ function main(): void {
   };
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
+
+  // 防止未捕获异常导致崩溃
+  process.on('uncaughtException', (err) => {
+    console.error('[Fatal] 未捕获异常:', err.message);
+  });
+  process.on('unhandledRejection', (reason) => {
+    console.error('[Fatal] 未处理的Promise拒绝:', reason);
+  });
 }
 
 main();

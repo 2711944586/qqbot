@@ -366,7 +366,7 @@ function callLLM(config: AIConfig, messages: ChatMessage[], useVision: boolean =
     });
 
     req.on('error', (err) => reject(new Error('网络错误: ' + err.message)));
-    req.setTimeout(120000, () => { req.destroy(); reject(new Error('请求超时(120s)')); });
+    req.setTimeout(60000, () => { req.destroy(); reject(new Error('请求超时(60s)')); });
     req.write(body);
     req.end();
   });
@@ -473,6 +473,9 @@ function shouldSmartTrigger(
 // ============ 插件实例 ============
 let contextManager: ContextManager | null = null;
 const cooldownManager = new CooldownManager();
+
+/** 每群并发锁：防止同一个群同时发多个API请求（不同群可以并行） */
+const groupLocks: Map<number, boolean> = new Map();
 
 function getContextManager(config: AIConfig): ContextManager {
   if (!contextManager) {
@@ -583,18 +586,25 @@ export const aiChatPlugin: Plugin = {
       return true;
     }
 
+    // 并发锁：如果这个群正在处理另一个请求，跳过（不阻塞，避免堆积）
+    if (groupLocks.get(ctx.event.group_id)) {
+      return true;
+    }
+    groupLocks.set(ctx.event.group_id, true);
+
     // ===== 构建消息 & 调用 AI =====
     const history = cm.getMessages(sessionId);
 
-    // 联网搜索：始终尝试搜索获取参考信息
+    // 联网搜索：只在有明确搜索需求时才搜（不再每条消息都搜，避免拖慢响应）
     let searchContext = '';
-    if (ctx.rawText.length > 3) {
+    const needSearch = /最新|最近|现在|今天|谁赢|比分|赛程|更新|版本|发布|新闻|热搜/.test(ctx.rawText);
+    if (needSearch && ctx.rawText.length > 4) {
       try {
         const searchResult = await webSearch(ctx.rawText);
         if (searchResult) {
-          searchContext = `\n(参考: ${searchResult.slice(0, 600)})`;
+          searchContext = `\n(参考: ${searchResult.slice(0, 400)})`;
         }
-      } catch { /* 搜索失败静默 */ }
+      } catch { /* 搜索失败静默继续 */ }
     }
 
     // 额外上下文
@@ -614,7 +624,10 @@ export const aiChatPlugin: Plugin = {
       const reply = await callLLM(config, messages, hasVisionContent);
       const cleaned = postProcessReply(reply);
 
-      if (!cleaned) return true;
+      if (!cleaned) {
+        groupLocks.set(ctx.event.group_id, false);
+        return true;
+      }
 
       // 保存回复到上下文
       cm.addMessage(sessionId, { role: 'assistant', content: cleaned });
@@ -640,10 +653,11 @@ export const aiChatPlugin: Plugin = {
         '稍等 缓一下',
       ];
       const pick = errorReplies[Math.floor(Math.random() * errorReplies.length)];
-      // 只有被@或命令触发时才显示错误，随机触发的就静默
       if (isAtBot(ctx.event) || ctx.isReplyToBot || ctx.command) {
         ctx.reply(pick);
       }
+    } finally {
+      groupLocks.set(ctx.event.group_id, false);
     }
 
     return true;

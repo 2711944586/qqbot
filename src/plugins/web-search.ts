@@ -56,7 +56,7 @@ export function webSearch(query: string): Promise<string> {
     });
 
     req.on('error', () => resolve(''));
-    req.setTimeout(5000, () => { req.destroy(); resolve(''); });
+    req.setTimeout(3000, () => { req.destroy(); resolve(''); });
   });
 }
 

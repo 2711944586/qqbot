@@ -8,9 +8,20 @@ export class Bot {
   private eventHandlers: ((event: OneBotEvent) => void)[] = [];
   private apiCallbacks: Map<string, (data: unknown) => void> = new Map();
   private echoCounter = 0;
+  private heartbeatTimer: NodeJS.Timeout | null = null;
 
   constructor(config: BotConfig) {
     this.config = config;
+  }
+
+  /** 心跳保活 */
+  private startHeartbeat(): void {
+    if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
+    this.heartbeatTimer = setInterval(() => {
+      if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+        this.ws.ping();
+      }
+    }, 30000);
   }
 
   /** 注册事件处理器 */
@@ -25,6 +36,8 @@ export class Bot {
 
     this.ws.on('open', () => {
       console.log('[Bot] ✅ WebSocket 连接成功！');
+      // 定时发送心跳保持连接活跃
+      this.startHeartbeat();
     });
 
     this.ws.on('message', (data) => {
