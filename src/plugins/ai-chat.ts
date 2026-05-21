@@ -338,6 +338,7 @@ function callLLM(config: AIConfig, messages: ChatMessage[], useVision: boolean =
       messages: mergedMessages,
       max_tokens: config.max_tokens,
       temperature: config.temperature,
+      stream: false,
     };
 
     const body = JSON.stringify(requestBody);
@@ -628,16 +629,16 @@ export const aiChatPlugin: Plugin = {
       cm.addMessage(sessionId, { role: 'assistant', content: cleaned });
 
       // 发送回复
-      const useQuote = ctx.isReplyToBot || isAtBot(ctx.event) || Math.random() < 0.25;
-      if (useQuote && cleaned.length <= 250) {
+      const useQuote = ctx.isReplyToBot || isAtBot(ctx.event) || Math.random() < 0.2;
+      if (useQuote && cleaned.length <= 200) {
         ctx.replyQuote(cleaned);
       } else {
-        sendSmartReply(ctx, cleaned);
+        ctx.reply(cleaned);
       }
     } catch (err) {
-      // 出错时完全静默，不回复任何东西
       const errMsg = err instanceof Error ? err.message : String(err);
-      console.error(`[AI] 群${ctx.event.group_id} 调用失败:`, errMsg);
+      console.error(`[AI][群${ctx.event.group_id}] 最终失败(已重试):`, errMsg);
+      // 完全静默 不回复任何东西
     }
 
     return true;
