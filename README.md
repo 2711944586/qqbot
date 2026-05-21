@@ -223,7 +223,7 @@ docker logs --tail 10 napcat
 
 ```bash
 cd /opt
-git clone https://github.com/你的用户名/qqbot.git wanjier-bot
+git clone https://github.com/2711944586/qqbot.git wanjier-bot
 cd wanjier-bot
 npm install
 ```
