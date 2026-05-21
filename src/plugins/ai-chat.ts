@@ -475,7 +475,27 @@ let contextManager: ContextManager | null = null;
 const cooldownManager = new CooldownManager();
 
 /** 每群并发锁：防止同一个群同时发多个API请求（不同群可以并行） */
-const groupLocks: Map<number, boolean> = new Map();
+const groupLocks: Map<number, number> = new Map(); // 存时间戳而不是boolean
+
+/** 检查群锁（带超时自动释放，防止卡死） */
+function isGroupLocked(groupId: number): boolean {
+  const lockTime = groupLocks.get(groupId);
+  if (!lockTime) return false;
+  // 超过30秒自动释放（防止异常卡死）
+  if (Date.now() - lockTime > 30000) {
+    groupLocks.delete(groupId);
+    return false;
+  }
+  return true;
+}
+
+function lockGroup(groupId: number): void {
+  groupLocks.set(groupId, Date.now());
+}
+
+function unlockGroup(groupId: number): void {
+  groupLocks.delete(groupId);
+}
 
 function getContextManager(config: AIConfig): ContextManager {
   if (!contextManager) {
@@ -587,10 +607,10 @@ export const aiChatPlugin: Plugin = {
     }
 
     // 并发锁：如果这个群正在处理另一个请求，跳过（不阻塞，避免堆积）
-    if (groupLocks.get(ctx.event.group_id)) {
+    if (isGroupLocked(ctx.event.group_id)) {
       return true;
     }
-    groupLocks.set(ctx.event.group_id, true);
+    lockGroup(ctx.event.group_id);
 
     // ===== 构建消息 & 调用 AI =====
     const history = cm.getMessages(sessionId);
@@ -625,7 +645,7 @@ export const aiChatPlugin: Plugin = {
       const cleaned = postProcessReply(reply);
 
       if (!cleaned) {
-        groupLocks.set(ctx.event.group_id, false);
+        unlockGroup(ctx.event.group_id);
         return true;
       }
 
@@ -657,7 +677,7 @@ export const aiChatPlugin: Plugin = {
         ctx.reply(pick);
       }
     } finally {
-      groupLocks.set(ctx.event.group_id, false);
+      unlockGroup(ctx.event.group_id);
     }
 
     return true;
