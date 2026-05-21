@@ -1,0 +1,22 @@
+{
+  "name": "qq-group-bot",
+  "version": "1.0.0",
+  "description": "QQ群聊机器人 - 基于 OneBot v11 协议 (NapCatQQ)",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "ts-node src/index.ts"
+  },
+  "keywords": ["qq", "bot", "onebot", "napcat"],
+  "license": "MIT",
+  "dependencies": {
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/ws": "^8.5.13",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.6.0"
+  }
+}
