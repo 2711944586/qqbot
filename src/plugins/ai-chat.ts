@@ -134,40 +134,6 @@ class ContextManager {
   }
 }
 
-// ============ 冷却管理 ============
-class CooldownManager {
-  private lastReply: Map<string, number> = new Map();
-  private consecutiveReplies: Map<string, number> = new Map();
-
-  canReply(groupId: number, cooldownSeconds: number): boolean {
-    const key = String(groupId);
-    const last = this.lastReply.get(key) || 0;
-    const elapsed = Date.now() - last;
-
-    if (elapsed < cooldownSeconds * 1000) return false;
-
-    // 连续回复10次后才限制（给足空间）
-    const consecutive = this.consecutiveReplies.get(key) || 0;
-    if (consecutive >= 10) {
-      if (elapsed < cooldownSeconds * 3000) return false;
-      this.consecutiveReplies.set(key, 0);
-    }
-
-    return true;
-  }
-
-  markReply(groupId: number): void {
-    const key = String(groupId);
-    const last = this.lastReply.get(key) || 0;
-    if (Date.now() - last < 30000) {
-      this.consecutiveReplies.set(key, (this.consecutiveReplies.get(key) || 0) + 1);
-    } else {
-      this.consecutiveReplies.set(key, 1);
-    }
-    this.lastReply.set(key, Date.now());
-  }
-}
-
 // ============ 话题/情绪分析 ============
 interface MessageAnalysis {
   isQuestion: boolean;
@@ -489,30 +455,6 @@ function shouldSmartTrigger(
 
 // ============ 插件实例 ============
 let contextManager: ContextManager | null = null;
-const cooldownManager = new CooldownManager();
-
-/** 每群并发锁：防止同一个群同时发多个API请求（不同群可以并行） */
-const groupLocks: Map<number, number> = new Map(); // 存时间戳而不是boolean
-
-/** 检查群锁（带超时自动释放，防止卡死） */
-function isGroupLocked(groupId: number): boolean {
-  const lockTime = groupLocks.get(groupId);
-  if (!lockTime) return false;
-  // 超过30秒自动释放（防止异常卡死）
-  if (Date.now() - lockTime > 30000) {
-    groupLocks.delete(groupId);
-    return false;
-  }
-  return true;
-}
-
-function lockGroup(groupId: number): void {
-  groupLocks.set(groupId, Date.now());
-}
-
-function unlockGroup(groupId: number): void {
-  groupLocks.delete(groupId);
-}
 
 function getContextManager(config: AIConfig): ContextManager {
   if (!contextManager) {
