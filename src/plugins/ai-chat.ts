@@ -27,6 +27,7 @@ const STYLE_GUIDE = `
 - 遇到CS2/电竞/比赛话题，优先像解说复盘一样抓关键点：谁在做事、哪里失误、这波为什么能赢。
 - 可以使用短梗和口头禅的节奏，但不要逐字复刻长切片内容，不要编造“原话出处”。
 - 群聊里被@、被回复、被点名时必须接话，别装没看到。
+- 没被点名时不要抢话，像从群聊里抽一个值得接的点短评一下。
 `;
 
 // ============ 类型 ============
@@ -438,6 +439,14 @@ function shouldRunSearch(text: string, config: AIConfig): boolean {
   return STYLE_SEARCH_KEYWORDS.some((kw) => lower.includes(kw.toLowerCase()));
 }
 
+function shouldForceSearchForMustReply(text: string, config: AIConfig): boolean {
+  if (config.enable_search === false) return false;
+  if (text.trim().length <= 3) return false;
+
+  const lower = text.toLowerCase();
+  return /[?？]|查一下|搜一下|搜索|联网|资料|最新|最近|现在|今天|谁赢|比分|赛程|新闻|价格|天气/.test(lower);
+}
+
 function shouldReplyToMessage(
   ctx: { command: string | null; rawText: string; isReplyToBot: boolean; event: GroupMessageEvent },
   config: AIConfig,
@@ -449,7 +458,7 @@ function shouldReplyToMessage(
   if (mustReply) return true;
   if (!ctx.rawText.trim() && !hasVisionContent) return false;
 
-  const mode = config.trigger_mode || 'all';
+  const mode = config.trigger_mode || 'smart';
   if (mode === 'all') return true;
   if (mode === 'command') return ctx.command === 'ai';
   if (mode === 'at') return false;
@@ -463,8 +472,8 @@ function shouldReplyToMessage(
   );
 }
 
-async function buildSearchContext(text: string, config: AIConfig): Promise<string> {
-  if (!shouldRunSearch(text, config)) return '';
+async function buildSearchContext(text: string, config: AIConfig, forceSearch: boolean = false): Promise<string> {
+  if (!(forceSearch || shouldRunSearch(text, config))) return '';
 
   try {
     const searchPromise = webSearch(text);
@@ -528,7 +537,7 @@ function shouldSmartTrigger(
   // === 极短消息：单字不回，2字低概率 ===
   if (analysis.textLength <= 1 && !analysis.isMeme) return false;
   if (analysis.textLength <= 2 && !analysis.isMeme && !analysis.hasEmotion) {
-    return Math.random() < 0.08;
+    return Math.random() < 0.02;
   }
 
   // === 直接关键词/名字 → 必触发 ===
@@ -538,45 +547,44 @@ function shouldSmartTrigger(
   if (/玩机器|机器哥|机器兄|wjq/.test(text)) return true;
 
   // === 群讨论激烈时（活跃度高）大幅提升回复率 ===
-  const activityMultiplier = recentActivity > 10 ? 1.8 : recentActivity > 5 ? 1.4 : 1.0;
-  const mentionBonus = mentionCount > 2 ? 0.25 : 0;
-  const baseProbability = config.trigger_probability * activityMultiplier;
+  const activityMultiplier = recentActivity > 12 ? 1.5 : recentActivity > 6 ? 1.2 : 1.0;
+  const mentionBonus = mentionCount > 2 ? 0.08 : 0;
+  const baseProbability = (config.trigger_probability ?? 0.12) * activityMultiplier;
 
   // === 分类触发 ===
   if (analysis.isGaming) {
-    return Math.random() < Math.min(baseProbability * 2.5 + mentionBonus, 0.95);
+    return Math.random() < Math.min(baseProbability * 1.4 + mentionBonus, 0.35);
   }
   if (analysis.isControversial) {
-    return Math.random() < Math.min(baseProbability * 2.0 + mentionBonus, 0.9);
+    return Math.random() < Math.min(baseProbability * 1.3 + mentionBonus, 0.3);
   }
   if (analysis.isMeme) {
-    return Math.random() < Math.min(baseProbability * 1.8 + mentionBonus, 0.85);
+    return Math.random() < Math.min(baseProbability * 1.1 + mentionBonus, 0.25);
   }
   if (analysis.isSharingContent) {
-    return Math.random() < Math.min(baseProbability * 1.6, 0.8);
+    return Math.random() < Math.min(baseProbability * 1.2, 0.25);
   }
   if (analysis.isQuestion) {
-    return Math.random() < Math.min(baseProbability * 1.5, 0.8);
+    return Math.random() < Math.min(baseProbability * 1.2, 0.25);
   }
   if (analysis.hasEmotion) {
-    return Math.random() < Math.min(baseProbability * 1.4, 0.75);
+    return Math.random() < Math.min(baseProbability, 0.18);
   }
   if (analysis.isComplaint) {
-    return Math.random() < Math.min(baseProbability * 1.3, 0.7);
+    return Math.random() < Math.min(baseProbability, 0.16);
   }
   if (analysis.isGreeting) {
-    return Math.random() < Math.min(baseProbability * 1.2, 0.7);
+    return Math.random() < Math.min(baseProbability * 0.6, 0.08);
   }
 
-  // === 沉默主动说话（更积极）===
-  if (silentCount >= 10) return Math.random() < 0.5;
-  if (silentCount >= 6) return Math.random() < 0.3;
-  if (silentCount >= 4) return Math.random() < 0.15;
+  // === 没被点名时保持安静，只在长时间有话题时偶尔抽取回应 ===
+  if (silentCount >= 18) return Math.random() < 0.08;
+  if (silentCount >= 10) return Math.random() < 0.04;
 
   // === 长消息加成 ===
-  const lengthBonus = analysis.textLength > 30 ? 0.1 : analysis.textLength > 15 ? 0.05 : 0;
+  const lengthBonus = analysis.textLength > 40 ? 0.04 : analysis.textLength > 20 ? 0.02 : 0;
 
-  return Math.random() < (baseProbability + lengthBonus + mentionBonus);
+  return Math.random() < Math.min(baseProbability * 0.5 + lengthBonus + mentionBonus, 0.12);
 }
 
 // ============ 插件实例 ============
@@ -664,8 +672,10 @@ export const aiChatPlugin: Plugin = {
     const allHistory = cm.getMessages(sessionId);
     const history = allHistory.slice(-getContextSendCount(config));
 
-    // 联网搜索：按需触发，快速超时，不阻塞主流程太久
-    const searchContext = await buildSearchContext(promptText || ctx.rawText, config);
+    // 联网搜索：@/回复时遇到问题更积极，普通群聊按关键词触发，快速超时
+    const searchText = promptText || ctx.rawText;
+    const forceSearch = mustReply && shouldForceSearchForMustReply(searchText, config);
+    const searchContext = await buildSearchContext(searchText, config, forceSearch);
 
     // 额外上下文
     let extraContext = searchContext;
@@ -674,6 +684,9 @@ export const aiChatPlugin: Plugin = {
     }
     if (ctx.isReplyToBot) {
       extraContext += '\n(对方在回复你之前说的话，必须接住上下文。)';
+    }
+    if (!mustReply) {
+      extraContext += '\n(你没有被点名，只需要从群聊上下文里抽一个最值得接的话题短评。不要逐条总结，不要刷屏。)';
     }
 
     const systemPrompt = buildSystemPrompt(config, ctx.event.group_id, extraContext);

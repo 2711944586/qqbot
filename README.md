@@ -12,7 +12,7 @@
 - 🔍 **联网搜索** — 按需快速搜索最新信息（赛事、新闻、价格、切片背景等）
 - 🚀 **多群并发** — 所有群并行处理，无锁无限制
 - 💬 **引用回复** — 被@或被回复时引用原消息
-- 📡 **全量回复** — 所有非空群消息都调API，@/回复/点名必回，应用层无冷却无次数上限
+- 📡 **低噪声回复** — @/回复/点名必回，普通群聊只抽取值得接的话题短评
 - 🔁 **自动重试** — API调用失败自动重试2次
 - 🔊 **语音回复** — 有授权 `voice_sample.mp3` 时使用声音克隆，否则退回普通TTS
 - 🛡 **稳定运行** — 异常不崩溃，自动重连，PM2守护
@@ -158,14 +158,14 @@ docker restart napcat
 | `temperature` | `0.85` | 创造性 |
 | `max_context_messages` | `500` | 上下文存储条数 |
 | `context_send_messages` | `60` | 每次调API发送的最近消息条数 |
-| `trigger_mode` | `all` | 所有非空群消息都调AI |
+| `trigger_mode` | `smart` | @/回复/点名必回，普通群聊低频抽取回应 |
 | `enable_search` | `true` | 是否启用联网搜索增强 |
 | `search_timeout_ms` | `1000` | 搜索最多等待毫秒数，超时直接回复 |
 | `must_reply_quote` | `true` | @/回复/点名时优先引用回复 |
-| `trigger_probability` | `0.45` | smart模式基础触发概率，all模式不使用 |
+| `trigger_probability` | `0.12` | 普通群聊基础抽取回应概率 |
 | `context_expire_minutes` | `120` | 上下文过期时间 |
 
-`enabled_groups: []` 表示全部群启用。全量回复会让每条非空群消息都调用AI，API调用量和费用会明显增加；QQ、NapCat、模型服务商自身仍可能有限流。
+`enabled_groups: []` 表示全部群启用。推荐使用 `trigger_mode: "smart"`：被 @、回复或点名时必回；普通群聊只记录上下文并低频抽取回应，避免刷屏。需要极高活跃度时才改成 `all`，那会让每条非空群消息都调用AI，API调用量和费用会明显增加。
 
 **可用模型列表：** mimo-v2.5-pro, mimo-v2.5, mimo-v2-pro, mimo-v2-omni
 
