@@ -24,6 +24,8 @@ export interface AIConfig {
   max_context_rounds: number;
   /** 上下文最大消息条数 */
   max_context_messages: number;
+  /** 每次发给模型的最近消息条数 */
+  context_send_messages?: number;
   /** 单次回复最大 token 数 */
   max_tokens: number;
   /** 温度 */
@@ -38,6 +40,16 @@ export interface AIConfig {
   cooldown_seconds: number;
   /** 上下文过期时间(分钟) */
   context_expire_minutes: number;
+  /** 是否启用联网搜索增强 */
+  enable_search?: boolean;
+  /** 搜索最多等待毫秒数 */
+  search_timeout_ms?: number;
+  /** 搜索触发关键词 */
+  search_keywords?: string[];
+  /** 是否对风格/切片/名场面查询也触发搜索 */
+  search_on_style_query?: boolean;
+  /** @或回复bot时是否优先引用回复 */
+  must_reply_quote?: boolean;
   /** 是否启用识图 */
   enable_vision: boolean;
   /** 是否启用TTS语音回复 */

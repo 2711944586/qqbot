@@ -1,9 +1,33 @@
 import { Plugin, AIConfig, GroupMessageEvent, MessageSegment } from '../types';
 import { Bot } from '../bot';
-import { webSearch, shouldSearch } from './web-search';
+import { webSearch } from './web-search';
 import { generateVoice } from './tts';
 import * as https from 'https';
 import * as http from 'http';
+
+const DEFAULT_CONTEXT_SEND_MESSAGES = 60;
+const DEFAULT_SEARCH_TIMEOUT_MS = 1000;
+const DEFAULT_SEARCH_KEYWORDS = [
+  '最新', '最近', '现在', '今天', '今晚', '昨天', '明天',
+  '谁赢', '比分', '赛程', '战报', '更新', '版本', '发布',
+  '新闻', '热搜', '多少钱', '价格', '天气', '阵容', '转会',
+  'major', 'blast', 'iem', 'esl', 'cs2', 'csgo',
+];
+const STYLE_SEARCH_KEYWORDS = [
+  '玩机器', 'MachineWJQ', '刘亦博', '6657', '切片', '名场面',
+  '经典解说', '解说切片', '直播切片',
+];
+const BOT_NAME_PATTERN = /玩机器|机器哥|机器兄|wjq|MachineWJQ/i;
+const STYLE_GUIDE = `
+
+额外风格要求（优先遵守）：
+- 这是一个QQ群聊bot，参考电竞直播解说和水群语感，不要声称自己是现实中的主播本人，也不要代表本人发言。
+- 语气像直播间接弹幕：短、快、自然，能调侃，能认真分析，但别变成论文。
+- 多用场景化表达：残局、道具、经济、枪法、决策、上头、白给、这波、可以的、真有说法。
+- 遇到CS2/电竞/比赛话题，优先像解说复盘一样抓关键点：谁在做事、哪里失误、这波为什么能赢。
+- 可以使用短梗和口头禅的节奏，但不要逐字复刻长切片内容，不要编造“原话出处”。
+- 群聊里被@、被回复、被点名时必须接话，别装没看到。
+`;
 
 // ============ 类型 ============
 interface ChatMessage {
@@ -360,9 +384,9 @@ function callLLM(config: AIConfig, messages: ChatMessage[], useVision: boolean =
 
 function buildSystemPrompt(config: AIConfig, groupId: number, extraContext: string = ''): string {
   const preset = config.presets[config.active_preset] || Object.values(config.presets)[0];
-  if (!preset) return '你是QQ群里的网友「玩机器」。正常聊天就行。';
+  if (!preset) return '你是QQ群里的电竞直播风格网友。正常聊天就行，别冒充现实中的任何人。';
 
-  let prompt = preset.system_prompt;
+  let prompt = preset.system_prompt + STYLE_GUIDE;
 
   if (extraContext) {
     prompt += '\n' + extraContext;
@@ -387,6 +411,107 @@ function isAtBot(event: GroupMessageEvent): boolean {
   return event.message.some(
     (seg) => seg.type === 'at' && seg.data.qq === String(event.self_id)
   );
+}
+
+function isBotNameMentioned(text: string): boolean {
+  return BOT_NAME_PATTERN.test(text);
+}
+
+function getContextSendCount(config: AIConfig): number {
+  return Math.max(1, config.context_send_messages || DEFAULT_CONTEXT_SEND_MESSAGES);
+}
+
+function getSearchTimeoutMs(config: AIConfig): number {
+  return Math.max(100, config.search_timeout_ms || DEFAULT_SEARCH_TIMEOUT_MS);
+}
+
+function shouldRunSearch(text: string, config: AIConfig): boolean {
+  if (config.enable_search === false) return false;
+  if (text.trim().length <= 3) return false;
+
+  const lower = text.toLowerCase();
+  const keywords = config.search_keywords?.length ? config.search_keywords : DEFAULT_SEARCH_KEYWORDS;
+  const hasNewsKeyword = keywords.some((kw) => lower.includes(kw.toLowerCase()));
+  if (hasNewsKeyword) return true;
+
+  if (config.search_on_style_query === false) return false;
+  return STYLE_SEARCH_KEYWORDS.some((kw) => lower.includes(kw.toLowerCase()));
+}
+
+function shouldReplyToMessage(
+  ctx: { command: string | null; rawText: string; isReplyToBot: boolean; event: GroupMessageEvent },
+  config: AIConfig,
+  hasVisionContent: boolean,
+  mustReply: boolean,
+  cm: ContextManager,
+  sessionId: string,
+): boolean {
+  if (mustReply) return true;
+  if (!ctx.rawText.trim() && !hasVisionContent) return false;
+
+  const mode = config.trigger_mode || 'all';
+  if (mode === 'all') return true;
+  if (mode === 'command') return ctx.command === 'ai';
+  if (mode === 'at') return false;
+
+  return shouldSmartTrigger(
+    ctx.rawText,
+    config,
+    cm.getRecentActivity(sessionId),
+    cm.getSilentCount(sessionId),
+    cm.getMentionCount(sessionId),
+  );
+}
+
+async function buildSearchContext(text: string, config: AIConfig): Promise<string> {
+  if (!shouldRunSearch(text, config)) return '';
+
+  try {
+    const searchPromise = webSearch(text);
+    const timeoutPromise = new Promise<string>((resolve) => {
+      setTimeout(() => resolve(''), getSearchTimeoutMs(config));
+    });
+    const searchResult = await Promise.race([searchPromise, timeoutPromise]);
+    if (!searchResult) return '';
+
+    return `\n(联网搜索结果供参考，优先用于最新事实和切片/名场面背景，不要逐字照搬: ${searchResult.slice(0, 500)})`;
+  } catch {
+    return '';
+  }
+}
+
+function sendPrimaryReply(
+  ctx: { reply: (msg: string | MessageSegment[]) => void; replyQuote: (msg: string) => void },
+  text: string,
+  useQuote: boolean,
+): void {
+  if (useQuote && text.length <= 200) {
+    ctx.replyQuote(text);
+    return;
+  }
+  sendSmartReply(ctx, text);
+}
+
+function maybeSendVoice(
+  ctx: { reply: (msg: string | MessageSegment[]) => void },
+  config: AIConfig,
+  text: string,
+): void {
+  if (!config.enable_tts) return;
+  if (text.length < 4 || text.length > 100) return;
+  if (Math.random() >= (config.tts_probability || 0.15)) return;
+
+  void generateVoice(config, text)
+    .then((voicePath) => {
+      if (!voicePath) return;
+      const voiceMsg: MessageSegment[] = [
+        { type: 'record', data: { file: `file://${voicePath}` } },
+      ];
+      ctx.reply(voiceMsg);
+    })
+    .catch(() => {
+      // 文字已经发出，语音失败保持静默。
+    });
 }
 
 /** 智能触发判断 — 核心逻辑 */
@@ -494,18 +619,26 @@ export const aiChatPlugin: Plugin = {
       ctx.reply(`预设:\n${list}\n\n/preset <名称> 切换`);
       return true;
     }
-
     // ===== 提取信息 =====
     const senderName = ctx.event.sender.card || ctx.event.sender.nickname;
     const imageUrls = extractImageUrls(ctx.event.message);
     const hasVisionContent = imageUrls.length > 0 && config.enable_vision;
+    const promptText = ctx.command === 'ai' ? ctx.args.join(' ').trim() : ctx.rawText;
+    const atBot = isAtBot(ctx.event);
+    const mentionsBot = isBotNameMentioned(ctx.rawText);
+    const mustReply = ctx.command === 'ai' || atBot || ctx.isReplyToBot || mentionsBot;
+
+    if (ctx.command === 'ai' && !promptText && !hasVisionContent) {
+      ctx.reply('/ai <内容>');
+      return true;
+    }
 
     // 构建记录内容（始终记录到上下文）
     let recordContent: string | MessageContent[];
     if (hasVisionContent) {
       const parts: MessageContent[] = [];
-      const textPart = ctx.rawText.trim()
-        ? `${senderName}: ${ctx.rawText.trim()}`
+      const textPart = promptText.trim()
+        ? `${senderName}: ${promptText.trim()}`
         : `${senderName}: [发了图片]`;
       parts.push({ type: 'text', text: textPart });
       for (const url of imageUrls) {
@@ -514,45 +647,33 @@ export const aiChatPlugin: Plugin = {
       }
       recordContent = parts;
     } else {
-      recordContent = `${senderName}: ${ctx.rawText || '[表情/贴纸]'}`;
+      recordContent = `${senderName}: ${promptText || '[表情/贴纸]'}`;
     }
 
     cm.addMessage(sessionId, { role: 'user', content: recordContent });
 
     // 检测是否提及bot
-    const mentionsBot = /玩机器|机器哥|机器兄|wjq/i.test(ctx.rawText);
-    if (mentionsBot) cm.addMention(sessionId);
+    if (mentionsBot || atBot) cm.addMention(sessionId);
 
     // ===== 触发判断 =====
-    // 所有消息都回复
-    let shouldTrigger = true;
-
+    const shouldTrigger = shouldReplyToMessage(ctx, config, hasVisionContent, mustReply, cm, sessionId);
     if (!shouldTrigger) return false;
-    if (!ctx.rawText.trim() && !hasVisionContent) return false;
 
     // ===== 构建消息 & 调用 AI =====
     // 取最近的上下文（不要全部发给API，太长会超时）
     const allHistory = cm.getMessages(sessionId);
-    const history = allHistory.slice(-60); // 只取最近60条发给API
+    const history = allHistory.slice(-getContextSendCount(config));
 
-    // 联网搜索：按需触发，不阻塞主流程（给2秒，超时就不等了）
-    let searchContext = '';
-    const needSearch = /最新|最近|现在|今天|谁赢|比分|赛程|更新|版本|发布|新闻|热搜|多少钱|价格|天气/.test(ctx.rawText);
-    if (needSearch && ctx.rawText.length > 3) {
-      try {
-        const searchPromise = webSearch(ctx.rawText);
-        const timeoutPromise = new Promise<string>((r) => setTimeout(() => r(''), 2000));
-        const searchResult = await Promise.race([searchPromise, timeoutPromise]);
-        if (searchResult) {
-          searchContext = `\n(搜索结果供参考: ${searchResult.slice(0, 300)})`;
-        }
-      } catch { /* 静默 */ }
-    }
+    // 联网搜索：按需触发，快速超时，不阻塞主流程太久
+    const searchContext = await buildSearchContext(promptText || ctx.rawText, config);
 
     // 额外上下文
     let extraContext = searchContext;
+    if (atBot) {
+      extraContext += '\n(对方@了你，必须接话。)';
+    }
     if (ctx.isReplyToBot) {
-      extraContext += '\n(对方在回复你之前说的话)';
+      extraContext += '\n(对方在回复你之前说的话，必须接住上下文。)';
     }
 
     const systemPrompt = buildSystemPrompt(config, ctx.event.group_id, extraContext);
@@ -572,31 +693,10 @@ export const aiChatPlugin: Plugin = {
       cm.addMessage(sessionId, { role: 'assistant', content: cleaned });
 
       // 发送回复
-      const useQuote = ctx.isReplyToBot || isAtBot(ctx.event) || Math.random() < 0.2;
-
-      // 一定概率发语音（短回复+随机概率）
-      let sentVoice = false;
-      if (config.enable_tts && cleaned.length >= 4 && cleaned.length <= 100 && Math.random() < (config.tts_probability || 0.15)) {
-        try {
-          const voicePath = await generateVoice(config, cleaned);
-          if (voicePath) {
-            // 发送语音消息
-            const voiceMsg: MessageSegment[] = [
-              { type: 'record', data: { file: `file://${voicePath}` } },
-            ];
-            ctx.reply(voiceMsg);
-            sentVoice = true;
-          }
-        } catch { /* 语音生成失败就用文字 */ }
-      }
-
-      if (!sentVoice) {
-        if (useQuote && cleaned.length <= 200) {
-          ctx.replyQuote(cleaned);
-        } else {
-          ctx.reply(cleaned);
-        }
-      }
+      const mustQuote = mustReply && config.must_reply_quote !== false;
+      const useQuote = mustQuote || Math.random() < 0.2;
+      sendPrimaryReply(ctx, cleaned, useQuote);
+      maybeSendVoice(ctx, config, cleaned);
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
       console.error(`[AI][群${ctx.event.group_id}] 最终失败(已重试):`, errMsg);

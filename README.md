@@ -1,19 +1,20 @@
 # 玩机器 - QQ 群聊 AI Bot
 
-模拟斗鱼CS2解说主播「玩机器」(MachineWJQ/刘亦博) 直播风格的QQ群聊机器人。像真人一样水群、接话、看图、聊游戏。
+参考CS2电竞解说主播「玩机器」直播间语感的QQ群聊机器人。像群友一样水群、接话、看图、聊游戏；不冒充现实人物。
 
 **GitHub:** https://github.com/2711944586/qqbot
 
 ## 核心特性
 
-- 🧠 **自然聊天** — 模拟玩机器直播间和弹幕互动的说话风格
+- 🧠 **自然聊天** — 参考玩机器直播间和弹幕互动的说话风格
 - 👁 **识图能力** — 能看懂群友发的图片并评价（MiMo-V2.5-Pro 原生多模态）
 - 📝 **长上下文** — 记住群里最近500条消息，调API时发最近60条
-- 🔍 **联网搜索** — 按需搜索最新信息（赛事、新闻、价格等）
+- 🔍 **联网搜索** — 按需快速搜索最新信息（赛事、新闻、价格、切片背景等）
 - 🚀 **多群并发** — 所有群并行处理，无锁无限制
 - 💬 **引用回复** — 被@或被回复时引用原消息
-- 📡 **全量回复** — 所有消息都调API回复，无冷却无上限
+- 📡 **全量回复** — 所有非空群消息都调API，@/回复/点名必回，应用层无冷却无次数上限
 - 🔁 **自动重试** — API调用失败自动重试2次
+- 🔊 **语音回复** — 有授权 `voice_sample.mp3` 时使用声音克隆，否则退回普通TTS
 - 🛡 **稳定运行** — 异常不崩溃，自动重连，PM2守护
 
 ## 技术栈
@@ -114,12 +115,14 @@ nano config.json
 {
   "admin_qq": [2711944586],
   "ai": {
-    "api_key": "tp-cn3vtywx68879r40rqkx1we4i7boa0eri0iprsvuvqp1tj29",
+    "api_key": "在这里填入你的API密钥",
     "model": "mimo-v2.5-pro",
     "vision_model": "mimo-v2.5-pro"
   }
 }
 ```
+
+如需语音克隆，把你有权使用的参考音频放到项目根目录并命名为 `voice_sample.mp3`。没有该文件时会自动使用普通男声TTS。
 
 ### 四、构建运行
 
@@ -154,8 +157,15 @@ docker restart napcat
 | `max_tokens` | `512` | 回复最大token(群聊够用) |
 | `temperature` | `0.85` | 创造性 |
 | `max_context_messages` | `500` | 上下文存储条数 |
-| `trigger_probability` | `0.45` | 基础触发概率 |
+| `context_send_messages` | `60` | 每次调API发送的最近消息条数 |
+| `trigger_mode` | `all` | 所有非空群消息都调AI |
+| `enable_search` | `true` | 是否启用联网搜索增强 |
+| `search_timeout_ms` | `1000` | 搜索最多等待毫秒数，超时直接回复 |
+| `must_reply_quote` | `true` | @/回复/点名时优先引用回复 |
+| `trigger_probability` | `0.45` | smart模式基础触发概率，all模式不使用 |
 | `context_expire_minutes` | `120` | 上下文过期时间 |
+
+`enabled_groups: []` 表示全部群启用。全量回复会让每条非空群消息都调用AI，API调用量和费用会明显增加；QQ、NapCat、模型服务商自身仍可能有限流。
 
 **可用模型列表：** mimo-v2.5-pro, mimo-v2.5, mimo-v2-pro, mimo-v2-omni
 
@@ -166,6 +176,7 @@ docker restart napcat
 | 命令 | 说明 |
 |------|------|
 | `/help` | 帮助 |
+| `/ai <内容>` | 直接对话 |
 | `/ping` | 在线检测 |
 | `/status` | 运行状态 |
 | `/time` | 当前时间 |

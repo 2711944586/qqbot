@@ -18,6 +18,7 @@ const pokeReplies = [
   '我在 有什么事',
   '别闹',
   '你好无聊',
+  '我去登山了',
 ];
 
 export function registerPokeListener(bot: Bot): void {

@@ -9,7 +9,6 @@ interface SearchResult {
   title: string;
   snippet: string;
 }
-
 /** 使用DuckDuckGo Instant Answer API（无需key） */
 export function webSearch(query: string): Promise<string> {
   return new Promise((resolve) => {
@@ -60,8 +59,3 @@ export function webSearch(query: string): Promise<string> {
   });
 }
 
-/** 检测是否需要搜索（时事/热点/最新信息类问题） */
-export function shouldSearch(text: string): boolean {
-  // 现在始终返回true，因为搜索在ai-chat里已经始终执行了
-  return true;
-}
