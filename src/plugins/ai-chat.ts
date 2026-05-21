@@ -146,9 +146,10 @@ class CooldownManager {
 
     if (elapsed < cooldownSeconds * 1000) return false;
 
+    // 连续回复10次后才限制（给足空间）
     const consecutive = this.consecutiveReplies.get(key) || 0;
-    if (consecutive >= 6) {
-      if (elapsed < cooldownSeconds * 4000) return false;
+    if (consecutive >= 10) {
+      if (elapsed < cooldownSeconds * 3000) return false;
       this.consecutiveReplies.set(key, 0);
     }
 
@@ -415,11 +416,10 @@ function shouldSmartTrigger(
   const text = rawText.toLowerCase();
   const analysis = analyzeMessage(rawText);
 
-  // === 极短消息过滤 ===
-  // 纯表情/单字且不是梗 → 极低概率
+  // === 极短消息：单字不回，2字低概率 ===
   if (analysis.textLength <= 1 && !analysis.isMeme) return false;
   if (analysis.textLength <= 2 && !analysis.isMeme && !analysis.hasEmotion) {
-    return Math.random() < 0.03;
+    return Math.random() < 0.08;
   }
 
   // === 直接关键词/名字 → 必触发 ===
@@ -428,54 +428,46 @@ function shouldSmartTrigger(
   }
   if (/玩机器|机器哥|机器兄|wjq/.test(text)) return true;
 
-  // === 被频繁提及时更积极 ===
-  const mentionBonus = mentionCount > 3 ? 0.2 : 0;
+  // === 群讨论激烈时（活跃度高）大幅提升回复率 ===
+  const activityMultiplier = recentActivity > 10 ? 1.8 : recentActivity > 5 ? 1.4 : 1.0;
+  const mentionBonus = mentionCount > 2 ? 0.25 : 0;
+  const baseProbability = config.trigger_probability * activityMultiplier;
 
-  // === 分类触发（概率递减）===
-  // 游戏话题 — 核心领域，最积极
+  // === 分类触发 ===
   if (analysis.isGaming) {
-    return Math.random() < Math.min(config.trigger_probability * 2.8 + mentionBonus, 0.85);
+    return Math.random() < Math.min(baseProbability * 2.5 + mentionBonus, 0.95);
   }
-  // 争议/对比话题 — 喜欢掺和
   if (analysis.isControversial) {
-    return Math.random() < Math.min(config.trigger_probability * 2.2 + mentionBonus, 0.75);
+    return Math.random() < Math.min(baseProbability * 2.0 + mentionBonus, 0.9);
   }
-  // 梗/抽象 — 高概率接
   if (analysis.isMeme) {
-    return Math.random() < Math.min(config.trigger_probability * 2.0 + mentionBonus, 0.7);
+    return Math.random() < Math.min(baseProbability * 1.8 + mentionBonus, 0.85);
   }
-  // 分享内容 — 较高兴趣
   if (analysis.isSharingContent) {
-    return Math.random() < config.trigger_probability * 1.8;
+    return Math.random() < Math.min(baseProbability * 1.6, 0.8);
   }
-  // 问句
   if (analysis.isQuestion) {
-    return Math.random() < config.trigger_probability * 1.5;
+    return Math.random() < Math.min(baseProbability * 1.5, 0.8);
   }
-  // 情绪表达
   if (analysis.hasEmotion) {
-    return Math.random() < config.trigger_probability * 1.4;
+    return Math.random() < Math.min(baseProbability * 1.4, 0.75);
   }
-  // 抱怨/吐槽 — 适度参与
   if (analysis.isComplaint) {
-    return Math.random() < config.trigger_probability * 1.3;
+    return Math.random() < Math.min(baseProbability * 1.3, 0.7);
   }
-  // 打招呼
   if (analysis.isGreeting) {
-    return Math.random() < config.trigger_probability * 1.2;
+    return Math.random() < Math.min(baseProbability * 1.2, 0.7);
   }
 
-  // === 沉默太久主动说话 ===
-  if (silentCount >= 20) return Math.random() < 0.35;
-  if (silentCount >= 12) return Math.random() < 0.15;
-  if (silentCount >= 8) return Math.random() < 0.08;
+  // === 沉默主动说话（更积极）===
+  if (silentCount >= 10) return Math.random() < 0.5;
+  if (silentCount >= 6) return Math.random() < 0.3;
+  if (silentCount >= 4) return Math.random() < 0.15;
 
-  // === 群活跃度加成 ===
-  const activityBonus = Math.min(recentActivity * 0.012, 0.1);
-  // 长消息更值得回复
-  const lengthBonus = analysis.textLength > 30 ? 0.06 : analysis.textLength > 15 ? 0.03 : 0;
+  // === 长消息加成 ===
+  const lengthBonus = analysis.textLength > 30 ? 0.1 : analysis.textLength > 15 ? 0.05 : 0;
 
-  return Math.random() < (config.trigger_probability + activityBonus + lengthBonus + mentionBonus);
+  return Math.random() < (baseProbability + lengthBonus + mentionBonus);
 }
 
 // ============ 插件实例 ============
@@ -594,18 +586,18 @@ export const aiChatPlugin: Plugin = {
     // ===== 构建消息 & 调用 AI =====
     const history = cm.getMessages(sessionId);
 
-    // 联网搜索：如果问的是时事/最新信息，先搜索
+    // 联网搜索：始终尝试搜索获取参考信息
     let searchContext = '';
-    if (shouldSearch(ctx.rawText) && ctx.rawText.length > 4) {
+    if (ctx.rawText.length > 3) {
       try {
         const searchResult = await webSearch(ctx.rawText);
         if (searchResult) {
-          searchContext = `\n(搜索参考信息: ${searchResult.slice(0, 500)})`;
+          searchContext = `\n(参考: ${searchResult.slice(0, 600)})`;
         }
       } catch { /* 搜索失败静默 */ }
     }
 
-    // 构建额外上下文提示（极简，不要啰嗦）
+    // 额外上下文
     let extraContext = searchContext;
     if (ctx.isReplyToBot) {
       extraContext += '\n(对方在回复你之前说的话)';

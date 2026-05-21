@@ -17,9 +17,9 @@
     "temperature": 0.85,
     "trigger_mode": "smart",
     "trigger_keywords": ["玩机器", "机器", "bot", "笑死", "6657", "兄弟们", "有没有人"],
-    "trigger_probability": 0.25,
-    "cooldown_seconds": 2,
-    "context_expire_minutes": 60,
+    "trigger_probability": 0.45,
+    "cooldown_seconds": 1,
+    "context_expire_minutes": 120,
     "enable_vision": true,
 
     "presets": {

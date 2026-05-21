@@ -62,12 +62,6 @@ export function webSearch(query: string): Promise<string> {
 
 /** 检测是否需要搜索（时事/热点/最新信息类问题） */
 export function shouldSearch(text: string): boolean {
-  const patterns = [
-    /最新|最近|今天.*新闻|现在.*情况/,
-    /谁赢了|比分|结果|战绩/,
-    /什么时候.*比赛|下一场|赛程/,
-    /发布|更新|版本|patch/i,
-    /怎么评价.+事件/,
-  ];
-  return patterns.some((p) => p.test(text));
+  // 现在始终返回true，因为搜索在ai-chat里已经始终执行了
+  return true;
 }
