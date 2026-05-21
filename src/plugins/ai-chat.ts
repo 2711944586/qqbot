@@ -588,7 +588,9 @@ export const aiChatPlugin: Plugin = {
     if (!ctx.rawText.trim() && !hasVisionContent) return false;
 
     // ===== 构建消息 & 调用 AI =====
-    const history = cm.getMessages(sessionId);
+    // 取最近的上下文（不要全部发给API，太长会超时）
+    const allHistory = cm.getMessages(sessionId);
+    const history = allHistory.slice(-60); // 只取最近60条发给API
 
     // 联网搜索：只在有明确搜索需求时才搜（不再每条消息都搜，避免拖慢响应）
     let searchContext = '';
