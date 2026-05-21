@@ -7,8 +7,7 @@ import * as http from 'http';
 
 const DEFAULT_CONTEXT_SEND_MESSAGES = 45;
 const DEFAULT_SEARCH_TIMEOUT_MS = 800;
-const DEFAULT_API_TIMEOUT_MS = 20000;
-const DEFAULT_MUST_REPLY_TIMEOUT_MS = 4500;
+const DEFAULT_API_TIMEOUT_MS = 15000;
 const DEFAULT_SEARCH_KEYWORDS = [
   '最新', '最近', '现在', '今天', '今晚', '昨天', '明天',
   '谁赢', '比分', '赛程', '战报', '更新', '版本', '发布',
@@ -323,32 +322,6 @@ async function callLLMWithRetry(config: AIConfig, messages: ChatMessage[], useVi
   throw lastError;
 }
 
-async function callLLMForReply(
-  config: AIConfig,
-  messages: ChatMessage[],
-  useVision: boolean,
-  mustReply: boolean,
-): Promise<string> {
-  const llmPromise = callLLMWithRetry(config, messages, useVision);
-  if (!mustReply) return llmPromise;
-
-  let timedOut = false;
-  const timeoutPromise = new Promise<string>((_, reject) => {
-    setTimeout(() => {
-      timedOut = true;
-      reject(new Error('MUST_REPLY_TIMEOUT'));
-    }, getMustReplyTimeoutMs(config));
-  });
-
-  llmPromise.catch((err) => {
-    if (!timedOut) return;
-    const errMsg = err instanceof Error ? err.message : String(err);
-    console.error('[AI] @兜底后模型请求仍失败:', errMsg);
-  });
-
-  return Promise.race([llmPromise, timeoutPromise]);
-}
-
 // ============ LLM API 调用 ============
 function callLLM(config: AIConfig, messages: ChatMessage[], useVision: boolean = false): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -465,10 +438,6 @@ function getApiTimeoutMs(config: AIConfig): number {
   return Math.max(3000, config.api_timeout_ms || DEFAULT_API_TIMEOUT_MS);
 }
 
-function getMustReplyTimeoutMs(config: AIConfig): number {
-  return Math.max(1200, config.must_reply_timeout_ms || DEFAULT_MUST_REPLY_TIMEOUT_MS);
-}
-
 function shouldRunSearch(text: string, config: AIConfig): boolean {
   if (config.enable_search === false) return false;
   if (text.trim().length <= 3) return false;
@@ -482,12 +451,15 @@ function shouldRunSearch(text: string, config: AIConfig): boolean {
   return STYLE_SEARCH_KEYWORDS.some((kw) => lower.includes(kw.toLowerCase()));
 }
 
-function shouldForceSearchForMustReply(text: string, config: AIConfig): boolean {
-  if (config.enable_search === false) return false;
-  if (text.trim().length <= 3) return false;
+function buildSearchQuery(text: string, hasVisionContent: boolean): string {
+  const cleaned = text
+    .replace(/\[CQ:at,qq=\d+\]/g, '')
+    .replace(/@\S+/g, '')
+    .trim();
 
-  const lower = text.toLowerCase();
-  return /[?？]|查一下|搜一下|搜索|联网|资料|最新|最近|现在|今天|谁赢|比分|赛程|新闻|价格|天气/.test(lower);
+  if (cleaned) return cleaned;
+  if (hasVisionContent) return '图片内容 识别 分析';
+  return '今天 CS2 电竞 热点';
 }
 
 function shouldReplyToMessage(
@@ -517,10 +489,12 @@ function shouldReplyToMessage(
 }
 
 async function buildSearchContext(text: string, config: AIConfig, forceSearch: boolean = false): Promise<string> {
-  if (!(forceSearch || shouldRunSearch(text, config))) return '';
+  const query = text.trim();
+  if (!query) return '';
+  if (!(forceSearch || shouldRunSearch(query, config))) return '';
 
   try {
-    const searchPromise = webSearch(text);
+    const searchPromise = webSearch(query);
     const timeoutPromise = new Promise<string>((resolve) => {
       setTimeout(() => resolve(''), getSearchTimeoutMs(config));
     });
@@ -550,10 +524,15 @@ function buildMustReplyFallback(
   hasVisionContent: boolean,
   asksForVoice: boolean,
 ): string {
-  if (hasVisionContent) return '图我看到了 但我这边识图接口刚卡了一下，你再发一句我继续接';
-  if (asksForVoice) return '语音这下没转出来，我先文字接住';
-  if (ctx.isReplyToBot) return '我在 刚才那下接口慢了点，你接着说';
-  return '我在 刚才接口抽了一下，你再说';
+  const replies = hasVisionContent
+    ? ['图我收到了，这次没生成出来，你补一句关键词我继续看', '这张图我接到了，模型没吐内容，重发一句我再看']
+    : asksForVoice
+      ? ['语音这下没转出来，我先文字接住', '语音没生成成功，先别急，再来一句']
+      : ctx.isReplyToBot
+        ? ['我看到了，这次没拿到模型结果，你接着说', '收到，刚才那条没生成出来，再来一句']
+        : ['收到，这次模型没给内容，你换个问法我接', '我看到了，刚才没生成出来，再说一句'];
+
+  return replies[Math.floor(Math.random() * replies.length)];
 }
 
 function maybeSendVoice(
@@ -759,8 +738,8 @@ export const aiChatPlugin: Plugin = {
 
     // 联网搜索：@/回复时遇到问题更积极，普通群聊按关键词触发，快速超时
     const searchText = promptText || ctx.rawText;
-    const forceSearch = mustReply && shouldForceSearchForMustReply(searchText, config);
-    const searchContext = await buildSearchContext(searchText, config, forceSearch);
+    const searchQuery = buildSearchQuery(searchText, hasVisionContent);
+    const searchContext = await buildSearchContext(searchQuery, config, mustReply);
 
     // 额外上下文
     let extraContext = searchContext;
@@ -788,7 +767,7 @@ export const aiChatPlugin: Plugin = {
     ];
 
     try {
-      const reply = await callLLMForReply(config, messages, hasVisionContent, mustReply);
+      const reply = await callLLMWithRetry(config, messages, hasVisionContent, mustReply ? 1 : 2);
       const cleaned = postProcessReply(reply);
 
       if (!cleaned) {
