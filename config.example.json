@@ -8,8 +8,8 @@
   "ai": {
     "api_url": "https://token-plan-cn.xiaomimimo.com/v1/chat/completions",
     "api_key": "在这里填入你的API密钥",
-    "model": "MiMo-V2.5-Pro",
-    "vision_model": "MiMo-V2.5-Pro",
+    "model": "mimo-v2.5-pro",
+    "vision_model": "mimo-v2.5-pro",
     "active_preset": "wanjier",
     "max_context_rounds": 50,
     "max_context_messages": 200,
