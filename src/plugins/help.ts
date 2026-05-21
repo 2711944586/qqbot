@@ -10,6 +10,8 @@ export const helpPlugin: Plugin = {
         '',
         '对话:',
         '  /ai <内容> - 直接对话',
+        '  /voice <内容> - 语音回复',
+        '  /tts <内容> - 语音回复',
         '  @我 <内容> - @触发',
         '  /reset - 清除记忆',
         '  /presets - 预设列表',

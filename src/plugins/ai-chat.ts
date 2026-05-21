@@ -5,8 +5,8 @@ import { generateVoice } from './tts';
 import * as https from 'https';
 import * as http from 'http';
 
-const DEFAULT_CONTEXT_SEND_MESSAGES = 60;
-const DEFAULT_SEARCH_TIMEOUT_MS = 1000;
+const DEFAULT_CONTEXT_SEND_MESSAGES = 45;
+const DEFAULT_SEARCH_TIMEOUT_MS = 800;
 const DEFAULT_SEARCH_KEYWORDS = [
   '最新', '最近', '现在', '今天', '今晚', '昨天', '明天',
   '谁赢', '比分', '赛程', '战报', '更新', '版本', '发布',
@@ -23,11 +23,13 @@ const STYLE_GUIDE = `
 额外风格要求（优先遵守）：
 - 这是一个QQ群聊bot，参考电竞直播解说和水群语感，不要声称自己是现实中的主播本人，也不要代表本人发言。
 - 语气像直播间接弹幕：短、快、自然，能调侃，能认真分析，但别变成论文。
-- 多用场景化表达：残局、道具、经济、枪法、决策、上头、白给、这波、可以的、真有说法。
+- 多用直播间的短促节奏和场景化表达：残局、道具、经济、枪法、决策、上头、白给、这波、可以的、真有说法、不是哥们、这也能行。
 - 遇到CS2/电竞/比赛话题，优先像解说复盘一样抓关键点：谁在做事、哪里失误、这波为什么能赢。
+- 接梗时要像看弹幕：先给反应，再补一句判断。例：离谱、真有你的、这波有说法、我不好评价。
+- 看图时先说你看到了什么，再用一句短评收尾；不要空泛说“图片不错”。
 - 可以使用短梗和口头禅的节奏，但不要逐字复刻长切片内容，不要编造“原话出处”。
 - 群聊里被@、被回复、被点名时必须接话，别装没看到。
-- 没被点名时不要抢话，像从群聊里抽一个值得接的点短评一下。
+- 没被点名时可以适当多接话，但只抓一个值得接的点短评，别连续刷屏。
 `;
 
 // ============ 类型 ============
@@ -462,6 +464,7 @@ function shouldReplyToMessage(
   if (mode === 'all') return true;
   if (mode === 'command') return ctx.command === 'ai';
   if (mode === 'at') return false;
+  if (hasVisionContent) return Math.random() < 0.7;
 
   return shouldSmartTrigger(
     ctx.rawText,
@@ -523,6 +526,28 @@ function maybeSendVoice(
     });
 }
 
+async function sendVoiceReply(
+  ctx: { reply: (msg: string | MessageSegment[]) => void },
+  config: AIConfig,
+  text: string,
+): Promise<boolean> {
+  if (!config.enable_tts) return false;
+  if (text.length < 2 || text.length > 200) return false;
+
+  try {
+    const voicePath = await generateVoice(config, text);
+    if (!voicePath) return false;
+
+    const voiceMsg: MessageSegment[] = [
+      { type: 'record', data: { file: `file://${voicePath}` } },
+    ];
+    ctx.reply(voiceMsg);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** 智能触发判断 — 核心逻辑 */
 function shouldSmartTrigger(
   rawText: string,
@@ -547,44 +572,44 @@ function shouldSmartTrigger(
   if (/玩机器|机器哥|机器兄|wjq/.test(text)) return true;
 
   // === 群讨论激烈时（活跃度高）大幅提升回复率 ===
-  const activityMultiplier = recentActivity > 12 ? 1.5 : recentActivity > 6 ? 1.2 : 1.0;
-  const mentionBonus = mentionCount > 2 ? 0.08 : 0;
-  const baseProbability = (config.trigger_probability ?? 0.12) * activityMultiplier;
+  const activityMultiplier = recentActivity > 12 ? 1.6 : recentActivity > 6 ? 1.3 : 1.0;
+  const mentionBonus = mentionCount > 2 ? 0.1 : 0;
+  const baseProbability = (config.trigger_probability ?? 0.22) * activityMultiplier;
 
   // === 分类触发 ===
   if (analysis.isGaming) {
-    return Math.random() < Math.min(baseProbability * 1.4 + mentionBonus, 0.35);
+    return Math.random() < Math.min(baseProbability * 1.55 + mentionBonus, 0.55);
   }
   if (analysis.isControversial) {
-    return Math.random() < Math.min(baseProbability * 1.3 + mentionBonus, 0.3);
+    return Math.random() < Math.min(baseProbability * 1.45 + mentionBonus, 0.5);
   }
   if (analysis.isMeme) {
-    return Math.random() < Math.min(baseProbability * 1.1 + mentionBonus, 0.25);
+    return Math.random() < Math.min(baseProbability * 1.3 + mentionBonus, 0.45);
   }
   if (analysis.isSharingContent) {
-    return Math.random() < Math.min(baseProbability * 1.2, 0.25);
+    return Math.random() < Math.min(baseProbability * 1.25, 0.42);
   }
   if (analysis.isQuestion) {
-    return Math.random() < Math.min(baseProbability * 1.2, 0.25);
+    return Math.random() < Math.min(baseProbability * 1.25, 0.42);
   }
   if (analysis.hasEmotion) {
-    return Math.random() < Math.min(baseProbability, 0.18);
+    return Math.random() < Math.min(baseProbability * 1.1, 0.35);
   }
   if (analysis.isComplaint) {
-    return Math.random() < Math.min(baseProbability, 0.16);
+    return Math.random() < Math.min(baseProbability, 0.3);
   }
   if (analysis.isGreeting) {
-    return Math.random() < Math.min(baseProbability * 0.6, 0.08);
+    return Math.random() < Math.min(baseProbability * 0.7, 0.18);
   }
 
-  // === 没被点名时保持安静，只在长时间有话题时偶尔抽取回应 ===
-  if (silentCount >= 18) return Math.random() < 0.08;
-  if (silentCount >= 10) return Math.random() < 0.04;
+  // === 没被点名时也可以更积极接话，但仍低于全量回复 ===
+  if (silentCount >= 14) return Math.random() < 0.18;
+  if (silentCount >= 8) return Math.random() < 0.1;
 
   // === 长消息加成 ===
-  const lengthBonus = analysis.textLength > 40 ? 0.04 : analysis.textLength > 20 ? 0.02 : 0;
+  const lengthBonus = analysis.textLength > 40 ? 0.08 : analysis.textLength > 20 ? 0.04 : 0;
 
-  return Math.random() < Math.min(baseProbability * 0.5 + lengthBonus + mentionBonus, 0.12);
+  return Math.random() < Math.min(baseProbability * 0.75 + lengthBonus + mentionBonus, 0.28);
 }
 
 // ============ 插件实例 ============
@@ -631,13 +656,15 @@ export const aiChatPlugin: Plugin = {
     const senderName = ctx.event.sender.card || ctx.event.sender.nickname;
     const imageUrls = extractImageUrls(ctx.event.message);
     const hasVisionContent = imageUrls.length > 0 && config.enable_vision;
-    const promptText = ctx.command === 'ai' ? ctx.args.join(' ').trim() : ctx.rawText;
+    const voiceCommand = ctx.command === 'voice' || ctx.command === 'tts' || ctx.command === 'say';
+    const promptText = (ctx.command === 'ai' || voiceCommand) ? ctx.args.join(' ').trim() : ctx.rawText;
     const atBot = isAtBot(ctx.event);
     const mentionsBot = isBotNameMentioned(ctx.rawText);
-    const mustReply = ctx.command === 'ai' || atBot || ctx.isReplyToBot || mentionsBot;
+    const asksForVoice = voiceCommand || /用语音|发语音|语音回复|说出来|读出来/.test(ctx.rawText);
+    const mustReply = ctx.command === 'ai' || voiceCommand || asksForVoice || atBot || ctx.isReplyToBot || mentionsBot;
 
-    if (ctx.command === 'ai' && !promptText && !hasVisionContent) {
-      ctx.reply('/ai <内容>');
+    if ((ctx.command === 'ai' || voiceCommand) && !promptText && !hasVisionContent) {
+      ctx.reply(voiceCommand ? `/${ctx.command} <内容>` : '/ai <内容>');
       return true;
     }
 
@@ -688,6 +715,12 @@ export const aiChatPlugin: Plugin = {
     if (!mustReply) {
       extraContext += '\n(你没有被点名，只需要从群聊上下文里抽一个最值得接的话题短评。不要逐条总结，不要刷屏。)';
     }
+    if (hasVisionContent) {
+      extraContext += '\n(这条消息包含图片。先看清图片主体、文字、表情或截图内容，再用直播间口吻短评；不要假装没看到。)';
+    }
+    if (asksForVoice) {
+      extraContext += '\n(用户明确要求语音回复。回复控制在60字以内，方便转成语音。)';
+    }
 
     const systemPrompt = buildSystemPrompt(config, ctx.event.group_id, extraContext);
 
@@ -708,6 +741,10 @@ export const aiChatPlugin: Plugin = {
       // 发送回复
       const mustQuote = mustReply && config.must_reply_quote !== false;
       const useQuote = mustQuote || Math.random() < 0.2;
+      if (asksForVoice) {
+        const sentVoice = await sendVoiceReply(ctx, config, cleaned);
+        if (sentVoice) return true;
+      }
       sendPrimaryReply(ctx, cleaned, useQuote);
       maybeSendVoice(ctx, config, cleaned);
     } catch (err) {
