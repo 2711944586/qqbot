@@ -601,17 +601,6 @@ export const aiChatPlugin: Plugin = {
     if (!shouldTrigger) return false;
     if (!ctx.rawText.trim() && !hasVisionContent) return false;
 
-    // 冷却检查
-    if (!cooldownManager.canReply(ctx.event.group_id, config.cooldown_seconds)) {
-      return true;
-    }
-
-    // 并发锁：如果这个群正在处理另一个请求，跳过（不阻塞，避免堆积）
-    if (isGroupLocked(ctx.event.group_id)) {
-      return true;
-    }
-    lockGroup(ctx.event.group_id);
-
     // ===== 构建消息 & 调用 AI =====
     const history = cm.getMessages(sessionId);
 
@@ -644,16 +633,12 @@ export const aiChatPlugin: Plugin = {
       const reply = await callLLM(config, messages, hasVisionContent);
       const cleaned = postProcessReply(reply);
 
-      if (!cleaned) {
-        unlockGroup(ctx.event.group_id);
-        return true;
-      }
+      if (!cleaned) return true;
 
       // 保存回复到上下文
       cm.addMessage(sessionId, { role: 'assistant', content: cleaned });
-      cooldownManager.markReply(ctx.event.group_id);
 
-      // 发送回复：选择回复方式
+      // 发送回复
       const useQuote = ctx.isReplyToBot || isAtBot(ctx.event) || Math.random() < 0.25;
       if (useQuote && cleaned.length <= 250) {
         ctx.replyQuote(cleaned);
@@ -663,21 +648,10 @@ export const aiChatPlugin: Plugin = {
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
       console.error('[AI] 调用失败:', errMsg);
-
-      const errorReplies = [
-        '啊？刚没看到 再说一遍',
-        '等下 我网卡了',
-        '？刚才在忙',
-        '不好意思走神了 说啥',
-        '我刚才掉线了',
-        '稍等 缓一下',
-      ];
-      const pick = errorReplies[Math.floor(Math.random() * errorReplies.length)];
-      if (isAtBot(ctx.event) || ctx.isReplyToBot || ctx.command) {
-        ctx.reply(pick);
+      // 只在被@时才回复错误，其他情况静默
+      if (isAtBot(ctx.event) || ctx.isReplyToBot) {
+        ctx.reply('没听清 再说一遍');
       }
-    } finally {
-      unlockGroup(ctx.event.group_id);
     }
 
     return true;
