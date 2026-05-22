@@ -119,6 +119,8 @@ npm start
 11. 群里运行 `/whoami`、`/diag`、`/status`、`/voice status`。
 12. 如果要强化玩机器风格，把合法素材放入 `knowledge/inbox/`，用 `/kb ingest` 走候选流程。
 
+最重要的一句话：如果群里完全不回复，先不要改知识库，也不要怀疑人格提示词。先确认 NapCat 已经真正开启 OneBot WebSocket，且 bot 进程连的是同一个端口。
+
 ## Ubuntu 部署教程
 
 ### 1. 安装基础环境
@@ -163,6 +165,14 @@ docker run -d \
   mlikiowa/napcat-docker:latest
 ```
 
+注意：
+
+- `export BOT_QQ=你的机器人QQ号` 里的中文必须换成真实 QQ，例如 `export BOT_QQ=3098064534`。
+- `/opt/napcat/config/onebot11_${BOT_QQ}.json` 是配置文件路径，不是命令。不能直接执行这个 JSON 文件。
+- 如果你看到 `Permission denied`，通常是因为你把 JSON 文件当命令敲了。正确做法是 `cat 文件` 查看，`nano 文件` 编辑。
+- `-p 3001:3001` 必须存在，否则 bot 的 `ws://127.0.0.1:3001` 连不到 NapCat。
+- 如果宿主机和 NapCat 不在同一个机器，`ws_url` 不能写 `127.0.0.1`，要写 NapCat 所在机器的 IP。
+
 扫码登录：
 
 ```bash
@@ -198,13 +208,88 @@ EOF
 docker restart napcat
 ```
 
+如果你已经有配置文件，不想覆盖其它 NapCat 字段，可以只修 `websocketServers`：
+
+```bash
+python3 - << 'PY'
+import json
+from pathlib import Path
+import os
+
+bot_qq = os.environ.get("BOT_QQ", "").strip()
+if not bot_qq:
+    raise SystemExit("先执行 export BOT_QQ=你的机器人QQ")
+
+p = Path(f"/opt/napcat/config/onebot11_{bot_qq}.json")
+data = json.loads(p.read_text())
+
+network = data.setdefault("network", {})
+network["websocketServers"] = [{
+    "name": "ws-server",
+    "enable": True,
+    "host": "0.0.0.0",
+    "port": 3001,
+    "enableForcePushEvent": True,
+    "messagePostFormat": "array",
+    "reportSelfMessage": False,
+    "token": ""
+}]
+
+p.write_text(json.dumps(data, ensure_ascii=False, indent=2))
+PY
+```
+
+Heredoc 的坑：
+
+- 第一行必须是 `python3 - << 'PY'`，后面不要接 Python 代码。
+- 最后一行必须只有 `PY`，前后不要有空格。
+- 如果终端变成 `>`，说明还在等结束标记。按 `Ctrl+C` 取消，再重新复制整段。
+
+检查 OneBot 配置：
+
+```bash
+cat /opt/napcat/config/onebot11_${BOT_QQ}.json
+grep -A14 websocketServers /opt/napcat/config/onebot11_${BOT_QQ}.json
+```
+
+必须能看到：
+
+```json
+"websocketServers": [
+  {
+    "enable": true,
+    "host": "0.0.0.0",
+    "port": 3001,
+    "messagePostFormat": "array"
+  }
+]
+```
+
+如果你看到：
+
+```json
+"websocketServers": []
+```
+
+那就是没开启 WebSocket，bot 一定不会回复。
+
+确认容器和端口：
+
+```bash
+docker ps
+docker logs --tail 120 napcat
+ss -lntp | grep 3001 || true
+```
+
+`docker ps` 里应该有 `0.0.0.0:3001->3001/tcp`。如果没有，说明容器创建时没有映射端口，需要 `docker rm -f napcat` 后按上面的 `docker run` 重建。
+
 ### 3. 部署 bot
 
 ```bash
 cd /opt
-git clone <你的仓库地址> wanjier-bot
+git clone https://github.com/2711944586/qqbot.git wanjier-bot
 cd wanjier-bot
-npm install
+npm ci
 cp config.example.json config.json
 nano config.json
 npm run build
@@ -221,6 +306,66 @@ pm2 logs wanjier --lines 100
 pm2 restart wanjier
 docker restart napcat
 ```
+
+如果 PM2 提示找不到 `wanjier`：
+
+```bash
+pm2 list
+pm2 restart all
+```
+
+如果你第一次启动，推荐：
+
+```bash
+mkdir -p logs
+pm2 start ecosystem.config.js
+pm2 save
+```
+
+如果 `npm run build` 报错，先不要启动 PM2；修完构建再启动。PM2 只会运行 `dist/index.js`，没有 build 就没有新代码。
+
+### 3.1 bot 配置最小可用版
+
+编辑：
+
+```bash
+cd /opt/wanjier-bot
+nano config.json
+```
+
+最少确认这些字段：
+
+```json
+{
+  "ws_url": "ws://127.0.0.1:3001",
+  "bot_qq": 3098064534,
+  "admin_qq": [你的QQ],
+  "enabled_groups": [],
+  "ai": {
+    "api_url": "https://你的接口/v1/chat/completions",
+    "api_key": "真实API密钥",
+    "model": "你的文本模型",
+    "vision_model": "你的识图模型",
+    "trigger_mode": "smart",
+    "forced_reply_quote": true,
+    "must_reply_quote": true
+  }
+}
+```
+
+排障时可以先关闭非必要功能，让链路先跑通：
+
+```json
+{
+  "ai": {
+    "enable_search": false,
+    "enable_vision": false,
+    "enable_tts": false
+  }
+}
+```
+
+等 `/ping`、`/whoami`、`@bot` 都正常后，再开启搜索、识图、语音。
 
 ### 4. 首次上线检查
 
@@ -242,6 +387,39 @@ docker restart napcat
 - `/status` 里队列没有长期堆积。
 - `/voice status` 显示 `TTS: on`；如果放了样本，克隆应为 `ready`。
 - `/kb stats` 能看到知识库块数和字数。
+
+如果 `/ping` 不回，不要继续测 AI。`/ping` 是本地命令，不需要 API，不需要知识库，不需要联网。`/ping` 不回只可能是消息没有进 bot、bot 没连上 NapCat、群白名单拦截、进程没启动或 QQ 没登录。
+
+### 5. 部署后必跑的服务器自检
+
+在 VPS 上执行：
+
+```bash
+cd /opt/wanjier-bot
+git log -1 --oneline
+npm run build
+npm run smoke
+pm2 list
+pm2 logs wanjier --lines 120
+docker ps
+docker logs --tail 120 napcat
+ss -lntp | grep 3001 || true
+cat config.json | grep -E '"ws_url"|"bot_qq"|"api_url"|"model"'
+BOT_QQ=$(node -e "console.log(require('./config.json').bot_qq || '')")
+echo "BOT_QQ=$BOT_QQ"
+ls -lah /opt/napcat/config
+test -n "$BOT_QQ" && grep -A14 websocketServers /opt/napcat/config/onebot11_${BOT_QQ}.json
+```
+
+期望结果：
+
+- `git log -1` 是远程最新提交。
+- `npm run smoke` 输出 `smoke ok`。
+- `pm2 list` 中 `wanjier` 是 `online`。
+- NapCat 容器是 `Up`。
+- `ss` 能看到 3001 正在监听。
+- OneBot 配置里 `websocketServers` 不是空数组。
+- `messagePostFormat` 是 `array`。
 
 ## 更换 Bot QQ 号
 
@@ -831,6 +1009,257 @@ npm run smoke
 ```
 
 ## 故障排查
+
+### 完全不回复：按层排查
+
+先分清楚是哪一层坏了。不要一上来改人格、知识库或模型。
+
+```text
+QQ群消息 -> NapCat收到 -> OneBot WebSocket发给bot -> bot插件处理 -> bot调用send_group_msg -> QQ群看到回复
+```
+
+按下面顺序查，每一步都只看一个问题。
+
+#### 1. bot 进程是否活着
+
+```bash
+cd /opt/wanjier-bot
+pm2 list
+pm2 logs wanjier --lines 120
+```
+
+正常现象：
+
+- `wanjier` 是 `online`。
+- 日志里有 `WebSocket 连接成功`。
+- 日志里能看到群消息，例如 `[群xxxx] 昵称(QQ): /ping`。
+
+异常处理：
+
+- 没有 `wanjier`：执行 `pm2 start ecosystem.config.js && pm2 save`。
+- 状态是 `errored`：看 `pm2 logs wanjier --lines 200`。
+- 没有 `WebSocket 连接成功`：继续查 NapCat 和 3001 端口。
+
+#### 2. NapCat 容器是否活着
+
+```bash
+docker ps
+docker logs --tail 150 napcat
+```
+
+正常现象：
+
+- `napcat` 容器是 `Up`。
+- 日志里没有反复重启、登录失败、账号掉线。
+- 机器人 QQ 已经登录。
+
+异常处理：
+
+- 没有容器：按部署教程重新 `docker run`。
+- 容器退出：`docker logs napcat` 看原因。
+- QQ 没登录：打开 `http://服务器IP:6099` 或看日志扫码。
+
+#### 3. OneBot WebSocket 是否真的开启
+
+先设置真实 QQ：
+
+```bash
+export BOT_QQ=3098064534
+```
+
+查看配置：
+
+```bash
+grep -A20 websocketServers /opt/napcat/config/onebot11_${BOT_QQ}.json
+```
+
+必须不是空数组：
+
+```json
+"websocketServers": [
+  {
+    "enable": true,
+    "host": "0.0.0.0",
+    "port": 3001,
+    "messagePostFormat": "array"
+  }
+]
+```
+
+如果是：
+
+```json
+"websocketServers": []
+```
+
+执行：
+
+```bash
+python3 - << 'PY'
+import json
+from pathlib import Path
+import os
+
+bot_qq = os.environ.get("BOT_QQ", "").strip()
+if not bot_qq:
+    raise SystemExit("先执行 export BOT_QQ=你的机器人QQ")
+
+p = Path(f"/opt/napcat/config/onebot11_{bot_qq}.json")
+data = json.loads(p.read_text())
+network = data.setdefault("network", {})
+network["websocketServers"] = [{
+    "name": "ws-server",
+    "enable": True,
+    "host": "0.0.0.0",
+    "port": 3001,
+    "enableForcePushEvent": True,
+    "messagePostFormat": "array",
+    "reportSelfMessage": False,
+    "token": ""
+}]
+p.write_text(json.dumps(data, ensure_ascii=False, indent=2))
+PY
+docker restart napcat
+```
+
+#### 4. 端口是否通
+
+```bash
+ss -lntp | grep 3001 || true
+docker ps | grep napcat
+```
+
+正常现象：
+
+- `ss` 能看到 `:3001` 监听。
+- `docker ps` 里能看到 `0.0.0.0:3001->3001/tcp`。
+
+如果 `docker ps` 没有端口映射，重建容器：
+
+```bash
+docker rm -f napcat
+export BOT_QQ=3098064534
+docker run -d \
+  --name napcat \
+  --restart=always \
+  --memory=600m \
+  --memory-swap=900m \
+  -e ACCOUNT=$BOT_QQ \
+  -e NAPCAT_GID=0 \
+  -e NAPCAT_UID=0 \
+  -p 3001:3001 \
+  -p 6099:6099 \
+  -v /opt/napcat/config:/app/napcat/config \
+  mlikiowa/napcat-docker:latest
+docker logs -f napcat
+```
+
+#### 5. bot 配置是否连对端口
+
+```bash
+cd /opt/wanjier-bot
+node - << 'NODE'
+const c = require('./config.json')
+console.log('ws_url=', c.ws_url)
+console.log('bot_qq=', c.bot_qq)
+console.log('admin_qq=', c.admin_qq)
+console.log('enabled_groups=', c.enabled_groups)
+console.log('api_url=', c.ai && c.ai.api_url)
+console.log('model=', c.ai && c.ai.model)
+console.log('trigger_mode=', c.ai && c.ai.trigger_mode)
+NODE
+```
+
+推荐：
+
+```json
+"ws_url": "ws://127.0.0.1:3001",
+"bot_qq": 3098064534,
+"enabled_groups": []
+```
+
+如果 bot 和 NapCat 不在同一台机器，`127.0.0.1` 要换成 NapCat 机器 IP。
+
+#### 6. 本地命令 `/ping` 是否回复
+
+群里发：
+
+```text
+/ping
+```
+
+判断：
+
+- `/ping` 不回：不是 AI 问题，是 NapCat/WebSocket/PM2/群白名单/账号登录问题。
+- `/ping` 回，但 `/whoami` 不回：插件链异常，看 PM2 日志。
+- `/ping`、`/whoami` 都回，但 `@bot` 不回：看 @ 检测、`self_id`、AI 配置。
+
+#### 7. `/whoami` 是否是目标 QQ
+
+群里发：
+
+```text
+/whoami
+```
+
+必须满足：
+
+```text
+当前bot号: 3098064534
+配置bot_qq: 3098064534
+```
+
+如果 `当前bot号` 不是新号，说明 NapCat 实际登录的不是你以为的 QQ。只改 `config.json` 没用，必须重登 NapCat。
+
+#### 8. AI 是否可用
+
+群里发：
+
+```text
+/diag
+/ai 你在吗
+```
+
+如果 `/ping` 回但 `/ai` 不回，重点看：
+
+- `api_key` 是否还是占位值。
+- `api_url` 是否是 Chat Completions 地址。
+- `model` 是否真实存在。
+- VPS 是否能访问 API。
+
+VPS 上可以简单测网络：
+
+```bash
+curl -I https://你的接口域名
+```
+
+#### 9. 看实时日志定位
+
+开一个窗口：
+
+```bash
+pm2 logs wanjier --lines 0
+```
+
+然后群里发 `/ping`。如果日志完全没出现群消息，说明消息没进 bot，查 NapCat。
+如果日志出现群消息但没有回复，查插件报错或白名单。
+如果日志出现 `AI接口没配`，查 `config.json`。
+如果日志出现 `发送群消息失败 retcode=...`，查 bot 是否在群里、是否被禁言、NapCat API 权限。
+
+### 常见命令敲错
+
+- 错误：`/opt/napcat/config/onebot11_3098064534.json`
+  - 这是把配置文件当命令执行，会出现 `Permission denied`。
+  - 正确：`cat /opt/napcat/config/onebot11_3098064534.json` 或 `nano /opt/napcat/config/onebot11_3098064534.json`。
+- 错误：`python3 - << 'PY' import json ...`
+  - heredoc 第一行后面不能接代码，会卡在 `>`。
+  - 正确：第一行只写 `python3 - << 'PY'`，最后一行单独写 `PY`。
+- 错误：编辑 `/opt/napcat/config/onebot11_你的机器人QQ.json`
+  - 这是占位符文件名，不是真配置。
+  - 正确：把 `你的机器人QQ` 换成真实 QQ，例如 `onebot11_3098064534.json`。
+- 错误：只改 `/opt/wanjier-bot/config.json` 的 `bot_qq`
+  - 这不会切换登录账号。
+  - 正确：NapCat 必须扫码登录新 QQ，OneBot 配置文件也要对应新 QQ。
 
 ### @ 了不回复
 
