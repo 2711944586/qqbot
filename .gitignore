@@ -3,6 +3,7 @@ dist/
 config.json
 *.log
 voice_cache/
+stt_cache/
 voice_sample.mp3
 image_cache/
 context_store/

@@ -4,6 +4,7 @@ import { getAiChatStats } from './ai-chat';
 import { getCacheStats } from './image-cache';
 import { auditKnowledge, getKnowledgeRuntimePaths, getKnowledgeStats, loadKnowledgeSources } from './knowledge-base';
 import { getSearchStats, webSearch } from './web-search';
+import { getSttStats } from './stt';
 import { getVoiceStats } from './tts';
 import * as fs from 'fs';
 
@@ -35,8 +36,11 @@ export const diagPlugin: Plugin = {
     else risk.push('识图未开启，图片只会作为上下文占位');
 
     const voice = getVoiceStats(ai);
+    const stt = getSttStats(ai);
     if (ai.enable_tts) ok.push(`语音已开启(${voice.cloneReady ? 'clone' : 'tts'})`);
     else suggestions.push('语音未开启，/tts 会不可用');
+    if (ai.enable_stt) ok.push(`语音听写已开启(${stt.model || '未配置模型'})`);
+    else suggestions.push('语音听写未开启，收到语音只能按占位和文字上下文回复');
     if (ai.enable_tts && ai.tts_clone_enabled !== false && !voice.cloneReady) {
       suggestions.push(`克隆样本不可用: ${voice.sampleReason || 'unknown'} (${voice.samplePath})`);
     }
@@ -107,10 +111,12 @@ export const diagPlugin: Plugin = {
       ...suggestions.slice(0, 5).map((item) => `? ${item}`),
       `知识审计: ${audit.sections}块 ${audit.chars}字 问题${audit.issues.length} 隔离${audit.quarantineFiles}`,
       `队列: ${aiStats.pendingJobs}待处理 / ${aiStats.forcedJobs}强触发`,
-      `并发: AI ${aiStats.gates.ai.active}/${aiStats.gates.ai.limit}+${aiStats.gates.ai.queued} 搜索 ${aiStats.gates.search.active}/${aiStats.gates.search.limit}+${aiStats.gates.search.queued}`,
+      `并发: AI ${aiStats.gates.ai.active}/${aiStats.gates.ai.limit}+${aiStats.gates.ai.queued} 搜索 ${aiStats.gates.search.active}/${aiStats.gates.search.limit}+${aiStats.gates.search.queued} 图${aiStats.gates.vision.active}/${aiStats.gates.vision.limit}+${aiStats.gates.vision.queued} 听写${aiStats.gates.stt.active}/${aiStats.gates.stt.limit}+${aiStats.gates.stt.queued} TTS${aiStats.gates.tts.active}/${aiStats.gates.tts.limit}+${aiStats.gates.tts.queued}`,
       `AI缓存: ${aiStats.replyCacheEntries}条 ${aiStats.replyCacheHits}/${aiStats.replyCacheMisses}`,
       `搜索缓存: ${search.cacheEntries}/${search.maxEntries}条 空${search.negativeEntries} ${search.hits}/${search.misses} 飞行${search.inFlight}`,
       `图片缓存: ${image.count}张 ${image.sizeMB}/${image.maxSizeMB}MB 单图${image.maxFileMB}MB ${image.hits}/${image.misses}`,
+      `听写: ${stt.enabled ? 'on' : 'off'} 缓存${stt.cacheFiles}条 ${stt.hits}/${stt.misses} 下载失败${stt.downloadMisses} 空转写${stt.transcriptMisses}`,
+      ...(stt.lastError ? [`听写最近错误: ${stt.lastError}`] : []),
       `语音: 缓存${voice.cacheFiles}条 ${voice.hits}/${voice.misses} 克隆${voice.cloneEnabled ? (voice.cloneReady ? 'ready' : 'missing') : 'off'} 样本${voice.sampleSizeMB}MB`,
       ...(voice.lastError ? [`语音最近错误: ${voice.lastError}`] : []),
       ...liveLines,

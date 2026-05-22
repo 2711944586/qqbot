@@ -1,4 +1,4 @@
-export type GateName = 'ai' | 'search' | 'vision' | 'tts';
+export type GateName = 'ai' | 'search' | 'vision' | 'tts' | 'stt';
 
 interface GateState {
   limit: number;
@@ -12,6 +12,7 @@ const gates: Record<GateName, GateState> = {
   search: { limit: 2, active: 0, queued: 0, queue: [] },
   vision: { limit: 1, active: 0, queued: 0, queue: [] },
   tts: { limit: 1, active: 0, queued: 0, queue: [] },
+  stt: { limit: 1, active: 0, queued: 0, queue: [] },
 };
 
 function normalizeLimit(value: number | undefined, fallback: number): number {
@@ -34,11 +35,13 @@ export function configureGates(config: {
   search?: number;
   vision?: number;
   tts?: number;
+  stt?: number;
 }): void {
   gates.ai.limit = normalizeLimit(config.ai, gates.ai.limit);
   gates.search.limit = normalizeLimit(config.search, gates.search.limit);
   gates.vision.limit = normalizeLimit(config.vision, gates.vision.limit);
   gates.tts.limit = normalizeLimit(config.tts, gates.tts.limit);
+  gates.stt.limit = normalizeLimit(config.stt, gates.stt.limit);
   for (const gate of Object.values(gates)) pump(gate);
 }
 
@@ -71,5 +74,6 @@ export function getGateStats(): Record<GateName, { limit: number; active: number
     search: { limit: gates.search.limit, active: gates.search.active, queued: gates.search.queued },
     vision: { limit: gates.vision.limit, active: gates.vision.active, queued: gates.vision.queued },
     tts: { limit: gates.tts.limit, active: gates.tts.active, queued: gates.tts.queued },
+    stt: { limit: gates.stt.limit, active: gates.stt.active, queued: gates.stt.queued },
   };
 }

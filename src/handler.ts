@@ -61,7 +61,11 @@ export class MessageHandler {
     this.processMessage(groupEvent, config, isReplyToBot, isAtBot).catch((err) => {
       console.error('[Handler] 消息处理异常:', err);
       if (isAtBot || isReplyToBot) {
-        void this.bot.sendGroupMessage(groupEvent.group_id, '我在 刚才没接住，你再说');
+        const fallbackMsg: MessageSegment[] = [
+          { type: 'reply', data: { id: String(groupEvent.message_id) } },
+          { type: 'text', data: { text: '我在 刚才没接住，你再说' } },
+        ];
+        void this.bot.sendGroupMessage(groupEvent.group_id, fallbackMsg);
       }
     }).finally(() => {
       this.activeMessages = Math.max(0, this.activeMessages - 1);
@@ -227,9 +231,13 @@ export class MessageHandler {
       }
     }
 
-    if (!handled && (isAtBot || isReplyToBot)) {
+    if (!handled && (isAtBot || isReplyToBot || this.isDirectAiCommand(command))) {
       ctx.replyQuote('我在 刚才没接住，你再说');
     }
+  }
+
+  private isDirectAiCommand(command: string | null): boolean {
+    return command === 'ai' || command === 'ask' || command === 'chat';
   }
 
   private runPlugin(plugin: Plugin, ctx: PluginContext, config: BotConfig): Promise<boolean> {

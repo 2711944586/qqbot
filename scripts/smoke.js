@@ -36,6 +36,7 @@ async function testConfig() {
   assert.strictEqual(config.ai.search_global_concurrency, 3);
   assert.strictEqual(config.ai.vision_global_concurrency, 1);
   assert.strictEqual(config.ai.tts_global_concurrency, 1);
+  assert.strictEqual(config.ai.stt_global_concurrency, 1);
   assert.strictEqual(config.ai.search_cache_max_entries, 1000);
   assert.strictEqual(config.ai.image_cache_max_mb, 512);
   assert.strictEqual(config.ai.image_cache_max_file_mb, 2);
@@ -48,6 +49,12 @@ async function testConfig() {
   assert.strictEqual(config.ai.tts_timeout_ms, 20000);
   assert.strictEqual(config.ai.tts_cache_hours, 24);
   assert.strictEqual(config.ai.tts_sample_max_mb, 8);
+  assert.strictEqual(config.ai.enable_stt, true);
+  assert.strictEqual(config.ai.stt_model, 'mimo-v2.5-pro');
+  assert.strictEqual(config.ai.stt_max_records, 1);
+  assert.strictEqual(config.ai.stt_max_file_mb, 4);
+  assert.strictEqual(config.ai.stt_timeout_ms, 20000);
+  assert.strictEqual(config.ai.stt_cache_hours, 24);
   assert.strictEqual(config.ai.search_negative_cache_seconds, 60);
   assert.strictEqual(config.ai.knowledge_aggressive_auto_commit, true);
   assert.strictEqual(config.ai.knowledge_auto_batch_max_sources, 6);
@@ -112,7 +119,7 @@ async function testVoiceStats() {
 }
 
 async function testGates() {
-  configureGates({ ai: 2, search: 2, vision: 1, tts: 1 });
+  configureGates({ ai: 2, search: 2, vision: 1, tts: 1, stt: 1 });
   let active = 0;
   let maxActive = 0;
   await Promise.all(Array.from({ length: 8 }, () => withGate('ai', async () => {
@@ -183,6 +190,7 @@ function makeConfigForHandler() {
   config.ai.vision_model = 'smoke-vision-model';
   config.ai.enable_search = false;
   config.ai.enable_tts = false;
+  config.ai.enable_stt = false;
   config.ai.enable_vision = false;
   config.ai.enable_knowledge = false;
   config.ai.max_context_messages = 20;
@@ -192,6 +200,7 @@ function makeConfigForHandler() {
   config.ai.search_global_concurrency = 2;
   config.ai.vision_global_concurrency = 1;
   config.ai.tts_global_concurrency = 1;
+  config.ai.stt_global_concurrency = 1;
   config.enabled_groups = [];
   config.admin_qq = [1];
   return config;
@@ -237,6 +246,9 @@ async function testMessageReplyTargeting() {
     prompts.push(content);
     const id = (content.match(/message_id: (\d+)/) || [])[1] || 'unknown';
     if (id === '104') return '（直播口吻接弹幕）不是哥们 这个括号真不能有';
+    if (id === '105') return '';
+    if (id === '106') return '长回复'.repeat(120);
+    if (id === '107') return '收到语音了';
     return `reply-${id}`;
   });
 
@@ -266,6 +278,30 @@ async function testMessageReplyTargeting() {
       '不是哥们 这个括号真不能有',
       'stage direction label should be stripped from LLM output',
     );
+
+    const beforeEmpty = sent.length;
+    handler.handleEvent(makeEvent(105, 15, ' 空回复也必须兜底'));
+    await waitFor(() => sent.length === beforeEmpty + 1, 'empty forced fallback');
+    assert.strictEqual(sent.at(-1).message.find((seg) => seg.type === 'reply')?.data.id, '105');
+    assert.ok(
+      sent.at(-1).message.find((seg) => seg.type === 'text')?.data.text.length > 0,
+      'forced empty LLM output should still send a fallback reply',
+    );
+
+    const beforeLong = sent.length;
+    handler.handleEvent(makeEvent(106, 16, ' 长回复也要引用'));
+    await waitFor(() => sent.length === beforeLong + 1, 'long forced quote');
+    assert.strictEqual(
+      sent.at(-1).message.find((seg) => seg.type === 'reply')?.data.id,
+      '106',
+      'forced replies should quote even when text is long',
+    );
+
+    const beforeRecord = sent.length;
+    handler.handleEvent(makeEvent(107, 17, '', [{ type: 'record', data: { file: 'voice.amr', url: 'http://example.com/voice.amr' } }]));
+    await waitFor(() => sent.length === beforeRecord + 1, 'record forced reply');
+    assert.strictEqual(sent.at(-1).message.find((seg) => seg.type === 'reply')?.data.id, '107');
+    assert.ok(prompts.some((prompt) => prompt.includes('语音数量: 1')), 'record count should be included in the job snapshot');
 
     const before = sent.length;
     handler.handleEvent(makeEvent(201, 21, ' 回复旧消息', [{ type: 'reply', data: { id: '77777' } }]));

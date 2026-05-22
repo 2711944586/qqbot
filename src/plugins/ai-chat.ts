@@ -3,6 +3,7 @@ import { Bot } from '../bot';
 import { hasUsableApiKey } from '../config';
 import { cleanSearchCache, configureSearchCache, webSearch } from './web-search';
 import { cleanVoiceCache, generateVoice, getVoiceStats } from './tts';
+import { cleanSttCache, getSttStats, transcribeRecords } from './stt';
 import { cleanupCache as cleanImageCache, configureImageCache, getImageDataUrl } from './image-cache';
 import { configureGates, getGateStats, withGate } from './concurrency';
 import {
@@ -69,7 +70,9 @@ interface ReplyJob {
   rawText: string;
   effectiveText: string;
   imageUrls: string[];
+  recordUrls: string[];
   hasImages: boolean;
+  hasRecords: boolean;
   isAtBot: boolean;
   isReplyToBot: boolean;
   triggerReason: string;
@@ -236,6 +239,13 @@ function extractImageUrls(message: MessageSegment[]): string[] {
   return message
     .filter((seg) => seg.type === 'image')
     .map((seg) => seg.type === 'image' ? (seg.data.url || seg.data.file || '') : '')
+    .filter(Boolean);
+}
+
+function extractRecordUrls(message: MessageSegment[]): string[] {
+  return message
+    .filter((seg) => seg.type === 'record')
+    .map((seg) => seg.type === 'record' ? (seg.data.url || seg.data.file || '') : '')
     .filter(Boolean);
 }
 
@@ -439,8 +449,14 @@ function buildApiMessages(
   return result;
 }
 
-function buildTargetText(job: ReplyJob): string {
-  const body = job.effectiveText || (job.hasImages ? '[图片]' : '[表情/空文本]');
+function buildTargetText(job: ReplyJob, recordTranscripts: string[] = []): string {
+  const transcriptText = recordTranscripts.join('\n');
+  const body = job.effectiveText || transcriptText || (job.hasImages ? '[图片]' : job.hasRecords ? '[语音]' : '[表情/空文本]');
+  const mediaLines = [
+    job.hasImages ? `图片数量: ${job.imageUrls.length}` : '',
+    job.hasRecords ? `语音数量: ${job.recordUrls.length}` : '',
+    transcriptText ? `语音听写: ${transcriptText}` : '',
+  ].filter(Boolean);
   return [
     '[当前要回复的消息]',
     `group_id: ${job.groupId}`,
@@ -449,10 +465,12 @@ function buildTargetText(job: ReplyJob): string {
     `user_id: ${job.userId}`,
     `触发类型: ${job.triggerReason}`,
     `原始消息: ${job.rawText || body}`,
+    ...mediaLines,
     '',
     '硬规则：当前只回复这一条消息，不要回答历史上下文里其他人的问题；如果历史和当前消息冲突，以当前消息为准。',
+    job.hasRecords && !transcriptText ? '注意：当前消息含语音段；如果没有听写文本，不要假装听到了具体内容，只能说明收到语音并让对方补文字或按可见上下文回应。' : '',
     `${job.senderName}: ${body}`,
-  ].join('\n');
+  ].filter((line) => line !== '').join('\n');
 }
 
 function buildSystemPrompt(config: AIConfig): string {
@@ -493,6 +511,13 @@ function postProcessReply(text: string): string {
   text = text.replace(/\n{3,}/g, '\n\n');
   text = text.replace(/^ +/gm, '');
   return text.trim();
+}
+
+function forcedFallbackReply(job: ReplyJob, recordTranscripts: string[] = []): string {
+  if (recordTranscripts.length > 0) return `我听到了 大概是「${recordTranscripts.join(' ').slice(0, 80)}」 但刚才没组织出来，你再问一句`;
+  if (job.hasRecords && !job.effectiveText) return '语音我收到了，但这边没拿到听写文本，你补一句文字我接着说';
+  if (job.hasImages && !job.effectiveText) return '图我收到了，但这下没看出准信，你补一句要我看哪儿';
+  return '我在 这句刚才没生成出来，你再说';
 }
 
 function handlePresetCommand(
@@ -1028,6 +1053,7 @@ function ensureKnowledgeAutoTimer(config: AIConfig): void {
     search: config.search_global_concurrency,
     vision: config.vision_global_concurrency,
     tts: config.tts_global_concurrency,
+    stt: config.stt_global_concurrency,
   });
   configureSearchCache(config);
   configureImageCache(config);
@@ -1057,6 +1083,7 @@ function ensureMaintenanceTimer(): void {
       cleanSearchCache();
       cleanImageCache();
       cleanVoiceCache(knowledgeAutoConfig || undefined);
+      cleanSttCache(knowledgeAutoConfig || undefined);
       auditKnowledge();
       pruneKnowledgeAutoLog(knowledgeAutoConfig?.knowledge_auto_log_retention_days || 14);
     } catch (err) {
@@ -1308,18 +1335,23 @@ export const aiChatPlugin: Plugin = {
       const subCommand = (ctx.args[0] || '').toLowerCase();
       if (subCommand === 'status') {
         const stats = getVoiceStats(config);
+        const sttStats = getSttStats(config);
         ctx.reply([
           '语音状态',
           `TTS: ${config.enable_tts ? 'on' : 'off'}`,
+          `STT: ${config.enable_stt ? 'on' : 'off'}`,
           `普通模型: ${stats.model}`,
           `克隆模型: ${stats.cloneModel}`,
+          `听写模型: ${sttStats.model || '未配置'}`,
           `克隆: ${stats.cloneEnabled ? (stats.cloneReady ? 'ready' : 'missing') : 'off'}`,
           `样本: ${stats.samplePath}`,
           `样本大小: ${stats.sampleSizeMB}MB`,
           ...(stats.sampleReason ? [`样本原因: ${stats.sampleReason}`] : []),
           `缓存: ${stats.cacheFiles}条 ${stats.sizeMB}MB 命中${stats.hits}/${stats.misses}`,
+          `听写缓存: ${sttStats.cacheFiles}条 ${sttStats.sizeMB}MB 命中${sttStats.hits}/${sttStats.misses} 下载失败${sttStats.downloadMisses} 空转写${sttStats.transcriptMisses}`,
           `最长文本: ${stats.maxChars}字`,
           ...(stats.lastError ? [`最近错误: ${stats.lastError}`] : []),
+          ...(sttStats.lastError ? [`听写最近错误: ${sttStats.lastError}`] : []),
         ].join('\n'));
         return true;
       }
@@ -1390,13 +1422,15 @@ export const aiChatPlugin: Plugin = {
     // ===== 提取信息 =====
     const senderName = ctx.event.sender.card || ctx.event.sender.nickname;
     const imageUrls = extractImageUrls(ctx.event.message);
-    const hasImages = imageUrls.length > 0 && config.enable_vision;
+    const recordUrls = extractRecordUrls(ctx.event.message);
+    const hasImages = imageUrls.length > 0;
+    const hasRecords = recordUrls.length > 0;
     const atBot = ctx.isAtBot || isAtBot(ctx.event);
     const effectiveText = ctx.command && directAiCommands.has(ctx.command)
       ? ctx.args.join(' ').trim()
       : ctx.rawText.trim();
 
-    if (ctx.command && directAiCommands.has(ctx.command) && !effectiveText && imageUrls.length === 0) {
+    if (ctx.command && directAiCommands.has(ctx.command) && !effectiveText && imageUrls.length === 0 && recordUrls.length === 0) {
       ctx.reply('/ai <内容>');
       return true;
     }
@@ -1405,11 +1439,15 @@ export const aiChatPlugin: Plugin = {
 
     const storedBaseText = effectiveText
       ? `${senderName}: ${effectiveText}`
-      : `${senderName}: ${imageUrls.length > 0 ? '[图片]' : '[表情]'}`;
+      : `${senderName}: ${imageUrls.length > 0 ? '[图片]' : recordUrls.length > 0 ? '[语音]' : '[表情]'}`;
 
     cm.appendMessage(sessionId, {
       role: 'user',
-      content: imageUrls.length > 0 ? `${storedBaseText} (含${imageUrls.length}张图)` : storedBaseText,
+      content: [
+        storedBaseText,
+        imageUrls.length > 0 ? `(含${imageUrls.length}张图)` : '',
+        recordUrls.length > 0 ? `(含${recordUrls.length}条语音)` : '',
+      ].filter(Boolean).join(' '),
     });
     const contextSnapshot = cm.getFullContext(sessionId);
     const snapshotSummary = contextSnapshot.summary;
@@ -1450,7 +1488,9 @@ export const aiChatPlugin: Plugin = {
       rawText: ctx.rawText,
       effectiveText,
       imageUrls: [...imageUrls],
+      recordUrls: [...recordUrls],
       hasImages,
+      hasRecords,
       isAtBot: atBot,
       isReplyToBot: ctx.isReplyToBot,
       triggerReason,
@@ -1462,15 +1502,24 @@ export const aiChatPlugin: Plugin = {
 
     void enqueueGroupTask(job, async () => {
       // 构建当前消息（双版本：API版含图，存储版纯文字）
-      let apiCurrentMessage: ChatMessage;
-      const targetText = buildTargetText(job);
       const queueAgeMs = Date.now() - job.createdAt;
       const skipHeavyEnhancements = job.forced && queueAgeMs > 120_000;
       const skipVoice = job.forced && queueAgeMs > 60_000;
+      let recordTranscripts: string[] = [];
+      let apiCurrentMessage: ChatMessage;
       let usesVisionPayload = false;
 
       try {
-        if (job.hasImages && !skipHeavyEnhancements) {
+        if (job.hasRecords && config.enable_stt && !skipHeavyEnhancements) {
+          try {
+            recordTranscripts = await withGate('stt', () => transcribeRecords(config, job.recordUrls));
+          } catch { /* */ }
+        }
+
+        const recordTranscriptText = recordTranscripts.join('\n');
+        const targetText = buildTargetText(job, recordTranscripts);
+
+        if (job.hasImages && config.enable_vision && !skipHeavyEnhancements) {
           const limit = Math.max(1, Math.min(config.vision_max_images || 2, 4));
           const limitedUrls = job.imageUrls.slice(0, limit);
           const dataUrls: string[] = [];
@@ -1512,11 +1561,12 @@ export const aiChatPlugin: Plugin = {
 
         // ===== 联网搜索（按需 不阻塞）=====
         let searchInfo = '';
-        if (!skipHeavyEnhancements && shouldSearch(config, job.effectiveText)) {
+        const searchableText = job.effectiveText || recordTranscriptText;
+        if (!skipHeavyEnhancements && shouldSearch(config, searchableText)) {
           try {
             const timeoutMs = config.search_timeout_ms || 1500;
             const searchPromise = webSearch(
-              job.effectiveText,
+              searchableText,
               timeoutMs,
               config.search_cache_seconds ?? 300,
               config.search_negative_cache_seconds ?? 60,
@@ -1532,8 +1582,9 @@ export const aiChatPlugin: Plugin = {
 
         const knowledgeQuery = [
           job.effectiveText,
+          recordTranscriptText,
           searchInfo,
-          ...getKnowledgeKeywords().filter((keyword) => job.effectiveText.toLowerCase().includes(keyword.toLowerCase())),
+          ...getKnowledgeKeywords().filter((keyword) => searchableText.toLowerCase().includes(keyword.toLowerCase())),
         ].join('\n');
         const styleQuery = `${job.triggerReason}\n直播语态 回复铁律 真人化 口癖 反应强度\n${job.effectiveText}`;
         const shouldInjectKnowledge = job.forced || isKnowledgeTopic(knowledgeQuery);
@@ -1553,7 +1604,7 @@ export const aiChatPlugin: Plugin = {
         const apiMessages = buildApiMessages(systemPrompt, job.contextSummary, history, apiCurrentMessage, searchInfo, knowledgeInfo);
 
         // ===== 调用 AI =====
-        const canUseReplyCache = !job.forced && !job.hasImages && !searchInfo && !!job.effectiveText && (config.ai_reply_cache_seconds ?? 180) > 0;
+        const canUseReplyCache = !job.forced && !job.hasImages && !job.hasRecords && !searchInfo && !!job.effectiveText && (config.ai_reply_cache_seconds ?? 180) > 0;
         const replyCacheKey = canUseReplyCache ? makeReplyCacheKey(config, job.effectiveText, knowledgeInfo) : '';
         let cleaned = replyCacheKey ? getCachedReply(replyCacheKey) : null;
         if (!cleaned) {
@@ -1566,7 +1617,13 @@ export const aiChatPlugin: Plugin = {
           }
         }
 
-        if (!cleaned) return;
+        if (!cleaned) {
+          if (job.forced) {
+            cleaned = forcedFallbackReply(job, recordTranscripts);
+          } else {
+            return;
+          }
+        }
 
         // 追加AI回复
         cm.appendMessage(job.sessionId, { role: 'assistant', content: cleaned });
@@ -1589,7 +1646,7 @@ export const aiChatPlugin: Plugin = {
         }
 
         if (!sentVoice) {
-          if (useQuote && cleaned.length <= 200) {
+          if (useQuote) {
             ctx.replyQuoteTo(job.messageId, job.userId, cleaned);
           } else {
             ctx.reply(cleaned);

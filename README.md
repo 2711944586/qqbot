@@ -8,13 +8,14 @@
 
 - @/回复/命令强触发必回，优先引用原消息，引用失败回退 @ 用户。
 - 每条 AI 回复绑定消息级快照：群号、用户、消息 ID、原文、图片、上下文、触发原因。
-- 同群 FIFO 排队，跨群并发；2G1C 推荐全局 AI/搜索/识图/TTS 闸门 `2/3/1/1`。
-- 队列积压时自动降级：强触发超过 60 秒跳过 TTS，超过 120 秒跳过搜索/识图，只保底文本回复。
+- 同群 FIFO 排队，跨群并发；2G1C 推荐全局 AI/搜索/识图/听写/TTS 闸门 `2/3/1/1/1`。
+- 队列积压时自动降级：强触发超过 60 秒跳过 TTS，超过 120 秒跳过搜索/识图/听写，只保底文本回复。
 - Markdown 知识库：`knowledge/wanjier.md` 提供直播语态、口癖、CS2 解说、选手/队伍倾向、礼物拟态、拒绝边界。
 - 知识库自动刷新：`/kb refresh`、`/kb refresh --aggressive`、`/kb batches`、`/kb rollback`。
 - 联网搜索：DuckDuckGo Instant、DuckDuckGo HTML、Bing RSS 兜底，带 single-flight、正/负缓存和磁盘缓存。
 - 上下文记忆：每群持久化到 `context_store/`，旧消息异步压缩，不阻塞回复。
 - 图片识别缓存：图片下载后缓存到 `image_cache/`，减少重复识图成本。
+- STT 语音听写缓存：语音输入缓存到 `stt_cache/`，供应商支持音频输入时可把 QQ 语音转成当前消息文本。
 - TTS 语音缓存：语音输出缓存到 `voice_cache/`，有授权样本时尝试声音克隆，支持 `/voice status` 自检。
 - `/status` 和 `/diag` 提供队列、缓存、知识库、并发、内存和配置状态。
 
@@ -28,12 +29,13 @@ src/
   config.ts                config.json 解析、默认值和字段归一化
   types.ts                 OneBot 和配置类型
   plugins/
-    ai-chat.ts             核心 AI、队列、上下文、知识注入、搜索、识图、TTS
+    ai-chat.ts             核心 AI、队列、上下文、知识注入、搜索、识图、STT、TTS
     knowledge-base.ts      Markdown 知识库、候选、隔离、自动写入、回滚、审计
     web-search.ts          联网搜索、single-flight、正/负缓存
     concurrency.ts         全局并发闸门
     context-store.ts       上下文持久化
     image-cache.ts         图片缓存
+    stt.ts                 语音输入听写和缓存
     tts.ts                 语音生成和缓存
     diag.ts                严格自检
     status.ts              运行状态
@@ -360,12 +362,13 @@ nano config.json
   "ai": {
     "enable_search": false,
     "enable_vision": false,
+    "enable_stt": false,
     "enable_tts": false
   }
 }
 ```
 
-等 `/ping`、`/whoami`、`@bot` 都正常后，再开启搜索、识图、语音。
+等 `/ping`、`/whoami`、`@bot` 都正常后，再开启搜索、识图、语音听写和语音输出。
 
 ### 4. 首次上线检查
 
@@ -385,7 +388,7 @@ nano config.json
 - `/whoami` 的 `当前bot号` 等于 NapCat 登录号。
 - `/diag` 没有 AI 接口、知识库、配置硬伤。
 - `/status` 里队列没有长期堆积。
-- `/voice status` 显示 `TTS: on`；如果放了样本，克隆应为 `ready`。
+- `/voice status` 显示 `STT: on`、`TTS: on`；如果放了样本，克隆应为 `ready`。
 - `/kb stats` 能看到知识库块数和字数。
 
 如果 `/ping` 不回，不要继续测 AI。`/ping` 是本地命令，不需要 API，不需要知识库，不需要联网。`/ping` 不回只可能是消息没有进 bot、bot 没连上 NapCat、群白名单拦截、进程没启动或 QQ 没登录。
@@ -547,7 +550,8 @@ AI 核心字段：
 | `ai_global_concurrency` | `2` | 全局 AI 并发 |
 | `search_global_concurrency` | `3` | 全局搜索并发 |
 | `vision_global_concurrency` | `1` | 全局识图并发 |
-| `tts_global_concurrency` | `1` | 全局语音并发 |
+| `stt_global_concurrency` | `1` | 全局语音输入听写并发 |
+| `tts_global_concurrency` | `1` | 全局语音输出并发 |
 | `forced_reply_quote` | `true` | 强触发引用原消息 |
 | `must_reply_quote` | `true` | @/回复 bot 优先引用 |
 
@@ -560,6 +564,12 @@ AI 核心字段：
 | `image_cache_max_mb` | `512` | 图片缓存上限，70GB 存储推荐值 |
 | `image_cache_max_file_mb` | `2` | 单图下载最大大小 |
 | `image_cache_max_age_hours` | `72` | 图片缓存过期时间 |
+| `enable_stt` | `true` | 开启 QQ 语音输入听写 |
+| `stt_model` | 按供应商填写 | 支持音频输入/听写的模型 |
+| `stt_max_records` | `1` | 单条消息最多听写几段语音 |
+| `stt_max_file_mb` | `4` | 单段语音下载最大大小 |
+| `stt_timeout_ms` | `20000` | 听写 API 超时 |
+| `stt_cache_hours` | `24` | 听写文本缓存保留时间 |
 | `enable_tts` | `true` | 开启语音命令和随机语音 |
 | `tts_model` | `mimo-v2.5-tts` | 普通 TTS 模型 |
 | `tts_clone_model` | `mimo-v2.5-tts-voiceclone` | 克隆 TTS 模型 |
@@ -608,6 +618,12 @@ ffmpeg -i input.wav -vn -ac 1 -ar 24000 -b:a 96k voice_sample.mp3
 ```json
 {
   "ai": {
+    "enable_stt": true,
+    "stt_model": "你的音频输入模型",
+    "stt_max_records": 1,
+    "stt_max_file_mb": 4,
+    "stt_timeout_ms": 20000,
+    "stt_cache_hours": 24,
     "enable_tts": true,
     "tts_model": "mimo-v2.5-tts",
     "tts_clone_model": "mimo-v2.5-tts-voiceclone",
@@ -635,7 +651,39 @@ ffmpeg -i input.wav -vn -ac 1 -ar 24000 -b:a 96k voice_sample.mp3
 pm2 restart wanjier
 ```
 
-### 3. 测试语音链路
+### 3. 语音输入听写
+
+语音输入是“收到 QQ 语音后先尝试听写，再把听写结果塞进当前消息快照”。它只影响理解语音内容，不影响强触发必回。
+
+注意点：
+
+- `enable_stt=true` 后才会听写语音。
+- `stt_model` 必须填写供应商支持音频输入或听写的模型。
+- QQ 语音常见是 `amr` 或 `silk`。如果服务器安装了 `ffmpeg`，bot 会尝试转成 mp3 再听写。
+- 如果供应商不支持当前音频请求格式，`@` 仍会引用原消息回复，只是不会假装听懂语音内容。
+- 2G1C 推荐 `stt_global_concurrency=1`、`stt_max_records=1`，避免多人同时发语音把队列堵死。
+
+安装转码工具：
+
+```bash
+apt install -y ffmpeg
+```
+
+测试方式：
+
+```text
+/voice status
+@bot 然后发一条语音
+```
+
+`/voice status` 里看：
+
+- `STT: on`：语音听写开了。
+- `听写模型`：当前用于听写的模型。
+- `听写缓存`：缓存命中、下载失败、空转写统计。
+- `听写最近错误`：供应商格式不兼容、下载失败、超时等都会显示在这里。
+
+### 4. 测试语音输出链路
 
 群里发送：
 
@@ -652,7 +700,7 @@ pm2 restart wanjier
 - `克隆: missing`：样本缺失、太小、太大或路径错误，会降级普通 TTS。
 - `最近错误`：最近一次 API、网络、解析或长度错误。
 
-### 4. 常见语音问题
+### 5. 常见语音问题
 
 - `sample missing`：检查 `tts_sample_path`，相对路径从项目根目录算。
 - `sample too small`：样本小于 1KB，通常是空文件或复制失败。
@@ -661,14 +709,17 @@ pm2 restart wanjier
 - `HTTP 401/403`：API key 或供应商权限不对。
 - `empty audio response`：模型不支持当前 TTS 请求格式。
 - QQ 不显示语音：确认 OneBot/NapCat 支持本地 `file://` 语音发送，查看 PM2 日志。
+- `听写 HTTP 400/422`：多数是供应商不支持当前音频输入格式，换 `stt_model` 或关闭 `enable_stt`。
+- `download too large`：语音超过 `stt_max_file_mb`。
+- `empty transcript`：模型没听出来或接口返回格式不是当前兼容格式。
 
-### 5. 语音使用建议
+### 6. 语音使用建议
 
 - 强触发默认优先文字引用，保证回复定位准确。
 - 随机语音只用于普通主动接话，避免多人 @ 时语音串台。
 - 语音适合短句：一句吐槽、一句礼物感谢、一句测试。
 - 长复盘、搜索结果、配置教程不要发语音。
-- 2G1C 推荐 `tts_global_concurrency=1`，`tts_probability=0.05-0.10`；群很多时宁愿降到 `0.03`。
+- 2G1C 推荐 `stt_global_concurrency=1`、`tts_global_concurrency=1`，`tts_probability=0.05-0.10`；群很多时宁愿降到 `0.03`。
 
 ## 命令列表
 
@@ -893,7 +944,8 @@ knowledge/inbox/
 
 - 搜索缓存：`search_cache/search-cache.json`
 - 图片缓存：`image_cache/`
-- 语音缓存：`voice_cache/`
+- 语音听写缓存：`stt_cache/`
+- 语音输出缓存：`voice_cache/`
 - 上下文：`context_store/`
 - 知识库自动日志：`knowledge/auto-log.jsonl`
 - 知识库来源刷新状态：`knowledge/source-state.json`
@@ -917,6 +969,13 @@ knowledge/inbox/
     "image_cache_max_mb": 512,
     "image_cache_max_file_mb": 2,
     "image_cache_max_age_hours": 72,
+    "enable_stt": true,
+    "stt_model": "你的音频输入模型",
+    "stt_max_records": 1,
+    "stt_max_file_mb": 4,
+    "stt_timeout_ms": 20000,
+    "stt_cache_hours": 24,
+    "enable_tts": true,
     "tts_probability": 0.10,
     "tts_max_chars": 120,
     "tts_cache_hours": 24,
@@ -924,6 +983,7 @@ knowledge/inbox/
     "ai_global_concurrency": 2,
     "search_global_concurrency": 3,
     "vision_global_concurrency": 1,
+    "stt_global_concurrency": 1,
     "tts_global_concurrency": 1,
     "knowledge_auto_batch_max_sources": 6,
     "knowledge_manual_batch_max_sources": 10
@@ -936,10 +996,11 @@ knowledge/inbox/
 1. 降低 `context_send_messages` 到 20。
 2. 降低 `knowledge_max_chars` 到 1400。
 3. 设置 `vision_max_images` 为 1。
-4. 降低 `tts_probability` 到 `0.03` 或直接 `0`。
-5. 设置 `trigger_probability` 到 `0.05`。
-6. 把 `search_global_concurrency` 降到 2。
-7. 查看 `/status` 里的队列和闸门是否长期堆积。
+4. 把 `enable_stt` 临时关掉，或把 `stt_max_records` 固定为 1。
+5. 降低 `tts_probability` 到 `0.03` 或直接 `0`。
+6. 设置 `trigger_probability` 到 `0.05`。
+7. 把 `search_global_concurrency` 降到 2。
+8. 查看 `/status` 里的队列和闸门是否长期堆积。
 
 ### 1G 降级档
 
@@ -952,12 +1013,14 @@ knowledge/inbox/
     "context_send_messages": 15,
     "knowledge_max_chars": 1000,
     "search_timeout_ms": 800,
+    "enable_stt": false,
     "vision_max_images": 1,
     "tts_probability": 0,
     "max_group_queue": 3,
     "ai_global_concurrency": 1,
     "search_global_concurrency": 2,
     "vision_global_concurrency": 1,
+    "stt_global_concurrency": 1,
     "tts_global_concurrency": 1,
     "knowledge_auto_batch_max_sources": 3,
     "knowledge_manual_batch_max_sources": 6
@@ -980,7 +1043,7 @@ npm run smoke
 - 知识库加载和审计。
 - 自动写入、批次日志、rollback。
 - 来源刷新状态：刚刷过的来源跳过，过期/未刷来源进入下一批，并验证 batch limit。
-- 全局并发闸门。
+- 全局并发闸门，包括 AI、搜索、识图、语音听写和语音输出。
 - 搜索 single-flight。
 - 消息级回复定位：连续三条不同用户 @ 必须分别引用对应 `message_id`。
 - 回复 bot 旧消息：通过 OneBot `get_msg` 兜底识别，并引用当前触发消息回复。
@@ -990,6 +1053,7 @@ npm run smoke
 
 - 真实 NapCat/QQ 网络下的 `reply` 段兼容性。
 - 5 个以上活跃群同时 @ 时的供应商 API 限速表现。
+- STT 供应商是否兼容 `input_audio` 或 `audio_url` 请求格式；不兼容时强触发仍会文本兜底。
 - TTS 供应商返回格式变化后的语音可播放性。
 - 公开搜索结果质量；实时比赛/转会仍以 `/diag live` 和来源链接为准。
 

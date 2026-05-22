@@ -102,6 +102,8 @@ export interface AIConfig {
   vision_global_concurrency?: number;
   /** 全局TTS并发 */
   tts_global_concurrency?: number;
+  /** 全局语音听写并发 */
+  stt_global_concurrency?: number;
   /** 是否强制引用强触发消息 */
   forced_reply_quote?: boolean;
   /** @或回复bot时是否优先引用回复 */
@@ -118,6 +120,18 @@ export interface AIConfig {
   image_cache_max_age_hours?: number;
   /** 是否启用TTS语音回复 */
   enable_tts: boolean;
+  /** 是否启用语音输入听写 */
+  enable_stt?: boolean;
+  /** 语音听写模型 */
+  stt_model?: string;
+  /** 单次最多听写语音条数 */
+  stt_max_records?: number;
+  /** 单条语音下载最大MB */
+  stt_max_file_mb?: number;
+  /** 语音听写请求超时毫秒 */
+  stt_timeout_ms?: number;
+  /** 语音听写缓存小时数 */
+  stt_cache_hours?: number;
   /** 普通TTS模型 */
   tts_model?: string;
   /** 克隆TTS模型 */
