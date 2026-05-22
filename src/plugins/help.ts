@@ -34,6 +34,7 @@ export const helpPlugin: Plugin = {
         '  /roll [N|NdM] - 骰子',
         '  /luck - 运势',
         '  /jrrp - 今日人品',
+        '  /csplayer - 每日CS选手',
         '  /choose A,B,C - 帮选',
         '  /rand [min] [max] - 随机数',
         '',

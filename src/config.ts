@@ -20,7 +20,7 @@ const DEFAULT_AI_CONFIG: AIConfig = {
   temperature: 0.8,
   trigger_mode: 'command',
   trigger_keywords: [],
-  trigger_probability: 0,
+  trigger_probability: 0.12,
   passive_random_min_chars: 4,
   passive_random_allow_numeric: false,
   poke_reply_probability: 1,
@@ -36,10 +36,10 @@ const DEFAULT_AI_CONFIG: AIConfig = {
   search_cache_max_entries: 1000,
   ai_reply_cache_seconds: 180,
   enable_knowledge: true,
-  knowledge_max_chars: 2200,
+  knowledge_max_chars: 2600,
   related_reply_probability: 0.65,
   persona_mode: 'first_person_bot',
-  aggression_level: 'medium',
+  aggression_level: 'low',
   knowledge_update_mode: 'reviewed_command',
   knowledge_auto_update: true,
   knowledge_auto_interval_minutes: 180,
@@ -167,7 +167,7 @@ function normalizeAiConfig(value: unknown): AIConfig {
   const validTriggerModes = new Set(['command', 'at', 'all', 'smart']);
   const personaMode = asString(raw.persona_mode, DEFAULT_AI_CONFIG.persona_mode || 'first_person_bot');
   const validPersonaModes = new Set(['first_person_bot', 'style_bot', 'assistant']);
-  const aggressionLevel = asString(raw.aggression_level, DEFAULT_AI_CONFIG.aggression_level || 'medium');
+  const aggressionLevel = asString(raw.aggression_level, DEFAULT_AI_CONFIG.aggression_level || 'low');
   const validAggressionLevels = new Set(['low', 'medium', 'analysis']);
   const knowledgeUpdateMode = asString(raw.knowledge_update_mode, DEFAULT_AI_CONFIG.knowledge_update_mode || 'reviewed_command');
   const validKnowledgeUpdateModes = new Set(['reviewed_command', 'static']);
@@ -205,7 +205,7 @@ function normalizeAiConfig(value: unknown): AIConfig {
     knowledge_max_chars: Math.floor(asNumber(raw.knowledge_max_chars, DEFAULT_AI_CONFIG.knowledge_max_chars || 2200, 0, 6000)),
     related_reply_probability: asNumber(raw.related_reply_probability, DEFAULT_AI_CONFIG.related_reply_probability || 0.65, 0, 1),
     persona_mode: validPersonaModes.has(personaMode) ? personaMode as AIConfig['persona_mode'] : 'first_person_bot',
-    aggression_level: validAggressionLevels.has(aggressionLevel) ? aggressionLevel as AIConfig['aggression_level'] : 'medium',
+    aggression_level: validAggressionLevels.has(aggressionLevel) ? aggressionLevel as AIConfig['aggression_level'] : 'low',
     knowledge_update_mode: validKnowledgeUpdateModes.has(knowledgeUpdateMode) ? knowledgeUpdateMode as AIConfig['knowledge_update_mode'] : 'reviewed_command',
     knowledge_auto_update: asBoolean(raw.knowledge_auto_update, DEFAULT_AI_CONFIG.knowledge_auto_update || true),
     knowledge_auto_interval_minutes: Math.floor(asNumber(raw.knowledge_auto_interval_minutes, DEFAULT_AI_CONFIG.knowledge_auto_interval_minutes || 180, 30, 1440)),

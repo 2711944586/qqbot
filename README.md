@@ -12,6 +12,7 @@
 - 队列积压时自动降级：强触发超过 60 秒跳过 TTS，超过 120 秒跳过搜索/识图/听写，只保底文本回复。
 - 普通消息分层触发：关键词/知识话题直接接话，其他消息按概率接话，纯数字、单个“6”、纯表情和低信息短句不会主动刷屏。
 - 戳一戳会按配置概率回应；复读机保留群聊感，但不会抢 @/回复/关键词 AI 触发。
+- 趣味命令已玩机器化，新增 `/csplayer` 每日 CS 选手抽取，带公开图片链接和直播味短评。
 - Markdown 知识库：`knowledge/wanjier.md` 提供直播语态、口癖、CS2 解说、选手/队伍倾向、礼物拟态、拒绝边界。
 - 知识库自动刷新：`/kb refresh`、`/kb refresh --aggressive`、`/kb batches`、`/kb rollback`。
 - 联网搜索：DuckDuckGo Instant、DuckDuckGo HTML、Bing RSS 兜底，带 single-flight、正/负缓存和磁盘缓存。
@@ -41,7 +42,7 @@ src/
     tts.ts                 语音生成和缓存
     diag.ts                严格自检
     status.ts              运行状态
-    fun.ts                 roll/luck/jrrp/choose/rand
+    fun.ts                 roll/luck/jrrp/choose/rand/csplayer
     admin.ts               reload/ban/unban/kick/title
     help.ts ping.ts stats.ts time.ts poke.ts recall.ts repeater.ts welcome.ts
 knowledge/
@@ -508,7 +509,7 @@ AI 核心字段：
 |---|---:|---|
 | `trigger_mode` | `smart` | @/回复/命令必回，普通消息智能触发 |
 | `trigger_keywords` | 见示例 | smart 模式关键词 |
-| `trigger_probability` | `0.05-0.10` | 非关键词、非低信息普通消息随机接话概率 |
+| `trigger_probability` | `0.08-0.12` | 非关键词、非低信息普通消息随机接话概率，示例默认 `0.12` |
 | `passive_random_min_chars` | `4` | 普通随机接话最短文本长度，过滤“6”等短消息 |
 | `passive_random_allow_numeric` | `false` | 普通随机接话是否允许纯数字消息 |
 | `related_reply_probability` | `0.75` | 兼容字段；当前关键词/知识话题默认直接触发 |
@@ -535,7 +536,7 @@ AI 核心字段：
 | 字段 | 推荐值 | 说明 |
 |---|---:|---|
 | `enable_knowledge` | `true` | 是否注入 `knowledge/wanjier.md` |
-| `knowledge_max_chars` | `2200` | 2G1C 推荐单次注入最大字符数 |
+| `knowledge_max_chars` | `2600` | 2G1C 推荐单次注入最大字符数 |
 | `knowledge_update_mode` | `reviewed_command` | 允许管理员命令更新 |
 | `knowledge_auto_update` | `true` | 后台低频自动刷新 |
 | `knowledge_auto_interval_minutes` | `180` | 自动刷新间隔，最低 30 |
@@ -795,8 +796,17 @@ apt install -y ffmpeg
 | `/roll [N|NdM]` | 掷骰子，支持 `2d6` |
 | `/luck` | 今日运势 |
 | `/jrrp` | 今日人品 |
+| `/csplayer` | 每日 CS 选手，按 QQ 和日期固定抽取，带选手图和短评 |
+| `/今日选手` | `/csplayer` 中文别名 |
 | `/choose A,B,C` | 随机选择 |
 | `/rand [min] [max]` | 随机数 |
+
+每日 CS 选手说明：
+
+- 同一个群友同一天抽到同一名选手，第二天刷新。
+- 选手图使用公开 Liquipedia Commons / Wikimedia Commons 图片链接；图片链接失效时仍会发送文字结果。
+- 队伍字段写的是“队伍语境”，不是永久阵容。用户问“最新在哪队/最近状态”时应走 `/player 最新 <名字>` 或直接 @ 提问触发联网。
+- 输出走本地逻辑，不调用 AI，不影响 @ 必回队列。
 
 ## 知识库工作流
 
@@ -915,6 +925,15 @@ knowledge/inbox/
 - 不复制长视频转写、完整切片台词或平台内容大段文本。
 - 被问身份时必须说明自己是群 bot，不冒充现实主播本人。
 
+## 人格和活人感
+
+- 日常聊天按第一人称直播接弹幕，不主动声明“我是 bot”或“下面用玩机器风格”。
+- 只有被明确问身份、授权、本人关系、现实代表性时，才说明这是群里的风格 bot，不是现实主播本人。
+- 口癖不是固定模板。`不是哥们`、`可以的`、`先别急`、`这波有说法` 可以用，但不能连续机械复读。
+- 每次回复都会优先检索知识库里的“直播语态、非公式化口癖、选手/队伍倾向、场景模板”，再把当前消息发给模型。
+- 普通闲聊短，CS2/赛事/选手话题才展开；攻击性默认 `low`，嘴硬但不追着人咬。
+- 括号舞台说明会被后处理清掉，例如“（直播口吻）”“【玩机器风格】”这类不会发到群里。
+
 ## 运行机制
 
 ### 回复定位
@@ -928,10 +947,13 @@ knowledge/inbox/
 - rawText
 - effectiveText
 - imageUrls
+- recordUrls
 - contextSnapshot
 - triggerReason
 
 模型提示中会显式写入“当前要回复的是谁、哪条消息、触发类型”。强触发默认引用原消息回复，避免回错人。
+
+上下文存储会带上 `mid` 和 `uid`，例如 `[mid=123 uid=456] 张三: ...`。模型能看到最近说话人，但硬规则仍是只回答当前 `message_id` 的这条消息。
 
 回复 bot 的旧消息时，系统先用内存追踪 bot 发出的消息 ID；如果进程重启导致追踪丢失，会用 OneBot `get_msg` 短超时兜底检查原消息发送者，尽量避免“明明回复了 bot 但没有触发”。
 
@@ -968,7 +990,7 @@ knowledge/inbox/
   "ai": {
     "max_context_messages": 50,
     "context_send_messages": 30,
-    "knowledge_max_chars": 2200,
+    "knowledge_max_chars": 2600,
     "search_timeout_ms": 1200,
     "api_timeout_ms": 15000,
     "search_cache_max_entries": 1000,
@@ -987,7 +1009,8 @@ knowledge/inbox/
     "tts_probability": 0.10,
     "tts_max_chars": 120,
     "tts_cache_hours": 24,
-    "trigger_probability": 0.08,
+    "trigger_probability": 0.12,
+    "aggression_level": "low",
     "passive_random_min_chars": 4,
     "passive_random_allow_numeric": false,
     "poke_reply_probability": 1,

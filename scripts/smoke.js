@@ -10,9 +10,15 @@ const tts = require('../dist/plugins/tts');
 const aiChat = require('../dist/plugins/ai-chat');
 const { registerPokeListener } = require('../dist/plugins/poke');
 const { repeaterPlugin } = require('../dist/plugins/repeater');
+const { funPlugin, __test: funTest } = require('../dist/plugins/fun');
 const { MessageHandler } = require('../dist/handler');
 
 const SOURCE_STATE_PATH = path.resolve(__dirname, '..', 'knowledge', 'source-state.json');
+
+function firstText(message) {
+  if (typeof message === 'string') return message;
+  return message.find((seg) => seg.type === 'text')?.data.text;
+}
 
 function readConfig() {
   return normalizeConfig(JSON.parse(fs.readFileSync(path.resolve(__dirname, '..', 'config.example.json'), 'utf-8')));
@@ -34,9 +40,11 @@ async function withPreservedFile(filepath, fn) {
 
 async function testConfig() {
   const config = readConfig();
-  assert.strictEqual(config.ai.trigger_probability, 0.08);
+  assert.strictEqual(config.ai.trigger_probability, 0.12);
   assert.strictEqual(config.ai.passive_random_min_chars, 4);
   assert.strictEqual(config.ai.passive_random_allow_numeric, false);
+  assert.strictEqual(config.ai.knowledge_max_chars, 2600);
+  assert.strictEqual(config.ai.aggression_level, 'low');
   assert.strictEqual(config.ai.poke_reply_probability, 1);
   assert.strictEqual(config.ai.ai_global_concurrency, 3);
   assert.strictEqual(config.ai.search_global_concurrency, 3);
@@ -400,7 +408,7 @@ async function testPassiveTriggerFiltering() {
     handler.handleEvent(makePlainEvent(402, 42, '今天CS2这队伍怎么打'));
     await waitFor(() => sent.length === 1, 'keyword passive reply');
     assert.strictEqual(
-      sent[0].message.find((seg) => seg.type === 'text')?.data.text,
+      firstText(sent[0].message),
       'passive-402',
       'keyword ordinary messages should trigger AI without @',
     );
@@ -458,6 +466,35 @@ async function testRepeaterAndPoke() {
   handler.handleEvent(makePlainEvent(506, 56, '6'));
   await new Promise((resolve) => setTimeout(resolve, 100));
   assert.strictEqual(sent.length, beforeUnsafe, 'repeater should not repeat low-information numeric text');
+}
+
+async function testFunCsPlayer() {
+  const config = makeConfigForHandler();
+  const sent = [];
+  const bot = {
+    getConfig: () => config,
+    sendGroupMessage: async (groupId, message, onMessageId) => {
+      sent.push({ groupId, message });
+      if (onMessageId) onMessageId(50_000 + sent.length);
+      return true;
+    },
+    callApiAsync: async () => ({ retcode: 0, data: {} }),
+  };
+  const handler = new MessageHandler(bot);
+  handler.use(funPlugin);
+
+  const player = funTest.dailyPlayerFor(61);
+  assert.ok(funTest.csPlayers.every((item) => item.image), 'all daily CS players should have image URLs');
+  const directMessage = funTest.buildCsPlayerMessage(61, player);
+  assert.ok(directMessage.some((seg) => seg.type === 'at'), 'daily player direct builder should at the user');
+  assert.ok(directMessage.some((seg) => seg.type === 'text' && seg.data.text.includes(player.nick)), 'daily player text should include nick');
+
+  handler.handleEvent(makePlainEvent(601, 61, '/csplayer'));
+  await waitFor(() => sent.length === 1, 'csplayer command');
+  assert.strictEqual(sent[0].message[0]?.type, 'at', 'csplayer should at the drawer');
+  const text = sent[0].message.find((seg) => seg.type === 'text')?.data.text || '';
+  assert.ok(text.includes('今日CS选手'), 'csplayer reply should include title');
+  assert.ok(text.includes('昵称：'), 'csplayer reply should include nick label');
 }
 
 async function testCrossGroupAiConcurrency() {
@@ -518,6 +555,7 @@ async function main() {
   await testMessageReplyTargeting();
   await testPassiveTriggerFiltering();
   await testRepeaterAndPoke();
+  await testFunCsPlayer();
   await testCrossGroupAiConcurrency();
   console.log('smoke ok');
 }

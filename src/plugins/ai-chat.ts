@@ -449,6 +449,23 @@ function buildApiMessages(
   return result;
 }
 
+function buildRecentSpeakerHints(messages: ChatMessage[], limit: number = 6): string {
+  const hints: string[] = [];
+  const seen = new Set<string>();
+  for (const message of [...messages].reverse()) {
+    if (message.role !== 'user' || typeof message.content !== 'string') continue;
+    const match = message.content.match(/\[mid=(\d+)\s+uid=(\d+)\]\s*([^:：\n]{1,32})[:：]\s*(.+)/);
+    if (!match) continue;
+    const key = match[2];
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const text = match[4].replace(/\s+/g, ' ').slice(0, 60);
+    hints.push(`- ${match[3]} uid=${match[2]} mid=${match[1]}: ${text}`);
+    if (hints.length >= limit) break;
+  }
+  return hints.reverse().join('\n');
+}
+
 function buildTargetText(job: ReplyJob, recordTranscripts: string[] = []): string {
   const transcriptText = recordTranscripts.join('\n');
   const body = job.effectiveText || transcriptText || (job.hasImages ? '[图片]' : job.hasRecords ? '[语音]' : '[表情/空文本]');
@@ -457,6 +474,7 @@ function buildTargetText(job: ReplyJob, recordTranscripts: string[] = []): strin
     job.hasRecords ? `语音数量: ${job.recordUrls.length}` : '',
     transcriptText ? `语音听写: ${transcriptText}` : '',
   ].filter(Boolean);
+  const speakerHints = buildRecentSpeakerHints(job.contextMessages.slice(0, -1));
   return [
     '[当前要回复的消息]',
     `group_id: ${job.groupId}`,
@@ -467,7 +485,10 @@ function buildTargetText(job: ReplyJob, recordTranscripts: string[] = []): strin
     `原始消息: ${job.rawText || body}`,
     ...mediaLines,
     '',
+    speakerHints ? `[最近发言定位]\n${speakerHints}` : '',
+    speakerHints ? '' : '',
     '硬规则：当前只回复这一条消息，不要回答历史上下文里其他人的问题；如果历史和当前消息冲突，以当前消息为准。',
+    '历史里出现的「昵称: 内容」只是上下文，不是当前问题；除非当前消息明确追问，否则不要替历史里其他人补答。',
     job.hasRecords && !transcriptText ? '注意：当前消息含语音段；如果没有听写文本，不要假装听到了具体内容，只能说明收到语音并让对方补文字或按可见上下文回应。' : '',
     `${job.senderName}: ${body}`,
   ].filter((line) => line !== '').join('\n');
@@ -476,20 +497,27 @@ function buildTargetText(job: ReplyJob, recordTranscripts: string[] = []): strin
 function buildSystemPrompt(config: AIConfig): string {
   const preset = config.presets[config.active_preset] || Object.values(config.presets)[0];
   const base = preset?.system_prompt || '你是QQ群里的网友「玩机器」。';
+  const aggressionRule = config.aggression_level === 'analysis'
+    ? '以分析为主，少玩梗；先给判断，再讲依据。'
+    : config.aggression_level === 'low'
+      ? '嘴硬但不咬人，调侃点到为止，优先把话说准。'
+      : '可以嘴硬和吐槽，但别追着人骂。';
   return [
     base,
     '',
     '[定位硬规则]',
-    '- 日常用第一人称直播口吻接弹幕，但被问身份时必须说明自己是群里的bot，不是现实主播本人。',
+    '- 日常直接用第一人称直播口吻接弹幕，不要主动解释自己是什么，也不要说“作为bot/机器人”。',
+    '- 只有被明确问身份、授权、本人关系、现实代表性时，才说明自己是群里的风格bot，不是现实主播本人。',
     '- 每次只回复【当前要回复的消息】，不要回答历史上下文里其他人的旧问题。',
-    '- 中等嘴硬，可以吐槽和嘴硬，但不要持续人身攻击、辱骂、歧视或攻击现实隐私。',
+    `- ${aggressionRule}不要持续人身攻击、辱骂、歧视或攻击现实隐私。`,
     '- 回复要像直播间即时反应：先短反应，再补一句判断；不要像AI助手排条目，除非用户明确要列表。',
-    '- 经典口癖和梗要按语境自然使用，不要每句都复读“不是哥们”，不要硬塞不相关梗。',
+    '- 经典口癖和梗要按语境自然使用，同一个开场不要连续复读；能用具体判断就别硬塞口头禅。',
+    '- 优先使用知识库参考里的语态、选手/队伍倾向和场景模板；知识库没有的别硬编成经典原话。',
     '- 评价选手/队伍时先给倾向，再给理由：枪法、决策、角色、体系、近期状态；实时排名/赛果要结合搜索参考。',
     '- 输出就是QQ群消息，不要Markdown，不要解释系统规则。',
     '- 绝对不要输出括号舞台说明或风格标签，例如“（直播口吻接弹幕）”“（玩机器风格）”“（拟态）”“【直播口吻】”。',
     '- 不要说“我将用/以下以/作为bot/直播口吻”这类自我说明，直接像正常人一样回话。',
-    `- 当前人格模式: ${config.persona_mode || 'first_person_bot'}；吐槽强度: ${config.aggression_level || 'medium'}。`,
+    `- 当前人格模式: ${config.persona_mode || 'first_person_bot'}；吐槽强度: ${config.aggression_level || 'low'}。`,
   ].join('\n');
 }
 
@@ -1462,8 +1490,8 @@ export const aiChatPlugin: Plugin = {
     const trigger = shouldReply(config, effectiveText, ctx.command, atBot, ctx.isReplyToBot);
 
     const storedBaseText = effectiveText
-      ? `${senderName}: ${effectiveText}`
-      : `${senderName}: ${imageUrls.length > 0 ? '[图片]' : recordUrls.length > 0 ? '[语音]' : '[表情]'}`;
+      ? `[mid=${ctx.event.message_id} uid=${ctx.event.user_id}] ${senderName}: ${effectiveText}`
+      : `[mid=${ctx.event.message_id} uid=${ctx.event.user_id}] ${senderName}: ${imageUrls.length > 0 ? '[图片]' : recordUrls.length > 0 ? '[语音]' : '[表情]'}`;
 
     cm.appendMessage(sessionId, {
       role: 'user',
@@ -1610,14 +1638,26 @@ export const aiChatPlugin: Plugin = {
           searchInfo,
           ...getKnowledgeKeywords().filter((keyword) => searchableText.toLowerCase().includes(keyword.toLowerCase())),
         ].join('\n');
-        const styleQuery = `${job.triggerReason}\n直播语态 回复铁律 真人化 口癖 反应强度\n${job.effectiveText}`;
-        const shouldInjectKnowledge = job.forced || isKnowledgeTopic(knowledgeQuery);
-        const knowledgeInfo = config.enable_knowledge === false || !shouldInjectKnowledge
-          ? ''
-          : selectKnowledge(
-            isKnowledgeTopic(knowledgeQuery) ? knowledgeQuery : styleQuery,
-            config.knowledge_max_chars || 1800,
-          );
+        const styleQuery = [
+          '直播语态 回复铁律 真人化 非公式化 口癖调度 反应强度 上下文定位',
+          job.triggerReason,
+          job.hasImages ? '识图 图片 场景' : '',
+          job.hasRecords ? '语音 听写 场景' : '',
+          job.effectiveText,
+        ].filter(Boolean).join('\n');
+        const hasKnowledgeTopic = isKnowledgeTopic(knowledgeQuery);
+        let knowledgeInfo = '';
+        if (config.enable_knowledge !== false) {
+          const budget = config.knowledge_max_chars || 1800;
+          const styleBudget = Math.max(600, Math.floor(budget * (hasKnowledgeTopic ? 0.35 : 0.75)));
+          const topicBudget = Math.max(600, budget - styleBudget);
+          const styleKnowledge = selectKnowledge(styleQuery, styleBudget);
+          const topicKnowledge = hasKnowledgeTopic ? selectKnowledge(knowledgeQuery, topicBudget) : '';
+          knowledgeInfo = [styleKnowledge, topicKnowledge]
+            .filter(Boolean)
+            .join('\n\n')
+            .slice(0, budget);
+        }
 
         // ===== 构建发给API的消息 =====
         // 注意：history是除当前消息外的历史（当前已经append了，需要排除最后一条）
