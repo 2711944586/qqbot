@@ -865,7 +865,7 @@ export function auditKnowledge(): KnowledgeAuditReport {
     if (/原话|经典语录|礼物/.test(section.title) && !/来源|证据|拟态|候选|规则/.test(section.content)) {
       issues.push({
         level: 'hard',
-        title: `高风险分区缺少来源: ${section.title}`,
+        title: `需核验分区缺少来源: ${section.title}`,
         detail: '原话、经典语录、礼物相关内容必须标注来源或明确为拟态模板。',
       });
     }

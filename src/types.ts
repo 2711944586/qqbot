@@ -38,6 +38,12 @@ export interface AIConfig {
   trigger_keywords: string[];
   /** 随机触发概率 (0-1) */
   trigger_probability: number;
+  /** 普通随机接话最短文本长度，低于该长度不随机接话 */
+  passive_random_min_chars?: number;
+  /** 普通随机接话是否允许纯数字消息 */
+  passive_random_allow_numeric?: boolean;
+  /** 戳一戳回应概率，1为每次都回应 */
+  poke_reply_probability?: number;
   /** 冷却时间(秒)，防止刷屏 */
   cooldown_seconds: number;
   /** 上下文过期时间(分钟) */

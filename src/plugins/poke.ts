@@ -33,14 +33,20 @@ export function registerPokeListener(bot: Bot): void {
     const groupId = notice.group_id;
     if (!groupId) return;
 
-    // 不要每次都回（70%概率回应）
-    if (Math.random() > 0.7) return;
-
     const config = bot.getConfig();
     if (config.enabled_groups.length > 0 && !config.enabled_groups.includes(groupId)) return;
+    const probability = Math.max(0, Math.min(config.ai?.poke_reply_probability ?? 1, 1));
+    if (Math.random() > probability) return;
 
     const reply = pokeReplies[Math.floor(Math.random() * pokeReplies.length)];
-    bot.sendGroupMessage(groupId, reply);
+    const userId = (notice as any).user_id;
+    const message = userId
+      ? [
+        { type: 'at' as const, data: { qq: String(userId) } },
+        { type: 'text' as const, data: { text: ' ' + reply } },
+      ]
+      : reply;
+    bot.sendGroupMessage(groupId, message);
   });
 
   console.log('[Poke] 戳一戳回应已启用');

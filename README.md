@@ -8,8 +8,10 @@
 
 - @/回复/命令强触发必回，优先引用原消息，引用失败回退 @ 用户。
 - 每条 AI 回复绑定消息级快照：群号、用户、消息 ID、原文、图片、上下文、触发原因。
-- 同群 FIFO 排队，跨群并发；2G1C 推荐全局 AI/搜索/识图/听写/TTS 闸门 `2/3/1/1/1`。
+- 同群 FIFO 排队，跨群并发；2G1C 推荐全局 AI/搜索/识图/听写/TTS 闸门 `3/3/1/1/1`。
 - 队列积压时自动降级：强触发超过 60 秒跳过 TTS，超过 120 秒跳过搜索/识图/听写，只保底文本回复。
+- 普通消息分层触发：关键词/知识话题直接接话，其他消息按概率接话，纯数字、单个“6”、纯表情和低信息短句不会主动刷屏。
+- 戳一戳会按配置概率回应；复读机保留群聊感，但不会抢 @/回复/关键词 AI 触发。
 - Markdown 知识库：`knowledge/wanjier.md` 提供直播语态、口癖、CS2 解说、选手/队伍倾向、礼物拟态、拒绝边界。
 - 知识库自动刷新：`/kb refresh`、`/kb refresh --aggressive`、`/kb batches`、`/kb rollback`。
 - 联网搜索：DuckDuckGo Instant、DuckDuckGo HTML、Bing RSS 兜底，带 single-flight、正/负缓存和磁盘缓存。
@@ -506,9 +508,12 @@ AI 核心字段：
 |---|---:|---|
 | `trigger_mode` | `smart` | @/回复/命令必回，普通消息智能触发 |
 | `trigger_keywords` | 见示例 | smart 模式关键词 |
-| `trigger_probability` | `0.1-0.25` | 普通消息随机接话概率 |
-| `related_reply_probability` | `0.6-0.8` | CS2/玩机器相关话题主动接话概率 |
-| `cooldown_seconds` | `0-5` | 普通主动接话冷却，强触发不受限 |
+| `trigger_probability` | `0.05-0.10` | 非关键词、非低信息普通消息随机接话概率 |
+| `passive_random_min_chars` | `4` | 普通随机接话最短文本长度，过滤“6”等短消息 |
+| `passive_random_allow_numeric` | `false` | 普通随机接话是否允许纯数字消息 |
+| `related_reply_probability` | `0.75` | 兼容字段；当前关键词/知识话题默认直接触发 |
+| `poke_reply_probability` | `1` | 戳一戳回应概率 |
+| `cooldown_seconds` | `0-5` | 普通主动接话冷却，@/回复/命令不受限 |
 | `max_context_messages` | `50` | 2G1C 推荐每群上下文保存条数 |
 | `context_send_messages` | `30` | 每次发给模型的最近消息条数 |
 | `context_expire_minutes` | `120` | 会话过期时间 |
@@ -547,7 +552,7 @@ AI 核心字段：
 | 字段 | 推荐值 | 说明 |
 |---|---:|---|
 | `max_group_queue` | `5` | 同群普通主动接话队列上限，强触发不丢 |
-| `ai_global_concurrency` | `2` | 全局 AI 并发 |
+| `ai_global_concurrency` | `3` | 全局 AI 并发，2G1C 多群同时 @ 推荐值 |
 | `search_global_concurrency` | `3` | 全局搜索并发 |
 | `vision_global_concurrency` | `1` | 全局识图并发 |
 | `stt_global_concurrency` | `1` | 全局语音输入听写并发 |
@@ -933,10 +938,13 @@ knowledge/inbox/
 ### 队列和背压
 
 - 同群按消息顺序 FIFO。
-- 跨群可以并发。
+- 跨群可以并发，多群同时 @ 会同时进入全局 AI 闸门。
 - 全局 AI/搜索/识图/TTS 受闸门限制。
-- 强触发永远入队。
-- 普通主动接话在同群队列满时跳过。
+- @/回复/命令强触发永远入队，不受每分钟次数上限、普通冷却和普通队列上限影响。
+- 强触发在全局 AI 闸门中优先于普通主动接话；多个强触发之间保持到达顺序。
+- 普通主动接话在同群队列满时跳过，避免长期运行刷屏和堆积。
+- 关键词/知识话题普通消息会确定性触发；剩余普通消息才按 `trigger_probability` 抽样。
+- 低信息普通消息不会主动接话：纯数字、单个“6”、短“666/哈哈/草”、纯标点/表情会被过滤。
 - 强触发排队超过 60 秒跳过 TTS。
 - 强触发排队超过 120 秒跳过搜索/识图。
 
@@ -979,8 +987,12 @@ knowledge/inbox/
     "tts_probability": 0.10,
     "tts_max_chars": 120,
     "tts_cache_hours": 24,
+    "trigger_probability": 0.08,
+    "passive_random_min_chars": 4,
+    "passive_random_allow_numeric": false,
+    "poke_reply_probability": 1,
     "max_group_queue": 5,
-    "ai_global_concurrency": 2,
+    "ai_global_concurrency": 3,
     "search_global_concurrency": 3,
     "vision_global_concurrency": 1,
     "stt_global_concurrency": 1,
@@ -998,7 +1010,7 @@ knowledge/inbox/
 3. 设置 `vision_max_images` 为 1。
 4. 把 `enable_stt` 临时关掉，或把 `stt_max_records` 固定为 1。
 5. 降低 `tts_probability` 到 `0.03` 或直接 `0`。
-6. 设置 `trigger_probability` 到 `0.05`。
+6. 设置 `trigger_probability` 到 `0.05`，确认 `passive_random_allow_numeric=false`。
 7. 把 `search_global_concurrency` 降到 2。
 8. 查看 `/status` 里的队列和闸门是否长期堆积。
 

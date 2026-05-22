@@ -8,6 +8,8 @@ const { configureGates, getGateStats, withGate } = require('../dist/plugins/conc
 const search = require('../dist/plugins/web-search');
 const tts = require('../dist/plugins/tts');
 const aiChat = require('../dist/plugins/ai-chat');
+const { registerPokeListener } = require('../dist/plugins/poke');
+const { repeaterPlugin } = require('../dist/plugins/repeater');
 const { MessageHandler } = require('../dist/handler');
 
 const SOURCE_STATE_PATH = path.resolve(__dirname, '..', 'knowledge', 'source-state.json');
@@ -32,7 +34,11 @@ async function withPreservedFile(filepath, fn) {
 
 async function testConfig() {
   const config = readConfig();
-  assert.strictEqual(config.ai.ai_global_concurrency, 2);
+  assert.strictEqual(config.ai.trigger_probability, 0.08);
+  assert.strictEqual(config.ai.passive_random_min_chars, 4);
+  assert.strictEqual(config.ai.passive_random_allow_numeric, false);
+  assert.strictEqual(config.ai.poke_reply_probability, 1);
+  assert.strictEqual(config.ai.ai_global_concurrency, 3);
   assert.strictEqual(config.ai.search_global_concurrency, 3);
   assert.strictEqual(config.ai.vision_global_concurrency, 1);
   assert.strictEqual(config.ai.tts_global_concurrency, 1);
@@ -130,6 +136,22 @@ async function testGates() {
   })));
   assert.ok(maxActive <= 2, `gate exceeded limit: ${maxActive}`);
   assert.strictEqual(getGateStats().ai.active, 0);
+
+  configureGates({ ai: 1, search: 2, vision: 1, tts: 1, stt: 1 });
+  const order = [];
+  const blocker = withGate('ai', async () => {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    order.push('blocker');
+  });
+  await new Promise((resolve) => setTimeout(resolve, 1));
+  const passive = withGate('ai', async () => {
+    order.push('passive');
+  });
+  const forced = withGate('ai', async () => {
+    order.push('forced');
+  }, true);
+  await Promise.all([blocker, passive, forced]);
+  assert.deepStrictEqual(order, ['blocker', 'forced', 'passive'], 'priority gate jobs should run before queued passive jobs');
 }
 
 async function testSearchSingleFlight() {
@@ -176,6 +198,27 @@ function makeEvent(messageId, userId, text, extraSegments = [], groupId = 6657) 
       { type: 'text', data: { text } },
     ],
     raw_message: `[CQ:at,qq=3853043835]${text}`,
+    font: 0,
+    sender: { user_id: userId, nickname: `user${userId}` },
+  };
+}
+
+function makePlainEvent(messageId, userId, text, extraSegments = [], groupId = 6657) {
+  return {
+    time: Math.floor(Date.now() / 1000),
+    self_id: 3853043835,
+    post_type: 'message',
+    message_type: 'group',
+    sub_type: 'normal',
+    message_id: messageId,
+    group_id: groupId,
+    user_id: userId,
+    anonymous: null,
+    message: [
+      ...extraSegments,
+      { type: 'text', data: { text } },
+    ],
+    raw_message: text,
     font: 0,
     sender: { user_id: userId, nickname: `user${userId}` },
   };
@@ -249,6 +292,7 @@ async function testMessageReplyTargeting() {
     if (id === '105') return '';
     if (id === '106') return '长回复'.repeat(120);
     if (id === '107') return '收到语音了';
+    if (id === '108') return '6';
     return `reply-${id}`;
   });
 
@@ -303,6 +347,12 @@ async function testMessageReplyTargeting() {
     assert.strictEqual(sent.at(-1).message.find((seg) => seg.type === 'reply')?.data.id, '107');
     assert.ok(prompts.some((prompt) => prompt.includes('语音数量: 1')), 'record count should be included in the job snapshot');
 
+    const beforeNumeric = sent.length;
+    handler.handleEvent(makeEvent(108, 18, ' 模型别只回数字'));
+    await waitFor(() => sent.length === beforeNumeric + 1, 'numeric output rewrite');
+    const numericText = sent.at(-1).message.find((seg) => seg.type === 'text')?.data.text;
+    assert.ok(numericText && !/^[\d\s.,，。!！?？]+$/.test(numericText), 'numeric-only LLM output should be rewritten');
+
     const before = sent.length;
     handler.handleEvent(makeEvent(201, 21, ' 回复旧消息', [{ type: 'reply', data: { id: '77777' } }]));
     await waitFor(() => sent.length === before + 1, 'reply-to-bot forced reply');
@@ -314,9 +364,105 @@ async function testMessageReplyTargeting() {
   }
 }
 
+async function testPassiveTriggerFiltering() {
+  const config = makeConfigForHandler();
+  config.ai.trigger_probability = 1;
+  config.ai.passive_random_min_chars = 4;
+  config.ai.passive_random_allow_numeric = false;
+  config.ai.enable_knowledge = false;
+  const sent = [];
+  const bot = {
+    getConfig: () => config,
+    sendGroupMessage: async (groupId, message, onMessageId) => {
+      sent.push({ groupId, message });
+      if (onMessageId) onMessageId(70_000 + sent.length);
+      return true;
+    },
+    callApiAsync: async () => ({ retcode: 0, data: {} }),
+  };
+  const handler = new MessageHandler(bot);
+  handler.use(aiChat.aiChatPlugin);
+
+  aiChat.__setLLMCallerForTests(async (_config, messages) => {
+    const current = messages[messages.length - 1];
+    const content = typeof current.content === 'string'
+      ? current.content
+      : current.content.map((item) => item.text || '').join('\n');
+    const id = (content.match(/message_id: (\d+)/) || [])[1] || 'unknown';
+    return `passive-${id}`;
+  });
+
+  try {
+    handler.handleEvent(makePlainEvent(401, 41, '6'));
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    assert.strictEqual(sent.length, 0, 'low-information passive numeric text should not trigger AI');
+
+    handler.handleEvent(makePlainEvent(402, 42, '今天CS2这队伍怎么打'));
+    await waitFor(() => sent.length === 1, 'keyword passive reply');
+    assert.strictEqual(
+      sent[0].message.find((seg) => seg.type === 'text')?.data.text,
+      'passive-402',
+      'keyword ordinary messages should trigger AI without @',
+    );
+  } finally {
+    aiChat.__setLLMCallerForTests();
+    aiChat.shutdownAiChat();
+  }
+}
+
+async function testRepeaterAndPoke() {
+  const config = makeConfigForHandler();
+  config.ai.poke_reply_probability = 1;
+  const sent = [];
+  const eventHandlers = [];
+  const bot = {
+    getConfig: () => config,
+    onEvent: (handler) => eventHandlers.push(handler),
+    sendGroupMessage: async (groupId, message, onMessageId) => {
+      sent.push({ groupId, message });
+      if (onMessageId) onMessageId(60_000 + sent.length);
+      return true;
+    },
+    callApiAsync: async () => ({ retcode: 0, data: {} }),
+  };
+
+  registerPokeListener(bot);
+  for (const handler of eventHandlers) {
+    handler({
+      time: Math.floor(Date.now() / 1000),
+      self_id: 3853043835,
+      post_type: 'notice',
+      notice_type: 'notify',
+      sub_type: 'poke',
+      group_id: 6657,
+      user_id: 42,
+      target_id: 3853043835,
+    });
+  }
+  await waitFor(() => sent.length === 1, 'poke reply');
+  assert.strictEqual(sent[0].groupId, 6657);
+  assert.strictEqual(sent[0].message[0]?.type, 'at', 'poke reply should at the poker when possible');
+
+  const handler = new MessageHandler(bot);
+  handler.use(repeaterPlugin);
+  const beforeRepeat = sent.length;
+  handler.handleEvent(makePlainEvent(501, 51, '可以复读一下'));
+  handler.handleEvent(makePlainEvent(502, 52, '可以复读一下'));
+  handler.handleEvent(makePlainEvent(503, 53, '可以复读一下'));
+  await waitFor(() => sent.length === beforeRepeat + 1, 'normal repeater');
+  assert.strictEqual(sent.at(-1).message, '可以复读一下');
+
+  const beforeUnsafe = sent.length;
+  handler.handleEvent(makePlainEvent(504, 54, '6'));
+  handler.handleEvent(makePlainEvent(505, 55, '6'));
+  handler.handleEvent(makePlainEvent(506, 56, '6'));
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  assert.strictEqual(sent.length, beforeUnsafe, 'repeater should not repeat low-information numeric text');
+}
+
 async function testCrossGroupAiConcurrency() {
   const config = makeConfigForHandler();
-  config.ai.ai_global_concurrency = 2;
+  config.ai.ai_global_concurrency = 3;
   const sent = [];
   const bot = {
     getConfig: () => config,
@@ -350,7 +496,8 @@ async function testCrossGroupAiConcurrency() {
       handler.handleEvent(makeEvent(300 + i, 30 + i, ` 多群${i}`, [], 7000 + i));
     }
     await waitFor(() => sent.length === 5, 'five cross-group replies', 5000);
-    assert.ok(maxActive <= 2, `cross-group AI concurrency exceeded gate: ${maxActive}`);
+    assert.ok(maxActive > 1, `cross-group AI should run concurrently, got maxActive=${maxActive}`);
+    assert.ok(maxActive <= 3, `cross-group AI concurrency exceeded gate: ${maxActive}`);
     assert.deepStrictEqual(
       sent.map((item) => item.message.find((seg) => seg.type === 'reply')?.data.id).sort(),
       ['300', '301', '302', '303', '304'],
@@ -369,6 +516,8 @@ async function main() {
   await testGates();
   await testSearchSingleFlight();
   await testMessageReplyTargeting();
+  await testPassiveTriggerFiltering();
+  await testRepeaterAndPoke();
   await testCrossGroupAiConcurrency();
   console.log('smoke ok');
 }

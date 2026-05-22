@@ -1,4 +1,5 @@
 import { Plugin } from '../types';
+import { isKnowledgeTopic } from './knowledge-base';
 
 /**
  * 复读机插件 - 检测群友连续发相同消息时跟着复读
@@ -24,16 +25,35 @@ function pruneStatesIfNeeded(): void {
   }
 }
 
+function isUnsafeRepeatText(text: string): boolean {
+  const normalized = text.replace(/\s+/g, '');
+  if (/^[\d.。,\s，、]+$/.test(normalized)) return true;
+  if (/^[哈啊嗯哦额呃草艹wW6]+$/.test(normalized) && normalized.length <= 8) return true;
+  if (/^[^\u4e00-\u9fa5A-Za-z0-9]+$/.test(normalized)) return true;
+  return false;
+}
+
+function includesAnyKeyword(text: string, keywords: string[] = []): boolean {
+  if (!text || keywords.length === 0) return false;
+  const lowerText = text.toLowerCase();
+  return keywords.some((keyword) => keyword && lowerText.includes(keyword.toLowerCase()));
+}
+
 export const repeaterPlugin: Plugin = {
   name: 'repeater',
   description: '复读机 - 群友复读时跟着复读',
 
   handler: (ctx) => {
+    // 强触发必须让 AI 插件接，不让复读机截胡。
+    if (ctx.isAtBot || ctx.isReplyToBot) return false;
     // 只处理纯文本非命令消息
     if (ctx.command) return false;
     if (!ctx.rawText || ctx.rawText.length > 50) return false;
+    const ai = ctx.bot.getConfig().ai;
+    if (includesAnyKeyword(ctx.rawText, [ai.active_preset, ...ai.trigger_keywords]) || isKnowledgeTopic(ctx.rawText)) return false;
     // 忽略太短的（单字/表情之类的不复读）
     if (ctx.rawText.length < 2) return false;
+    if (isUnsafeRepeatText(ctx.rawText)) return false;
 
     const groupId = ctx.event.group_id;
     const state = groupRepeatState.get(groupId);

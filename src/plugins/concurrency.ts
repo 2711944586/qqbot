@@ -4,7 +4,7 @@ interface GateState {
   limit: number;
   active: number;
   queued: number;
-  queue: Array<() => void>;
+  queue: Array<{ run: () => void; priority: boolean }>;
 }
 
 const gates: Record<GateName, GateState> = {
@@ -26,7 +26,7 @@ function pump(gate: GateState): void {
     if (!next) return;
     gate.queued = Math.max(0, gate.queued - 1);
     gate.active++;
-    next();
+    next.run();
   }
 }
 
@@ -45,7 +45,7 @@ export function configureGates(config: {
   for (const gate of Object.values(gates)) pump(gate);
 }
 
-export function withGate<T>(name: GateName, task: () => Promise<T>): Promise<T> {
+export function withGate<T>(name: GateName, task: () => Promise<T>, priority: boolean = false): Promise<T> {
   const gate = gates[name];
   return new Promise<T>((resolve, reject) => {
     const run = (): void => {
@@ -64,7 +64,14 @@ export function withGate<T>(name: GateName, task: () => Promise<T>): Promise<T> 
     }
 
     gate.queued++;
-    gate.queue.push(run);
+    const entry = { run, priority };
+    if (priority) {
+      const firstPassiveIndex = gate.queue.findIndex((item) => !item.priority);
+      if (firstPassiveIndex >= 0) gate.queue.splice(firstPassiveIndex, 0, entry);
+      else gate.queue.push(entry);
+    } else {
+      gate.queue.push(entry);
+    }
   });
 }
 

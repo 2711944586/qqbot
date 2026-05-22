@@ -497,6 +497,7 @@ function buildSystemPrompt(config: AIConfig): string {
 function postProcessReply(text: string): string {
   text = text.trim();
   text = text.replace(/^[(（【\[]\s*(?:直播口吻(?:接弹幕)?|玩机器(?:风格|口吻)?|6657(?:风格|口吻)?|Machine(?:风格|口吻)?|拟态|风格参考|接弹幕|真人感|群聊回复|QQ?群回复|bot回复|机器人回复|第一人称(?:拟态)?|口吻)\s*[)）】\]]\s*[：:，,、-]?\s*/i, '');
+  text = text.replace(/(^|\n)\s*[(（【\[]\s*(?:直播口吻(?:接弹幕)?|玩机器(?:风格|口吻)?|6657(?:风格|口吻)?|Machine(?:风格|口吻)?|拟态|风格参考|接弹幕|真人感|群聊回复|QQ?群回复|bot回复|机器人回复|第一人称(?:拟态)?|口吻)\s*[)）】\]]\s*[：:，,、-]?\s*/ig, '$1');
   text = text.replace(/^(?:直播口吻(?:接弹幕)?|玩机器(?:风格|口吻)?|拟态|风格参考|接弹幕|群聊回复|QQ?群回复)\s*[：:，,、-]\s*/i, '');
   text = text.replace(/^(?:我将用|以下以|下面用|作为(?:群)?bot)[^\n，。！？!?]{0,28}(?:回复|回答|接话)[：:，,。]?\s*/i, '');
   text = text.replace(/```[\s\S]*?```/g, (m) => m.replace(/```\w*\n?/g, '').replace(/```/g, '').trim());
@@ -508,8 +509,14 @@ function postProcessReply(text: string): string {
   text = text.replace(/^(玩机器|机器|MachineWJQ)[：:]\s*/i, '');
   text = text.replace(/^[(（【\[]\s*(?:直播口吻(?:接弹幕)?|玩机器(?:风格|口吻)?|6657(?:风格|口吻)?|Machine(?:风格|口吻)?|拟态|风格参考|接弹幕|真人感|群聊回复|QQ?群回复|bot回复|机器人回复|第一人称(?:拟态)?|口吻)\s*[)）】\]]\s*[：:，,、-]?\s*/i, '');
   text = text.replace(/^["「『](.+)["」』]$/s, '$1');
+  text = text.replace(/^[（(]\s*(.+?)\s*[）)]$/s, '$1');
   text = text.replace(/\n{3,}/g, '\n\n');
   text = text.replace(/^ +/gm, '');
+  if (/^[\d\s.,，。!！?？]+$/.test(text)) {
+    text = '可以的 这波有点东西';
+  } else if (/^[哈啊嗯哦额呃草艹wW6]+$/.test(text) && text.length <= 6) {
+    text = '不是哥们 这波有点抽象';
+  }
   return text.trim();
 }
 
@@ -1104,6 +1111,21 @@ function includesAnyKeyword(text: string, keywords: string[] = []): boolean {
   return keywords.some((keyword) => keyword && lowerText.includes(keyword.toLowerCase()));
 }
 
+function normalizePassiveText(text: string): string {
+  return text.replace(/\s+/g, '').trim();
+}
+
+function isLowInformationPassiveText(text: string, config: AIConfig): boolean {
+  const normalized = normalizePassiveText(text);
+  if (!normalized) return true;
+  const minChars = Math.max(1, config.passive_random_min_chars || 4);
+  if (normalized.length < minChars) return true;
+  if (config.passive_random_allow_numeric !== true && /^[\d.。,\s，、]+$/.test(normalized)) return true;
+  if (/^[哈啊嗯哦额呃草艹wW6]+$/.test(normalized) && normalized.length <= 6) return true;
+  if (/^[^\u4e00-\u9fa5A-Za-z0-9]+$/.test(normalized)) return true;
+  return false;
+}
+
 function shouldSearch(config: AIConfig, text: string): boolean {
   if (!config.enable_search || text.length <= 3) return false;
   if (config.search_keywords && config.search_keywords.length > 0) {
@@ -1128,17 +1150,19 @@ function shouldReply(
     return { reply: false, forced: false };
   }
 
-  if (isKnowledgeTopic(text) && Math.random() < (config.related_reply_probability ?? 0.65)) {
+  const keywordHit = includesAnyKeyword(text, [config.active_preset, ...config.trigger_keywords]);
+  if (keywordHit || isKnowledgeTopic(text)) {
     return { reply: true, forced: false };
   }
 
   switch (config.trigger_mode) {
     case 'all':
-      return { reply: text.trim().length > 0, forced: false };
+      return { reply: !isLowInformationPassiveText(text, config), forced: false };
     case 'smart': {
-      const named = includesAnyKeyword(text, [config.active_preset, ...config.trigger_keywords]);
-      const sampled = Math.random() < (config.trigger_probability || 0);
-      return { reply: named || sampled, forced: false };
+      if (isLowInformationPassiveText(text, config)) {
+        return { reply: false, forced: false };
+      }
+      return { reply: Math.random() < (config.trigger_probability || 0), forced: false };
     }
     case 'at':
     case 'command':
@@ -1610,7 +1634,7 @@ export const aiChatPlugin: Plugin = {
         if (!cleaned) {
           if (replyCacheKey) replyCacheMisses++;
           const maxAttempts = job.forced ? 3 : 2;
-          const reply = await withGate('ai', () => callLLMWithRetry(config, apiMessages, usesVisionPayload, maxAttempts));
+          const reply = await withGate('ai', () => callLLMWithRetry(config, apiMessages, usesVisionPayload, maxAttempts), job.forced);
           cleaned = postProcessReply(reply);
           if (replyCacheKey && cleaned) {
             setCachedReply(replyCacheKey, cleaned, config.ai_reply_cache_seconds ?? 180);
