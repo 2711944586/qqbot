@@ -221,7 +221,7 @@ export class MessageHandler {
     for (const plugin of this.plugins) {
       try {
         handled = await this.runPlugin(plugin, ctx, config);
-        if (handled && (isAtBot || isReplyToBot) && !ctx.command && plugin.name !== 'ai-chat') {
+        if (handled && (isAtBot || isReplyToBot) && !ctx.command && !['ai-chat', 'fun'].includes(plugin.name)) {
           handled = false;
           continue;
         }

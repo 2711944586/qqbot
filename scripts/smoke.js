@@ -483,11 +483,16 @@ async function testFunCsPlayer() {
   const handler = new MessageHandler(bot);
   handler.use(funPlugin);
 
-  const player = funTest.dailyPlayerFor(61);
+  const player = funTest.dailyPlayerFor(61, 6657);
   assert.ok(funTest.csPlayers.every((item) => item.image), 'all daily CS players should have image URLs');
-  const directMessage = funTest.buildCsPlayerMessage(61, player);
+  assert.ok(funTest.csPlayers.every((item) => item.imageSource), 'all daily CS players should have image source labels');
+  const directMessage = funTest.buildCsPlayerMessage(61, player, funTest.dailyPlayerScore(61, 6657));
   assert.ok(directMessage.some((seg) => seg.type === 'at'), 'daily player direct builder should at the user');
   assert.ok(directMessage.some((seg) => seg.type === 'text' && seg.data.text.includes(player.nick)), 'daily player text should include nick');
+  assert.ok(directMessage.some((seg) => seg.type === 'image'), 'daily player should include an image segment');
+  assert.strictEqual(funTest.dailyPlayerFor(61, 6657).nick, funTest.dailyPlayerFor(61, 6657).nick, 'daily player should be stable per group and day');
+  assert.strictEqual(funTest.isCsPlayerDrawRequest(null, '今天抽个CS选手'), true, 'fuzzy draw text should trigger');
+  assert.strictEqual(funTest.isCsPlayerDrawRequest(null, 'NiKo 现在在哪队'), false, 'normal player lookup should not be hijacked by draw');
 
   handler.handleEvent(makePlainEvent(601, 61, '/csplayer'));
   await waitFor(() => sent.length === 1, 'csplayer command');
@@ -495,6 +500,15 @@ async function testFunCsPlayer() {
   const text = sent[0].message.find((seg) => seg.type === 'text')?.data.text || '';
   assert.ok(text.includes('今日CS选手'), 'csplayer reply should include title');
   assert.ok(text.includes('昵称：'), 'csplayer reply should include nick label');
+  assert.ok(text.includes('签位：'), 'csplayer reply should include score label');
+
+  handler.handleEvent(makePlainEvent(602, 62, '今天抽个CS选手'));
+  await waitFor(() => sent.length === 2, 'fuzzy csplayer command');
+  assert.ok(sent[1].message.some((seg) => seg.type === 'image'), 'fuzzy csplayer should also include image');
+
+  handler.handleEvent(makeEvent(603, 63, ' 今天抽个CS选手'));
+  await waitFor(() => sent.length === 3, 'at fuzzy csplayer command');
+  assert.ok(sent[2].message.some((seg) => seg.type === 'image'), 'at fuzzy csplayer should be handled by fun plugin');
 }
 
 async function testCrossGroupAiConcurrency() {

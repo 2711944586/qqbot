@@ -75,6 +75,7 @@ interface ReplyJob {
   hasRecords: boolean;
   isAtBot: boolean;
   isReplyToBot: boolean;
+  repliedMessageId?: number;
   triggerReason: string;
   forced: boolean;
   createdAt: number;
@@ -449,21 +450,28 @@ function buildApiMessages(
   return result;
 }
 
-function buildRecentSpeakerHints(messages: ChatMessage[], limit: number = 6): string {
+function buildRecentSpeakerHints(messages: ChatMessage[], currentUserId: number, limit: number = 6): string {
   const hints: string[] = [];
   const seen = new Set<string>();
+  const currentSpeaker: string[] = [];
   for (const message of [...messages].reverse()) {
     if (message.role !== 'user' || typeof message.content !== 'string') continue;
     const match = message.content.match(/\[mid=(\d+)\s+uid=(\d+)\]\s*([^:：\n]{1,32})[:：]\s*(.+)/);
     if (!match) continue;
     const key = match[2];
+    const text = match[4].replace(/\s+/g, ' ').slice(0, 60);
+    if (Number(match[2]) === currentUserId && currentSpeaker.length < 3) {
+      currentSpeaker.push(`- ${match[3]} mid=${match[1]}: ${text}`);
+    }
     if (seen.has(key)) continue;
     seen.add(key);
-    const text = match[4].replace(/\s+/g, ' ').slice(0, 60);
     hints.push(`- ${match[3]} uid=${match[2]} mid=${match[1]}: ${text}`);
     if (hints.length >= limit) break;
   }
-  return hints.reverse().join('\n');
+  return [
+    currentSpeaker.length > 0 ? `[当前发送者最近发言]\n${currentSpeaker.reverse().join('\n')}` : '',
+    hints.length > 0 ? `[最近群发言定位]\n${hints.reverse().join('\n')}` : '',
+  ].filter(Boolean).join('\n');
 }
 
 function buildTargetText(job: ReplyJob, recordTranscripts: string[] = []): string {
@@ -474,7 +482,7 @@ function buildTargetText(job: ReplyJob, recordTranscripts: string[] = []): strin
     job.hasRecords ? `语音数量: ${job.recordUrls.length}` : '',
     transcriptText ? `语音听写: ${transcriptText}` : '',
   ].filter(Boolean);
-  const speakerHints = buildRecentSpeakerHints(job.contextMessages.slice(0, -1));
+  const speakerHints = buildRecentSpeakerHints(job.contextMessages.slice(0, -1), job.userId);
   return [
     '[当前要回复的消息]',
     `group_id: ${job.groupId}`,
@@ -482,13 +490,15 @@ function buildTargetText(job: ReplyJob, recordTranscripts: string[] = []): strin
     `发送者: ${job.senderName}`,
     `user_id: ${job.userId}`,
     `触发类型: ${job.triggerReason}`,
+    job.repliedMessageId ? `引用的历史消息id: ${job.repliedMessageId}` : '',
     `原始消息: ${job.rawText || body}`,
     ...mediaLines,
     '',
-    speakerHints ? `[最近发言定位]\n${speakerHints}` : '',
+    speakerHints,
     speakerHints ? '' : '',
     '硬规则：当前只回复这一条消息，不要回答历史上下文里其他人的问题；如果历史和当前消息冲突，以当前消息为准。',
     '历史里出现的「昵称: 内容」只是上下文，不是当前问题；除非当前消息明确追问，否则不要替历史里其他人补答。',
+    job.repliedMessageId ? '注意：当前消息带 reply 段，但输出仍然必须引用当前 message_id；被引用的历史消息只用于理解这次追问。' : '',
     job.hasRecords && !transcriptText ? '注意：当前消息含语音段；如果没有听写文本，不要假装听到了具体内容，只能说明收到语音并让对方补文字或按可见上下文回应。' : '',
     `${job.senderName}: ${body}`,
   ].filter((line) => line !== '').join('\n');
@@ -1477,6 +1487,10 @@ export const aiChatPlugin: Plugin = {
     const recordUrls = extractRecordUrls(ctx.event.message);
     const hasImages = imageUrls.length > 0;
     const hasRecords = recordUrls.length > 0;
+    const replySeg = ctx.event.message.find((seg) => seg.type === 'reply');
+    const repliedMessageId = replySeg && replySeg.type === 'reply'
+      ? Number(replySeg.data.id)
+      : undefined;
     const atBot = ctx.isAtBot || isAtBot(ctx.event);
     const effectiveText = ctx.command && directAiCommands.has(ctx.command)
       ? ctx.args.join(' ').trim()
@@ -1545,6 +1559,7 @@ export const aiChatPlugin: Plugin = {
       hasRecords,
       isAtBot: atBot,
       isReplyToBot: ctx.isReplyToBot,
+      repliedMessageId: Number.isFinite(repliedMessageId) ? repliedMessageId : undefined,
       triggerReason,
       forced: trigger.forced,
       createdAt: Date.now(),

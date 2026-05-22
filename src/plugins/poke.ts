@@ -1,5 +1,6 @@
 import { Bot } from '../bot';
 import { NoticeEvent } from '../types';
+import { getRandomKnowledgeLine } from './knowledge-base';
 
 /**
  * 戳一戳回应插件
@@ -7,16 +8,28 @@ import { NoticeEvent } from '../types';
  */
 
 const pokeReplies = [
-  '不是哥们 戳我干嘛',
-  '有事说事 别在这道具试探',
-  '再戳就有点抽象了',
-  '我在 你先别急',
-  '别闹 正在看弹幕',
-  '手痒是吧',
-  '这波戳一戳没有收益',
-  '你这个timing戳得很怪',
-  '我去登山了 别催',
+  '不是哥们 有事说事',
+  '可以的 这波戳一戳有点东西',
+  '你先别急 我看到了',
+  '这波 timing 戳得很怪',
+  '别急着开香槟 先说事',
+  '这下真绷不住了',
+  '我晕了 你这戳得像闪光弹',
+  '行 我在 直接问',
+  '这波有说法 但别一直戳',
 ];
+
+function shortKnowledgeReply(): string {
+  const queries = ['不是哥们', '可以的', '这波', '先别急', '我晕了'];
+  for (let i = 0; i < queries.length; i++) {
+    const query = queries[Math.floor(Math.random() * queries.length)];
+    const line = getRandomKnowledgeLine('quote', query);
+    if (line && line.length <= 32 && !line.includes('{gift}') && !line.includes('模板')) {
+      return line.replace(/[。.!！]+$/, '');
+    }
+  }
+  return '';
+}
 
 export function registerPokeListener(bot: Bot): void {
   bot.onEvent((event) => {
@@ -38,7 +51,7 @@ export function registerPokeListener(bot: Bot): void {
     const probability = Math.max(0, Math.min(config.ai?.poke_reply_probability ?? 1, 1));
     if (Math.random() > probability) return;
 
-    const reply = pokeReplies[Math.floor(Math.random() * pokeReplies.length)];
+    const reply = shortKnowledgeReply() || pokeReplies[Math.floor(Math.random() * pokeReplies.length)];
     const userId = (notice as any).user_id;
     const message = userId
       ? [
