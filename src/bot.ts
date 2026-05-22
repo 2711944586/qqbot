@@ -1,5 +1,6 @@
 import WebSocket from 'ws';
 import { BotConfig, OneBotEvent, MessageSegment } from './types';
+import { sanitizeOutgoingMessage } from './message-sanitize';
 
 type ApiCallback = {
   resolve: (data: unknown) => void;
@@ -157,9 +158,10 @@ export class Bot {
 
   /** 发送群消息（追踪消息ID用于回复检测） */
   sendGroupMessage(groupId: number, message: string | MessageSegment[], onMessageId?: (id: number) => void): Promise<boolean> {
-    const msg = typeof message === 'string'
-      ? [{ type: 'text', data: { text: message } }]
-      : message;
+    const sanitized = sanitizeOutgoingMessage(message);
+    const msg = typeof sanitized === 'string'
+      ? [{ type: 'text', data: { text: sanitized } }]
+      : sanitized;
 
     return this.callApiAsync('send_group_msg', {
       group_id: groupId,
@@ -183,14 +185,30 @@ export class Bot {
   }
 
   /** 发送私聊消息 */
-  sendPrivateMessage(userId: number, message: string | MessageSegment[]): void {
-    const msg = typeof message === 'string'
-      ? [{ type: 'text', data: { text: message } }]
-      : message;
+  sendPrivateMessage(userId: number, message: string | MessageSegment[], onMessageId?: (id: number) => void): Promise<boolean> {
+    const sanitized = sanitizeOutgoingMessage(message);
+    const msg = typeof sanitized === 'string'
+      ? [{ type: 'text', data: { text: sanitized } }]
+      : sanitized;
 
-    this.callApi('send_private_msg', {
+    return this.callApiAsync('send_private_msg', {
       user_id: userId,
       message: msg,
+    }).then((res: any) => {
+      if (typeof res?.retcode === 'number' && res.retcode !== 0) {
+        console.error(`[Bot] 发送私聊消息失败: QQ${userId} retcode=${res.retcode} ${res.message || res.wording || ''}`);
+        return false;
+      }
+
+      const msgId = res?.data?.message_id;
+      if (msgId && onMessageId) {
+        onMessageId(Number(msgId));
+      }
+      return true;
+    }).catch((err) => {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      console.error(`[Bot] 发送私聊消息异常: QQ${userId} ${errMsg}`);
+      return false;
     });
   }
 

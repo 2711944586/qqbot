@@ -32,7 +32,11 @@ export const adminPlugin: Plugin = {
         ctx.replyAt('⛔ 权限不足');
         return true;
       }
-      const groupId = parseInt(ctx.args[0]) || ctx.event.group_id;
+      const groupId = parseInt(ctx.args[0]) || ctx.groupId;
+      if (!groupId) {
+        ctx.reply('私聊里用法: /addgroup <群号>');
+        return true;
+      }
       if (!config.enabled_groups.includes(groupId)) {
         config.enabled_groups.push(groupId);
         ctx.reply(`✅ 已将群 ${groupId} 加入白名单`);
@@ -64,6 +68,10 @@ export const adminPlugin: Plugin = {
 
     // ===== 禁言/解禁（需要管理员权限） =====
     if (ctx.command === 'ban') {
+      if (ctx.isPrivate || !ctx.groupId) {
+        ctx.reply('这个得在群里用');
+        return true;
+      }
       if (!isAdmin) {
         ctx.replyAt('⛔ 权限不足');
         return true;
@@ -77,7 +85,7 @@ export const adminPlugin: Plugin = {
       const duration = (parseInt(ctx.args.find((a) => /^\d+$/.test(a)) || '') || 10) * 60;
 
       ctx.bot.callApi('set_group_ban', {
-        group_id: ctx.event.group_id,
+        group_id: ctx.groupId,
         user_id: targetQQ,
         duration,
       });
@@ -86,6 +94,10 @@ export const adminPlugin: Plugin = {
     }
 
     if (ctx.command === 'unban') {
+      if (ctx.isPrivate || !ctx.groupId) {
+        ctx.reply('这个得在群里用');
+        return true;
+      }
       if (!isAdmin) {
         ctx.replyAt('⛔ 权限不足');
         return true;
@@ -97,7 +109,7 @@ export const adminPlugin: Plugin = {
       }
       const targetQQ = parseInt(atSeg.data.qq);
       ctx.bot.callApi('set_group_ban', {
-        group_id: ctx.event.group_id,
+        group_id: ctx.groupId,
         user_id: targetQQ,
         duration: 0,
       });
@@ -107,6 +119,10 @@ export const adminPlugin: Plugin = {
 
     // ===== 踢人 =====
     if (ctx.command === 'kick') {
+      if (ctx.isPrivate || !ctx.groupId) {
+        ctx.reply('这个得在群里用');
+        return true;
+      }
       if (!isAdmin) {
         ctx.replyAt('⛔ 权限不足');
         return true;
@@ -118,7 +134,7 @@ export const adminPlugin: Plugin = {
       }
       const targetQQ = parseInt(atSeg.data.qq);
       ctx.bot.callApi('set_group_kick', {
-        group_id: ctx.event.group_id,
+        group_id: ctx.groupId,
         user_id: targetQQ,
         reject_add_request: false,
       });
@@ -128,6 +144,10 @@ export const adminPlugin: Plugin = {
 
     // ===== 设置群头衔 =====
     if (ctx.command === 'title') {
+      if (ctx.isPrivate || !ctx.groupId) {
+        ctx.reply('这个得在群里用');
+        return true;
+      }
       if (!isAdmin) {
         ctx.replyAt('⛔ 权限不足');
         return true;
@@ -140,7 +160,7 @@ export const adminPlugin: Plugin = {
       const targetQQ = parseInt(atSeg.data.qq);
       const title = ctx.args.filter((a) => !/^@/.test(a)).join(' ');
       ctx.bot.callApi('set_group_special_title', {
-        group_id: ctx.event.group_id,
+        group_id: ctx.groupId,
         user_id: targetQQ,
         special_title: title,
         duration: -1,

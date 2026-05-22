@@ -246,5 +246,37 @@
     "trusted": true,
     "autoCommitEligible": true,
     "intervalMinutes": 1440
+  },
+  {
+    "id": "hltv-valve-ranking-may22-2026-snapshot",
+    "query": "HLTV Valve global ranking May 22 2026 Vitality Spirit Falcons NAVI MOUZ Aurora FURIA G2 FaZe",
+    "sourceType": "public_fact",
+    "trusted": true,
+    "autoCommitEligible": true,
+    "intervalMinutes": 720
+  },
+  {
+    "id": "liquipedia-cs2-map-pool-2026-current",
+    "query": "Liquipedia Counter-Strike 2 active duty map pool 2026 Ancient Anubis Dust2 Inferno Mirage Nuke Overpass",
+    "sourceType": "public_fact",
+    "trusted": true,
+    "autoCommitEligible": true,
+    "intervalMinutes": 1440
+  },
+  {
+    "id": "bilibili-machine-long-cut-scene-index",
+    "query": "Bilibili 玩机器 6657 长切片 经典比赛 经典解说 PGL Astana 2026 donk Spirit Falcons",
+    "sourceType": "public_summary",
+    "trusted": false,
+    "autoCommitEligible": false,
+    "intervalMinutes": 1440
+  },
+  {
+    "id": "bilibili-machine-live-voice-pattern-index",
+    "query": "Bilibili 玩机器 6657 直播口癖 语气 礼物感谢 切片 弹幕版",
+    "sourceType": "unknown",
+    "trusted": false,
+    "autoCommitEligible": false,
+    "intervalMinutes": 1440
   }
 ]

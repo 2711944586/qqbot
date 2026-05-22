@@ -21,11 +21,27 @@ interface CSPlayer {
   team: string;
   role: string;
   note: string;
+  style?: string;
+  avoid?: string;
   image: string;
   imageSource: 'liquipedia' | 'wikimedia';
   aliases?: string[];
   tags?: string[];
 }
+
+interface DailyCard {
+  key: string;
+  title: string;
+  name: string;
+  subtitle: string;
+  scoreLabel: string;
+  advice: string;
+  avoid: string;
+  line: string;
+  image?: string;
+}
+
+type DailyCardKind = 'team' | 'map' | 'weapon' | 'role' | 'loadout' | 'utility' | 'tactic' | 'clutch';
 
 const csPlayers: CSPlayer[] = [
   { nick: 'ZywOo', name: 'Mathieu Herbaut', team: 'Vitality', role: 'AWPer / 核心大哥', note: '今天就按这个纪律打，枪硬但别急着开香槟。', image: 'https://liquipedia.net/commons/images/2/2b/ZywOo_at_BLAST_Bounty_Winter_2026.jpg', imageSource: 'liquipedia', aliases: ['载物'] },
@@ -79,21 +95,176 @@ const csPlayers: CSPlayer[] = [
   { nick: 'woxic', name: 'Ozgur Eker', team: 'Eternal Fire', role: 'AWPer', note: '土耳其狙签，今天先架住关键枪，别急着换位置。', image: 'https://liquipedia.net/commons/images/4/49/Woxic_at_BLAST_Open_Spring_2026.jpg', imageSource: 'liquipedia' },
 ];
 
+const csTeams: DailyCard[] = [
+  {
+    key: 'vitality',
+    title: '今日CS队伍',
+    name: 'Vitality',
+    subtitle: 'ZywOo核心体系 / 纪律和个人能力都在线',
+    scoreLabel: '签位强度',
+    advice: '今天思路就是稳住默认，等核心位把第一枪打开。',
+    avoid: '别一赢手枪局就开香槟，强队最怕自己先松。',
+    line: '不是哥们，这队伍签抽出来，今天至少不能怂。',
+    image: 'https://liquipedia.net/commons/images/f/f3/Team_Vitality_2023_allmode.png',
+  },
+  {
+    key: 'navi',
+    title: '今日CS队伍',
+    name: 'NAVI',
+    subtitle: '结构化默认 / 信息和纪律优先',
+    scoreLabel: '签位强度',
+    advice: '先把信息拿满，别急着单点爆破，靠中期调整赢。',
+    avoid: '别五个人各玩各的，NAVI味一散就真难看。',
+    line: '这签不一定最爆，但认真打很能折磨对面。',
+    image: 'https://liquipedia.net/commons/images/3/30/Natus_Vincere_2021_allmode.png',
+  },
+  {
+    key: 'spirit',
+    title: '今日CS队伍',
+    name: 'Team Spirit',
+    subtitle: '年轻火力 / donk破口能力',
+    scoreLabel: '签位强度',
+    advice: '第一身位敢给压力，但第二时间补枪必须跟上。',
+    avoid: '别把每个回合都打成个人集锦，集锦失败就是白给。',
+    line: '这签火力是有的，问题是别上头。',
+    image: 'https://liquipedia.net/commons/images/a/a3/Team_Spirit_2022_allmode.png',
+  },
+  {
+    key: 'falcons',
+    title: '今日CS队伍',
+    name: 'Falcons',
+    subtitle: '明星阵容 / 上限很高，磨合也要看',
+    scoreLabel: '签位强度',
+    advice: '今天别只看ID，重点看补枪距离和回合纪律。',
+    avoid: '别一把没打好就审判银河战舰，CS不是PPT。',
+    line: '尼尼孩孩这个语境一出来，弹幕已经有画面了。',
+    image: 'https://liquipedia.net/commons/images/6/61/Team_Falcons_2022_allmode.png',
+  },
+  {
+    key: 'mouz',
+    title: '今日CS队伍',
+    name: 'MOUZ',
+    subtitle: '年轻纪律 / 包点和补枪细节',
+    scoreLabel: '签位强度',
+    advice: '少犯病，多补枪，打出团队交换就很舒服。',
+    avoid: '别关键局突然没人敢要信息。',
+    line: 'MOUZ签就是别花，稳着稳着对面就急了。',
+    image: 'https://liquipedia.net/commons/images/1/11/MOUZ_2021_allmode.png',
+  },
+  {
+    key: 'g2',
+    title: '今日CS队伍',
+    name: 'G2',
+    subtitle: '枪男传统 / 节目效果也不少',
+    scoreLabel: '签位强度',
+    advice: '枪法可以解决一部分问题，但别让枪法救坏决策。',
+    avoid: '别默认还没走完就开始硬拉。',
+    line: '这签有节目，但节目别演到自己身上。',
+    image: 'https://liquipedia.net/commons/images/9/93/G2_Esports_2020_allmode.png',
+  },
+  {
+    key: 'faze',
+    title: '今日CS队伍',
+    name: 'FaZe',
+    subtitle: '经验和残局 / 大场面属性',
+    scoreLabel: '签位强度',
+    advice: '残局慢一点，别急着把优势送回去。',
+    avoid: '别用经验给自己的白给找借口。',
+    line: 'FaZe签就是心脏体检，别第一回合就血压拉满。',
+    image: 'https://liquipedia.net/commons/images/b/bb/FaZe_Clan_2021_allmode.png',
+  },
+  {
+    key: 'liquid',
+    title: '今日CS队伍',
+    name: 'Liquid',
+    subtitle: '北美语境 / 个人能力和节奏转换',
+    scoreLabel: '签位强度',
+    advice: '正面别软，中期别散，残局别急。',
+    avoid: '别把优势局打成观众心理测试。',
+    line: '北美味来了，今天主打一个让人不禁想问。',
+    image: 'https://liquipedia.net/commons/images/5/5d/Team_Liquid_2023_allmode.png',
+  },
+];
+
+const csMaps: DailyCard[] = [
+  { key: 'mirage', title: '今日CS地图', name: 'Mirage', subtitle: '默认控中 / A夹B小都是节目点', scoreLabel: '手感指数', advice: '中路先拿信息，别五个人排队送拱门。', avoid: '别烟一散就干拉，timing 不在你这。', line: '荒漠迷城一出来，天梯味已经顶满了。' },
+  { key: 'inferno', title: '今日CS地图', name: 'Inferno', subtitle: '香蕉道博弈 / 道具纪律地图', scoreLabel: '手感指数', advice: '香蕉道别省道具，CT回防先等队友。', avoid: '别一个人拿着半甲硬清车位。', line: '炼狱小镇这图，急的人先白给。' },
+  { key: 'nuke', title: '今日CS地图', name: 'Nuke', subtitle: '上下层信息 / 转点和沟通', scoreLabel: '手感指数', advice: '先把外场和铁板信息讲清楚，别让队友猜谜。', avoid: '别一听脚步就全队转点，像被遥控。', line: '核子危机要的是脑子，不是嗓门。' },
+  { key: 'ancient', title: '今日CS地图', name: 'Ancient', subtitle: '中路和包点压缩 / 细节吃人', scoreLabel: '手感指数', advice: '中路别白给，包点别孤岛，补枪距离拉近。', avoid: '别让对面每回合免费拿中。', line: '远古遗迹这图，信息一断人就开始原始。' },
+  { key: 'anubis', title: '今日CS地图', name: 'Anubis', subtitle: '水路控制 / 回防压力', scoreLabel: '手感指数', advice: '水路信息很关键，进点后别忘了后路。', avoid: '别下包后全员看一个方向。', line: '阿努比斯打着打着就像心理学考试。' },
+  { key: 'dust2', title: '今日CS地图', name: 'Dust2', subtitle: '经典枪法图 / 中门信息', scoreLabel: '手感指数', advice: '枪可以硬，但别把每回合都当单挑服。', avoid: '别中门被看穿还硬装没事。', line: 'D2这签，简单粗暴，但白给也很快。' },
+  { key: 'overpass', title: '今日CS地图', name: 'Overpass', subtitle: '厕所长管工地 / 信息链和回防路线', scoreLabel: '手感指数', advice: '先把厕所和工地信息讲清楚，回防别三个人挤一个口。', avoid: '别听到一点动静全队乱转，像被对面牵着走。', line: '死亡游乐园这签，信息断了就真开始坐过山车。' },
+];
+
+const csWeapons: DailyCard[] = [
+  { key: 'ak47', title: '今日CS武器', name: 'AK-47', subtitle: '一枪头信仰 / 但别乱泼', scoreLabel: '爆头指数', advice: '今天准星放稳，第一发别急，打完记得换位。', avoid: '别二十发全泼天上还说压枪问题。', line: 'AK签可以的，枪给你了，别自己把自己打没。' },
+  { key: 'm4a1s', title: '今日CS武器', name: 'M4A1-S', subtitle: '控枪稳定 / 偷人舒服', scoreLabel: '爆头指数', advice: '多换位置，少硬扫，靠消音和节奏偷回合。', avoid: '别子弹打完才想起来退。', line: 'A1签就是细，细完别怂。' },
+  { key: 'awp', title: '今日CS武器', name: 'AWP', subtitle: '架点纪律 / 一枪改变回合', scoreLabel: '爆头指数', advice: '第一枪要稳，空了就换位置，别站原地等审判。', avoid: '别每回合都想打集锦狙。', line: '大狙在手，责任也在手，别只要镜头不要回合。' },
+  { key: 'deagle', title: '今日CS武器', name: 'Desert Eagle', subtitle: '经济局希望 / 也可能是错觉', scoreLabel: '爆头指数', advice: '别急开枪，等对面进准星，一发讲道理。', avoid: '别七发全空还喊差一点。', line: '沙鹰签最会骗人，但骗成了就是名场面。' },
+  { key: 'mp9', title: '今日CS武器', name: 'MP9', subtitle: '近点爆发 / 经济管理', scoreLabel: '爆头指数', advice: '打近点，吃信息，杀一个就跑，别恋战。', avoid: '别拿MP9去和AK中远距离讲道理。', line: 'MP9签就是灵活，别灵活到白给。' },
+  { key: 'mac10', title: '今日CS武器', name: 'MAC-10', subtitle: '冲锋和拉扯 / 第一身位工具', scoreLabel: '爆头指数', advice: '给队友拉空间，死也要换到信息和站位。', avoid: '别冲进去没人补，死得很孤独。', line: '这签主打一个不怕死，但怕没人跟。' },
+  { key: 'galil', title: '今日CS武器', name: 'Galil AR', subtitle: '穷哥们步枪 / 性价比', scoreLabel: '爆头指数', advice: '别嫌枪便宜，控好弹道一样能打出价值。', avoid: '别拿着Galil还想当ZywOo。', line: '经济一般但人不能一般，Galil也能有节目。' },
+];
+
+const csRoles: DailyCard[] = [
+  { key: 'entry', title: '今日CS定位', name: '突破手', subtitle: '第一身位 / 拉空间', scoreLabel: '适配指数', advice: '你今天负责把口子撕开，死也要给信息。', avoid: '别第一个出去死了还不报点。', line: '突破签很硬，问题是你得真敢第一个进。' },
+  { key: 'support', title: '今日CS定位', name: '辅助位', subtitle: '闪光烟火 / 脏活累活', scoreLabel: '适配指数', advice: '道具给明白，补枪站近一点，别嫌镜头少。', avoid: '别闪队友比闪敌人准。', line: '辅助签不丢人，赢回合的人都懂。' },
+  { key: 'anchor', title: '今日CS定位', name: '包点锚点', subtitle: '守点纪律 / 抗压', scoreLabel: '适配指数', advice: '别急着前压送，拖时间就是价值。', avoid: '别听到脚步就自己交完全部道具。', line: '锚点签很残酷，镜头少但锅大。' },
+  { key: 'lurker', title: '今日CS定位', name: '自由人', subtitle: '侧翼时机 / 信息差', scoreLabel: '适配指数', advice: '慢一点，等timing，别为了绕后把正面卖完。', avoid: '别绕到最后队友全没了。', line: '自由人签不是逛街签，别误会。' },
+  { key: 'igl', title: '今日CS定位', name: '指挥', subtitle: '节奏和决策 / 背锅位', scoreLabel: '适配指数', advice: '今天少喊口号，多给明确计划，暂停后第一回合要有东西。', avoid: '别五个人各打各的还说是默认。', line: '指挥签，嘴可以硬，战术得真有。' },
+  { key: 'awper-role', title: '今日CS定位', name: '狙击手', subtitle: '首杀和架点 / 高责任位', scoreLabel: '适配指数', advice: '拿首杀就收，空枪就退，别恋战。', avoid: '别一把狙打成队伍财政黑洞。', line: '狙击手签很帅，但空枪也很响。' },
+];
+
+const csUtilities: DailyCard[] = [
+  { key: 'flash', title: '今日CS道具', name: '闪光弹', subtitle: '破点和补枪节奏 / 队友最怕你乱丢', scoreLabel: '道具准度', advice: '先报闪再出手，帮队友拿第一枪，不要自己闪自己。', avoid: '别闪出去发现白的只有队友。', line: '闪光签挺关键，闪得好是体系，闪不好是事故。' },
+  { key: 'smoke', title: '今日CS道具', name: '烟雾弹', subtitle: '切空间 / 拖时间 / 断信息', scoreLabel: '道具准度', advice: '烟要封关键视线，别为了丢烟把自己站成免费首杀。', avoid: '别烟封歪了还硬说是新战术。', line: '烟这个东西，封住的是枪线，封不住脑子。' },
+  { key: 'molotov', title: '今日CS道具', name: '燃烧弹', subtitle: '清点和拖延 / 逼位移', scoreLabel: '道具准度', advice: '火要么逼人走，要么拖回防，别烧空气。', avoid: '别下包后火全交完，回防来了只能干看。', line: '火丢得好，对面难受；火丢得烂，队友难受。' },
+  { key: 'he', title: '今日CS道具', name: 'HE手雷', subtitle: '压血线 / 反清 / 经济局偷伤害', scoreLabel: '道具准度', advice: '听到脚步再给，配合枪线把对面血量打残。', avoid: '别开局随手一颗雷，炸了个心理安慰。', line: '雷签就是朴实，炸不死人也要炸出价值。' },
+  { key: 'decoy', title: '今日CS道具', name: '诱饵弹', subtitle: '整活和骗信息 / 低成本节目效果', scoreLabel: '道具准度', advice: '能骗一秒是一秒，但别真把战术押在这玩意上。', avoid: '别全队最有设计的是诱饵弹。', line: '诱饵签有点抽象，但抽象里偶尔也有东西。' },
+  { key: 'kit', title: '今日CS道具', name: '拆弹钳', subtitle: '回防保险 / 别省小钱丢大局', scoreLabel: '道具准度', advice: 'CT经济允许就买，残局少一秒就是两种人生。', avoid: '别到包前才发现自己没钳，开始看天命。', line: '钳子签很现实，CS最后经常输在这点小钱。' },
+];
+
+const csTactics: DailyCard[] = [
+  { key: 'default', title: '今日CS战术', name: '默认控图', subtitle: '信息优先 / 慢慢压缩', scoreLabel: '执行指数', advice: '先拿信息和地图控制，再决定提速点，别五个人同时迷路。', avoid: '别默认默认着就没人敢动了。', line: '默认不是发呆，默认是让对面先露破绽。' },
+  { key: 'explode', title: '今日CS战术', name: '爆弹一波', subtitle: '道具同步 / 快速进点', scoreLabel: '执行指数', advice: '烟闪火一起到，人也要一起到，别道具打完人在原地。', avoid: '别一波爆弹变成一波排队。', line: '爆弹签要的就是整齐，散了就只剩节目。' },
+  { key: 'split', title: '今日CS战术', name: '夹击同步', subtitle: '两线压力 / timing 最重要', scoreLabel: '执行指数', advice: '两边别脱节，正面先给压力，侧翼再收口。', avoid: '别夹击夹到最后只剩一个人在逛街。', line: '夹击签很吃沟通，一慢就从战术变成旅游。' },
+  { key: 'fake', title: '今日CS战术', name: '假打转点', subtitle: '骗轮转 / 读防守', scoreLabel: '执行指数', advice: '假打要让对面真信，给声音、给道具、给压力，再转。', avoid: '别对面没动，你自己先被自己骗了。', line: '假打签有脑子，但脑子得比嗓门先到。' },
+  { key: 'contact', title: '今日CS战术', name: '静音接触', subtitle: '靠近点位 / 突然提速', scoreLabel: '执行指数', advice: '走到位再爆发，第一枪要有人补，别一个人开故事。', avoid: '别静音摸到脸上，然后没人敢出。', line: '接触签就是憋一口气，憋完得真打出来。' },
+  { key: 'forcebuy', title: '今日CS战术', name: '强起翻盘', subtitle: '经济赌博 / 信息和交叉火力', scoreLabel: '执行指数', advice: '枪差就打近点和交叉，别中远距离硬找自信。', avoid: '别把强起打成捐款。', line: '强起签可以燃，但燃完别把经济烧没了。' },
+];
+
+const csClutches: DailyCard[] = [
+  { key: 'one-v-one', title: '今日CS残局', name: '1v1残局', subtitle: '信息差 / 假动作 / 心态', scoreLabel: '残局指数', advice: '别急着给脚步，先判断包点和时间，再做选择。', avoid: '别明明有时间，硬急成无信息单挑。', line: '1v1签就是心理战，谁先急谁先交学费。' },
+  { key: 'save', title: '今日CS残局', name: '理性保枪', subtitle: '经济纪律 / 下一回合还能做人', scoreLabel: '残局指数', advice: '没钳没道具没位置，该保就保，别为了面子送枪。', avoid: '别保枪保到被抓，经济和面子一起没。', line: '保枪签不丢人，丢人的是保都保不住。' },
+  { key: 'retake', title: '今日CS残局', name: '多人回防', subtitle: '切空间 / 道具反清 / 不要一窝蜂', scoreLabel: '残局指数', advice: '先等队友，再用烟闪切点，别三个人从同一个门挤进去。', avoid: '别人数优势打成葫芦娃救爷爷。', line: '回防签看纪律，不是看谁嗓门最大。' },
+  { key: 'postplant', title: '今日CS残局', name: '下包后防守', subtitle: '交叉枪线 / 时间压力', scoreLabel: '残局指数', advice: '站位拉开，别全看一个方向，听拆包再给压力。', avoid: '别包都下了还主动送出去帮对面提速。', line: '下包后签就是别急，时间是你队友。' },
+  { key: 'eco-clutch', title: '今日CS残局', name: 'ECO偷回合', subtitle: '短枪和道具 / 抓对面大意', scoreLabel: '残局指数', advice: '靠近点、叠人、骗道具，别和长枪正常对枪。', avoid: '别拿小枪打远点还说差一点。', line: 'ECO签最会骗人，但真骗到就是血赚。' },
+  { key: 'awp-save', title: '今日CS残局', name: '大狙残局', subtitle: '高价值武器 / 站位选择', scoreLabel: '残局指数', advice: '有机会就打一枪换位，没机会就把狙带走。', avoid: '别为了镜头把全队最贵的枪送了。', line: '狙残局签挺帅，但帅之前先别空。' },
+];
+
 function todayKey(): string {
   return new Date().toLocaleDateString('zh-CN', { timeZone: 'Asia/Shanghai' });
 }
 
-function dailySeedFor(userId: number, groupId: number = 0): number {
-  return Math.abs(hashCode(`${todayKey()}_csplayer_${groupId}_${userId}`));
+function dailySeedForKind(kind: string, userId: number, scopeId: number = 0): number {
+  return Math.abs(hashCode(`${todayKey()}_${kind}_${scopeId}_${userId}`));
 }
 
 function dailyPlayerFor(userId: number, groupId: number = 0): CSPlayer {
-  const seed = dailySeedFor(userId, groupId);
+  const seed = dailySeedForKind('csplayer', userId, groupId);
   return csPlayers[seed % csPlayers.length];
 }
 
 function dailyPlayerScore(userId: number, groupId: number = 0): number {
-  return (dailySeedFor(userId, groupId) % 100) + 1;
+  return (dailySeedForKind('csplayer_score', userId, groupId) % 100) + 1;
+}
+
+function dailyCardFor(kind: string, userId: number, scopeId: number, cards: DailyCard[]): DailyCard {
+  return cards[dailySeedForKind(kind, userId, scopeId) % cards.length];
+}
+
+function dailyScoreForKind(kind: string, userId: number, scopeId: number): number {
+  return (dailySeedForKind(`${kind}_score`, userId, scopeId) % 100) + 1;
 }
 
 function scoreLine(score: number): string {
@@ -105,7 +276,7 @@ function scoreLine(score: number): string {
 }
 
 function normalizeDrawText(text: string): string {
-  return text.toLowerCase().replace(/\s+/g, '').replace(/[，。！？!?、,.]/g, '');
+  return text.toLowerCase().replace(/^\//, '').replace(/\s+/g, '').replace(/[：:，。！？!?、,.]/g, '');
 }
 
 function isCsPlayerDrawRequest(command: string | null, rawText: string): boolean {
@@ -118,20 +289,97 @@ function isCsPlayerDrawRequest(command: string | null, rawText: string): boolean
   return hasDrawWord && hasPlayerWord;
 }
 
+function isDailyCardRequest(command: string | null, rawText: string, kind: DailyCardKind): boolean {
+  const commandMap: Record<DailyCardKind, string[]> = {
+    team: ['csteam', 'csteamday', 'todayteam', '今日队伍', '每日队伍', '抽队伍', '今日战队', '每日战队'],
+    map: ['csmap', 'mapday', 'todaymap', '今日地图', '每日地图', '抽地图'],
+    weapon: ['csweapon', 'weaponday', 'todayweapon', '今日武器', '每日武器', '抽武器', '今日枪械'],
+    role: ['csrole', 'roleday', 'todayrole', '今日定位', '每日定位', '抽定位', '今日位置'],
+    loadout: ['csloadout', 'cspack', 'csdaily', '今日cs', '每日cs', '今日cs2', '每日cs2', '今日套餐', '每日套餐', '今日套装', '每日套装'],
+    utility: ['csutility', 'csnade', 'todaynade', '今日道具', '每日道具', '抽道具', '今日投掷物'],
+    tactic: ['cstactic', 'csstrat', 'todaystrat', '今日战术', '每日战术', '抽战术'],
+    clutch: ['csclutch', 'todayclutch', '今日残局', '每日残局', '抽残局'],
+  };
+  if (command && commandMap[kind].includes(command)) return true;
+  const text = normalizeDrawText(rawText);
+  if (!text) return false;
+  if (kind === 'loadout' && ['今日cs', '每日cs', '今天cs', '今日cs2', '每日cs2', '今天cs2'].includes(text)) return true;
+  const hasDaily = /(抽|今日|每日|今天|本日|来个|给我来个)/.test(text);
+  if (!hasDaily) return false;
+  if (kind === 'team') return /(cs队伍|cs2队伍|队伍签|战队|主队|今日队伍|每日队伍)/.test(text);
+  if (kind === 'map') return /(cs地图|cs2地图|地图签|今日地图|每日地图|哪张图)/.test(text);
+  if (kind === 'weapon') return /(cs武器|cs2武器|枪械|武器签|今日武器|每日武器|今天用什么枪)/.test(text);
+  if (kind === 'role') return /(cs定位|cs2定位|位置|定位签|今日定位|每日定位|今天打什么位)/.test(text);
+  if (kind === 'utility') return /(cs道具|cs2道具|投掷物|道具签|今日道具|每日道具|今天丢什么)/.test(text);
+  if (kind === 'tactic') return /(cs战术|cs2战术|战术签|今日战术|每日战术|今天怎么打|今天打什么战术)/.test(text);
+  if (kind === 'clutch') return /(cs残局|cs2残局|残局签|今日残局|每日残局|今天残局|残局怎么打)/.test(text);
+  return /(cs套餐|cs2套餐|今日套餐|每日套餐|今日套装|每日套装|今天怎么打|今天打啥)/.test(text);
+}
+
 function buildCsPlayerMessage(userId: number, player: CSPlayer, score?: number): MessageSegment[] {
+  const scoreText = typeof score === 'number' ? `${scoreLine(score)} ${score}/100` : '';
   const text = [
-    ` 今日CS选手：${player.nick}`,
+    `今日CS选手：${player.nick}`,
     `昵称：${player.nick}`,
+    `真名：${player.name}`,
     `队伍语境：${player.team}`,
     `定位：${player.role}`,
-    typeof score === 'number' ? `${scoreLine(score)} ${score}/100` : '',
-    player.note,
+    scoreText,
+    player.style ? `打法：${player.style}` : '',
+    player.avoid ? `别犯：${player.avoid}` : '',
+    `机器锐评：${player.note}`,
+    `图源：${player.imageSource}`,
   ].filter(Boolean).join('\n');
   const message: MessageSegment[] = [
     { type: 'at', data: { qq: String(userId) } },
-    { type: 'text', data: { text } },
+    { type: 'text', data: { text: ` ${text}` } },
   ];
   message.push({ type: 'image', data: { file: player.image } });
+  return message;
+}
+
+function buildPrivateCsPlayerMessage(player: CSPlayer, score?: number): MessageSegment[] {
+  const message = buildCsPlayerMessage(0, player, score).filter((seg) => seg.type !== 'at');
+  return message;
+}
+
+function buildDailyCardMessage(userId: number, card: DailyCard, score: number, isPrivate: boolean): MessageSegment[] {
+  const text = [
+    `${card.title}：${card.name}`,
+    card.subtitle,
+    `${card.scoreLabel}：${score}/100`,
+    `打法：${card.advice}`,
+    `别犯：${card.avoid}`,
+    `机器锐评：${card.line}`,
+  ].join('\n');
+  const message: MessageSegment[] = [];
+  if (!isPrivate) message.push({ type: 'at', data: { qq: String(userId) } });
+  message.push({ type: 'text', data: { text: isPrivate ? text : ` ${text}` } });
+  if (card.image) message.push({ type: 'image', data: { file: card.image } });
+  return message;
+}
+
+function buildLoadoutMessage(userId: number, scopeId: number, isPrivate: boolean): MessageSegment[] {
+  const team = dailyCardFor('csteam_pack', userId, scopeId, csTeams);
+  const map = dailyCardFor('csmap_pack', userId, scopeId, csMaps);
+  const weapon = dailyCardFor('csweapon_pack', userId, scopeId, csWeapons);
+  const role = dailyCardFor('csrole_pack', userId, scopeId, csRoles);
+  const score = dailyScoreForKind('csloadout', userId, scopeId);
+  const text = [
+    '今日CS套餐',
+    `队伍：${team.name}`,
+    `地图：${map.name}`,
+    `武器：${weapon.name}`,
+    `定位：${role.name}`,
+    `综合节目效果：${score}/100`,
+    `打法：${role.advice} ${weapon.advice}`,
+    `别犯：${map.avoid}`,
+    `机器锐评：${score >= 80 ? '这套签有点东西，今天可以稍微硬一点。' : score >= 45 ? '能打，但别把自己当主角。' : '不是哥们，这套先稳住，别上来就送大的。'}`,
+  ].join('\n');
+  const message: MessageSegment[] = [];
+  if (!isPrivate) message.push({ type: 'at', data: { qq: String(userId) } });
+  message.push({ type: 'text', data: { text: isPrivate ? text : ` ${text}` } });
+  if (team.image) message.push({ type: 'image', data: { file: team.image } });
   return message;
 }
 
@@ -232,9 +480,61 @@ export const funPlugin: Plugin = {
 
     // ===== 每日CS选手 =====
     if (isCsPlayerDrawRequest(ctx.command, raw)) {
-      const player = dailyPlayerFor(ctx.event.user_id, ctx.event.group_id);
-      const score = dailyPlayerScore(ctx.event.user_id, ctx.event.group_id);
-      ctx.reply(buildCsPlayerMessage(ctx.event.user_id, player, score));
+      const scopeId = ctx.groupId || 0;
+      const player = dailyPlayerFor(ctx.event.user_id, scopeId);
+      const score = dailyPlayerScore(ctx.event.user_id, scopeId);
+      ctx.reply(ctx.isPrivate
+        ? buildPrivateCsPlayerMessage(player, score)
+        : buildCsPlayerMessage(ctx.event.user_id, player, score));
+      return true;
+    }
+
+    // ===== 每日CS队伍/地图/武器/定位/套餐 =====
+    const scopeId = ctx.groupId || 0;
+    if (isDailyCardRequest(ctx.command, raw, 'loadout')) {
+      ctx.reply(buildLoadoutMessage(ctx.event.user_id, scopeId, ctx.isPrivate));
+      return true;
+    }
+    if (isDailyCardRequest(ctx.command, raw, 'team')) {
+      const card = dailyCardFor('csteam', ctx.event.user_id, scopeId, csTeams);
+      const score = dailyScoreForKind('csteam', ctx.event.user_id, scopeId);
+      ctx.reply(buildDailyCardMessage(ctx.event.user_id, card, score, ctx.isPrivate));
+      return true;
+    }
+    if (isDailyCardRequest(ctx.command, raw, 'map')) {
+      const card = dailyCardFor('csmap', ctx.event.user_id, scopeId, csMaps);
+      const score = dailyScoreForKind('csmap', ctx.event.user_id, scopeId);
+      ctx.reply(buildDailyCardMessage(ctx.event.user_id, card, score, ctx.isPrivate));
+      return true;
+    }
+    if (isDailyCardRequest(ctx.command, raw, 'weapon')) {
+      const card = dailyCardFor('csweapon', ctx.event.user_id, scopeId, csWeapons);
+      const score = dailyScoreForKind('csweapon', ctx.event.user_id, scopeId);
+      ctx.reply(buildDailyCardMessage(ctx.event.user_id, card, score, ctx.isPrivate));
+      return true;
+    }
+    if (isDailyCardRequest(ctx.command, raw, 'role')) {
+      const card = dailyCardFor('csrole', ctx.event.user_id, scopeId, csRoles);
+      const score = dailyScoreForKind('csrole', ctx.event.user_id, scopeId);
+      ctx.reply(buildDailyCardMessage(ctx.event.user_id, card, score, ctx.isPrivate));
+      return true;
+    }
+    if (isDailyCardRequest(ctx.command, raw, 'utility')) {
+      const card = dailyCardFor('csutility', ctx.event.user_id, scopeId, csUtilities);
+      const score = dailyScoreForKind('csutility', ctx.event.user_id, scopeId);
+      ctx.reply(buildDailyCardMessage(ctx.event.user_id, card, score, ctx.isPrivate));
+      return true;
+    }
+    if (isDailyCardRequest(ctx.command, raw, 'tactic')) {
+      const card = dailyCardFor('cstactic', ctx.event.user_id, scopeId, csTactics);
+      const score = dailyScoreForKind('cstactic', ctx.event.user_id, scopeId);
+      ctx.reply(buildDailyCardMessage(ctx.event.user_id, card, score, ctx.isPrivate));
+      return true;
+    }
+    if (isDailyCardRequest(ctx.command, raw, 'clutch')) {
+      const card = dailyCardFor('csclutch', ctx.event.user_id, scopeId, csClutches);
+      const score = dailyScoreForKind('csclutch', ctx.event.user_id, scopeId);
+      ctx.reply(buildDailyCardMessage(ctx.event.user_id, card, score, ctx.isPrivate));
       return true;
     }
 
@@ -244,10 +544,22 @@ export const funPlugin: Plugin = {
 
 export const __test = {
   csPlayers,
+  csTeams,
+  csMaps,
+  csWeapons,
+  csRoles,
+  csUtilities,
+  csTactics,
+  csClutches,
   dailyPlayerFor,
   dailyPlayerScore,
+  dailyCardFor,
+  dailyScoreForKind,
   isCsPlayerDrawRequest,
+  isDailyCardRequest,
   buildCsPlayerMessage,
+  buildDailyCardMessage,
+  buildLoadoutMessage,
 };
 
 /** 字符串哈希 */

@@ -3,7 +3,8 @@ import { PrivateMessageEvent, OneBotEvent } from '../types';
 
 /**
  * 私聊转发插件
- * 有人私聊bot时，转发给管理员，并且用AI回复私聊者
+ * 有人私聊bot时，只做日志和管理员通知。
+ * 真正回复由 MessageHandler 的私聊消息链路处理，避免一条私聊触发两次回复。
  */
 
 export function registerPrivateForward(bot: Bot): void {
@@ -25,24 +26,11 @@ export function registerPrivateForward(bot: Bot): void {
       const forwardMsg = `[私聊转发]\n来自: ${name}(${e.user_id})\n内容: ${e.raw_message}`;
       for (const admin of config.admin_qq) {
         if (admin !== e.user_id) {
-          bot.sendPrivateMessage(admin, forwardMsg);
+          void bot.sendPrivateMessage(admin, forwardMsg);
         }
       }
     }
-
-    // 简单自动回复（告知是群聊bot）
-    const autoReplies = [
-      '我是群 bot，私聊没什么节目效果，有事群里@我。',
-      '私聊我没啥用，去群里说，别搁这单走白给。',
-      '去群里找我聊，私聊我一般不接弹幕。',
-    ];
-
-    // 如果是管理员私聊，不自动回复
-    if (config.admin_qq.includes(e.user_id)) return;
-
-    const reply = autoReplies[Math.floor(Math.random() * autoReplies.length)];
-    bot.sendPrivateMessage(e.user_id, reply);
   });
 
-  console.log('[Private] 私聊转发已启用');
+  console.log('[Private] 私聊日志/管理员转发已启用，私聊回复走主插件链');
 }

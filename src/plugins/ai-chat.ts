@@ -1,11 +1,12 @@
-import { Plugin, PluginContext, AIConfig, GroupMessageEvent, MessageSegment } from '../types';
+import { Plugin, PluginContext, AIConfig, MessageEvent, MessageSegment } from '../types';
 import { Bot } from '../bot';
 import { hasUsableApiKey } from '../config';
 import { cleanSearchCache, configureSearchCache, webSearch } from './web-search';
 import { cleanVoiceCache, generateVoice, getVoiceStats } from './tts';
 import { cleanSttCache, getSttStats, transcribeRecords } from './stt';
-import { cleanupCache as cleanImageCache, configureImageCache, getImageDataUrl } from './image-cache';
+import { cleanupCache as cleanImageCache, configureImageCache, getCacheStats as getImageCacheStats, getImageDataUrl } from './image-cache';
 import { configureGates, getGateStats, withGate } from './concurrency';
+import { sanitizeOutgoingText } from '../message-sanitize';
 import {
   commitKnowledgeCandidate,
   dropKnowledgeCandidate,
@@ -62,7 +63,9 @@ interface SessionContext {
 
 interface ReplyJob {
   sessionId: string;
-  groupId: number;
+  chatType: 'group' | 'private';
+  chatId: number;
+  groupId?: number;
   userId: number;
   selfId: number;
   messageId: number;
@@ -250,7 +253,8 @@ function extractRecordUrls(message: MessageSegment[]): string[] {
     .filter(Boolean);
 }
 
-function isAtBot(event: GroupMessageEvent): boolean {
+function isAtBot(event: MessageEvent): boolean {
+  if (event.message_type !== 'group') return false;
   const selfId = String(event.self_id);
   return event.message.some(
     (seg) => seg.type === 'at' && String(seg.data.qq) === selfId
@@ -485,7 +489,9 @@ function buildTargetText(job: ReplyJob, recordTranscripts: string[] = []): strin
   const speakerHints = buildRecentSpeakerHints(job.contextMessages.slice(0, -1), job.userId);
   return [
     '[当前要回复的消息]',
-    `group_id: ${job.groupId}`,
+    `chat_type: ${job.chatType}`,
+    job.groupId ? `group_id: ${job.groupId}` : '',
+    `chat_id: ${job.chatId}`,
     `message_id: ${job.messageId}`,
     `发送者: ${job.senderName}`,
     `user_id: ${job.userId}`,
@@ -555,7 +561,7 @@ function postProcessReply(text: string): string {
   } else if (/^[哈啊嗯哦额呃草艹wW6]+$/.test(text) && text.length <= 6) {
     text = '不是哥们 这波有点抽象';
   }
-  return text.trim();
+  return sanitizeOutgoingText(text).trim();
 }
 
 function forcedFallbackReply(job: ReplyJob, recordTranscripts: string[] = []): string {
@@ -914,6 +920,7 @@ let replyCacheMisses = 0;
 const directAiCommands = new Set(['ai', 'ask', 'chat']);
 const directTtsCommands = new Set(['voice', 'tts', 'say']);
 const directSearchCommands = new Set(['search', '搜', '搜索']);
+const directVisionCommands = new Set(['vision', 'image', 'img', '识图']);
 const defaultSearchPattern = /最新|最近|现在|今天|谁赢|比分|赛程|更新|版本|发布|新闻|热搜|多少钱|价格|天气/;
 const knowledgeRefreshQueries = [
   '玩机器 Machine 6657 经典语录 切片 CS2 解说',
@@ -1179,9 +1186,10 @@ function shouldReply(
   command: string | null,
   atBot: boolean,
   replyToBot: boolean,
+  isPrivate: boolean = false,
 ): { reply: boolean; forced: boolean } {
   const directCommand = !!command && directAiCommands.has(command);
-  if (directCommand || atBot || replyToBot) {
+  if (directCommand || atBot || replyToBot || isPrivate) {
     return { reply: true, forced: true };
   }
   if (command) {
@@ -1367,7 +1375,9 @@ export const aiChatPlugin: Plugin = {
     ensureKnowledgeAutoTimer(config);
     ensureMaintenanceTimer();
     const cm = getContextManager(config);
-    const sessionId = `group_${ctx.event.group_id}`;
+    const sessionId = ctx.isPrivate
+      ? `private_${ctx.event.user_id}`
+      : `group_${ctx.groupId}`;
 
     // ===== 管理命令 =====
     if (ctx.command === 'reset' || ctx.command === 'clear') {
@@ -1389,6 +1399,65 @@ export const aiChatPlugin: Plugin = {
       return true;
     }
     if (await handleLocalKnowledgeCommand(ctx, config)) {
+      return true;
+    }
+
+    // ===== 识图/图片缓存诊断 =====
+    if (ctx.command && directVisionCommands.has(ctx.command)) {
+      const subCommand = (ctx.args[0] || '').toLowerCase();
+      const stats = getImageCacheStats();
+      if (!subCommand || subCommand === 'status') {
+        ctx.reply([
+          '识图状态',
+          `开关: ${config.enable_vision ? 'on' : 'off'}`,
+          `模型: ${config.vision_model || config.model || '未配置'}`,
+          `单次图片: ${config.vision_max_images || 2}`,
+          `缓存: ${stats.count}张 ${stats.sizeMB}/${stats.maxSizeMB}MB 命中${stats.hits}/${stats.misses} 失败${stats.downloadFailures}`,
+          `单图上限: ${stats.maxFileMB}MB`,
+          ...(stats.lastError ? [`最近错误: ${stats.lastError}`] : []),
+          '/vision test <图片URL>',
+        ].join('\n'));
+        return true;
+      }
+      if (subCommand === 'test') {
+        const url = ctx.args.slice(1).join(' ').trim() || extractImageUrls(ctx.event.message)[0] || '';
+        if (!url) {
+          ctx.reply('/vision test <图片URL>\n也可以把图片和 /vision test 发在同一条消息里');
+          return true;
+        }
+        if (!config.enable_vision) {
+          ctx.reply('识图没开，先把 enable_vision 打开。');
+          return true;
+        }
+        if (!apiReady) {
+          ctx.reply('AI接口没配，识图模型现在打不出去。');
+          return true;
+        }
+        const dataUrl = await withGate('vision', () => getImageDataUrl(url));
+        const nextStats = getImageCacheStats();
+        if (!dataUrl) {
+          ctx.reply(`图片下载失败。最近错误: ${nextStats.lastError || 'unknown'}`);
+          return true;
+        }
+        try {
+          const result = await withGate('vision', () => callLLMWithRetry(config, [
+            { role: 'system', content: '你是识图链路测试器。只用一句中文描述图片里最明显的可见内容；看不清就说看不清，不要编造。' },
+            {
+              role: 'user',
+              content: [
+                { type: 'text', text: '请测试识图链路，描述这张图。' },
+                { type: 'image_url', image_url: { url: dataUrl, detail: 'low' } },
+              ],
+            },
+          ], true, 1));
+          ctx.reply(`识图OK\n${postProcessReply(result).slice(0, 180)}`);
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          ctx.reply(`图片下载OK，但视觉模型调用失败: ${message.slice(0, 160)}`);
+        }
+        return true;
+      }
+      ctx.reply('/vision status\n/vision test <图片URL>');
       return true;
     }
 
@@ -1420,7 +1489,30 @@ export const aiChatPlugin: Plugin = {
 
       if (subCommand === 'clean') {
         cleanVoiceCache(config);
-        ctx.reply('语音缓存清理过期文件了。');
+        cleanSttCache(config);
+        ctx.reply('语音和听写缓存都清了一遍过期文件。');
+        return true;
+      }
+
+      if (subCommand === 'stt' || subCommand === 'listen' || subCommand === 'transcribe') {
+        const input = ctx.args.slice(1).join(' ').trim() || extractRecordUrls(ctx.event.message)[0] || '';
+        if (!input) {
+          ctx.reply('/voice stt <语音URL>\n也可以把语音和 /voice stt 发在同一条消息里');
+          return true;
+        }
+        if (!config.enable_stt) {
+          ctx.reply('听写没开，先把 enable_stt 打开。');
+          return true;
+        }
+        if (!apiReady) {
+          ctx.reply('AI接口没配，听写模型现在打不出去。');
+          return true;
+        }
+        const transcripts = await withGate('stt', () => transcribeRecords(config, [input]));
+        const sttStats = getSttStats(config);
+        ctx.reply(transcripts.length > 0
+          ? `听写OK\n${transcripts.join('\n').slice(0, 500)}`
+          : `听写失败。最近错误: ${sttStats.lastError || 'unknown'}`);
         return true;
       }
 
@@ -1428,7 +1520,7 @@ export const aiChatPlugin: Plugin = {
         ? (ctx.args.slice(1).join(' ').trim() || '不是哥们，这波语音测试有点东西。')
         : ctx.args.join(' ').trim();
       if (!text) {
-        ctx.reply('/voice <内容>\n/voice status\n/voice test [内容]\n/voice clean');
+        ctx.reply('/voice <内容>\n/voice status\n/voice test [内容]\n/voice stt <语音URL>\n/voice clean');
         return true;
       }
       if (!config.enable_tts) {
@@ -1474,7 +1566,7 @@ export const aiChatPlugin: Plugin = {
         ctx.reply('AI接口没配，/ai 现在打不出去。');
         return true;
       }
-      if (isAtBot(ctx.event) || ctx.isReplyToBot) {
+      if (ctx.isPrivate || isAtBot(ctx.event) || ctx.isReplyToBot) {
         ctx.replyQuote('AI接口没配，我现在只能查本地命令。');
         return true;
       }
@@ -1501,7 +1593,7 @@ export const aiChatPlugin: Plugin = {
       return true;
     }
 
-    const trigger = shouldReply(config, effectiveText, ctx.command, atBot, ctx.isReplyToBot);
+    const trigger = shouldReply(config, effectiveText, ctx.command, atBot, ctx.isReplyToBot, ctx.isPrivate);
 
     const storedBaseText = effectiveText
       ? `[mid=${ctx.event.message_id} uid=${ctx.event.user_id}] ${senderName}: ${effectiveText}`
@@ -1525,7 +1617,9 @@ export const aiChatPlugin: Plugin = {
 
     const triggerReason = ctx.command && directAiCommands.has(ctx.command)
       ? `命令/${ctx.command}`
-      : ctx.isReplyToBot
+      : ctx.isPrivate
+        ? '私聊'
+        : ctx.isReplyToBot
         ? '回复bot'
         : atBot
           ? '@bot'
@@ -1546,7 +1640,9 @@ export const aiChatPlugin: Plugin = {
 
     const job: ReplyJob = {
       sessionId,
-      groupId: ctx.event.group_id,
+      chatType: ctx.chatType,
+      chatId: ctx.chatId,
+      groupId: ctx.groupId,
       userId: ctx.event.user_id,
       selfId: ctx.event.self_id,
       messageId: ctx.event.message_id,
@@ -1584,7 +1680,13 @@ export const aiChatPlugin: Plugin = {
         }
 
         const recordTranscriptText = recordTranscripts.join('\n');
-        const targetText = buildTargetText(job, recordTranscripts);
+        let targetText = buildTargetText(job, recordTranscripts);
+
+        if (job.hasImages && !config.enable_vision) {
+          targetText += '\n注意：当前消息含图片，但识图功能未开启。不要假装看到了图片细节，只能按文字上下文回应或请对方补充说明。';
+        } else if (job.hasImages && skipHeavyEnhancements) {
+          targetText += '\n注意：当前消息含图片，但队列积压已跳过识图。不要假装看到了图片细节，只能按文字上下文回应。';
+        }
 
         if (job.hasImages && config.enable_vision && !skipHeavyEnhancements) {
           const limit = Math.max(1, Math.min(config.vision_max_images || 2, 4));
@@ -1603,6 +1705,7 @@ export const aiChatPlugin: Plugin = {
             apiCurrentMessage = { role: 'user', content: parts };
             usesVisionPayload = true;
           } else {
+            targetText += '\n注意：当前消息含图片，但图片下载或缓存失败，模型实际上看不到图。不要编造图片细节，可以让对方重发或补充文字。';
             apiCurrentMessage = { role: 'user', content: targetText };
           }
         } else {
@@ -1618,7 +1721,7 @@ export const aiChatPlugin: Plugin = {
               .then(summary => {
                 if (summary) {
                   cm.applyCompression(job.sessionId, summary);
-                  console.log(`[Context] 群${job.groupId} 压缩${oldMessages.length}条`);
+                  console.log(`[Context] ${job.chatType}${job.chatId} 压缩${oldMessages.length}条`);
                 }
               })
               .catch(() => {})
@@ -1734,14 +1837,14 @@ export const aiChatPlugin: Plugin = {
         lastReplyAt.set(job.sessionId, Date.now());
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err);
-        console.error(`[AI][群${job.groupId}] 失败:`, errMsg);
+        console.error(`[AI][${job.chatType}${job.chatId}] 失败:`, errMsg);
         if (job.forced) {
           ctx.replyQuoteTo(job.messageId, job.userId, '接口有点卡 你等会再说');
         }
       }
     }).catch((err) => {
       const errMsg = err instanceof Error ? err.message : String(err);
-      console.error(`[AI][群${job.groupId}] 队列异常:`, errMsg);
+      console.error(`[AI][${job.chatType}${job.chatId}] 队列异常:`, errMsg);
       if (job.forced) {
         ctx.replyQuoteTo(job.messageId, job.userId, '接口有点卡 你等会再说');
       }

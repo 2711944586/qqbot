@@ -124,6 +124,55 @@ function setVoiceError(message: string): void {
   lastVoiceError = message.slice(0, 160);
 }
 
+function normalizeAudioCandidate(item: string): string {
+  const value = item.trim();
+  if (!value) return '';
+  const raw = value.replace(/^data:audio\/[^;]+;base64,/, '').replace(/\s+/g, '');
+  if (raw.length < 100) return '';
+  if (!/^[A-Za-z0-9+/_=-]+$/.test(raw)) return '';
+  return value;
+}
+
+function firstAudioString(...items: any[]): string {
+  for (const item of items) {
+    if (typeof item === 'string') {
+      const candidate = normalizeAudioCandidate(item);
+      if (candidate) return candidate;
+    }
+    if (Array.isArray(item)) {
+      const nested = firstAudioString(...item);
+      if (nested) return nested;
+    } else if (item && typeof item === 'object') {
+      const nested = firstAudioString(
+        item.audio?.data,
+        item.audio,
+        item.data,
+        item.b64_json,
+        item.base64,
+        item.content,
+        item.text,
+      );
+      if (nested) return nested;
+    }
+  }
+  return '';
+}
+
+function extractAudioBase64(json: any): string {
+  return firstAudioString(
+    json.choices?.[0]?.message?.audio?.data,
+    json.choices?.[0]?.message?.content,
+    json.audio?.data,
+    json.audio,
+    json.data?.audio,
+    json.data?.[0]?.audio,
+    json.output?.audio?.data,
+    json.output?.audio,
+    json.output?.[0]?.content,
+    json.response?.audio,
+  );
+}
+
 /** 调用TTS生成语音，返回本地WAV文件路径 */
 export function generateVoice(config: AIConfig, text: string): Promise<string | null> {
   return new Promise((resolve) => {
@@ -229,7 +278,7 @@ export function generateVoice(config: AIConfig, text: string): Promise<string | 
             return;
           }
 
-          const audioBase64 = json.choices?.[0]?.message?.content;
+          const audioBase64 = extractAudioBase64(json);
           if (!audioBase64 || audioBase64.length < 100) {
             setVoiceError('empty audio response');
             safeResolve(null);

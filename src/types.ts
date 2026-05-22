@@ -259,13 +259,22 @@ export interface NoticeEvent {
 }
 
 export type OneBotEvent = GroupMessageEvent | PrivateMessageEvent | MetaEvent | NoticeEvent;
+export type MessageEvent = GroupMessageEvent | PrivateMessageEvent;
 
 // ============ 插件系统 ============
 export interface PluginContext {
-  event: GroupMessageEvent;
+  event: MessageEvent;
   rawText: string;
   command: string | null;
   args: string[];
+  /** 当前聊天类型 */
+  chatType: 'group' | 'private';
+  /** 当前聊天ID：群聊为group_id，私聊为user_id */
+  chatId: number;
+  /** 群号；私聊时为 undefined */
+  groupId?: number;
+  /** 是否私聊 */
+  isPrivate: boolean;
   /** 是否@了Bot */
   isAtBot: boolean;
   /** 是否是回复Bot消息 */

@@ -44,6 +44,7 @@ export const repeaterPlugin: Plugin = {
   description: '复读机 - 群友复读时跟着复读',
 
   handler: (ctx) => {
+    if (!ctx.groupId) return false;
     // 强触发必须让 AI 插件接，不让复读机截胡。
     if (ctx.isAtBot || ctx.isReplyToBot) return false;
     // 只处理纯文本非命令消息
@@ -55,7 +56,7 @@ export const repeaterPlugin: Plugin = {
     if (ctx.rawText.length < 2) return false;
     if (isUnsafeRepeatText(ctx.rawText)) return false;
 
-    const groupId = ctx.event.group_id;
+    const groupId = ctx.groupId;
     const state = groupRepeatState.get(groupId);
 
     if (!state || state.lastMessage !== ctx.rawText) {

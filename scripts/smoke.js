@@ -8,16 +8,29 @@ const { configureGates, getGateStats, withGate } = require('../dist/plugins/conc
 const search = require('../dist/plugins/web-search');
 const tts = require('../dist/plugins/tts');
 const aiChat = require('../dist/plugins/ai-chat');
+const imageCache = require('../dist/plugins/image-cache');
 const { registerPokeListener } = require('../dist/plugins/poke');
 const { repeaterPlugin } = require('../dist/plugins/repeater');
 const { funPlugin, __test: funTest } = require('../dist/plugins/fun');
+const { pingPlugin } = require('../dist/plugins/ping');
 const { MessageHandler } = require('../dist/handler');
+const sanitize = require('../dist/message-sanitize');
 
 const SOURCE_STATE_PATH = path.resolve(__dirname, '..', 'knowledge', 'source-state.json');
 
 function firstText(message) {
   if (typeof message === 'string') return message;
   return message.find((seg) => seg.type === 'text')?.data.text;
+}
+
+async function testOutgoingSanitize() {
+  assert.strictEqual(sanitize.sanitizeOutgoingText('可以 😂 笑哭 🤣'), '可以');
+  const message = sanitize.sanitizeOutgoingMessage([
+    { type: 'text', data: { text: '别发😂笑哭' } },
+    { type: 'image', data: { file: 'https://example.com/a.jpg' } },
+  ]);
+  assert.strictEqual(message[0].data.text, '别发');
+  assert.strictEqual(message[1].type, 'image');
 }
 
 function readConfig() {
@@ -72,6 +85,8 @@ async function testConfig() {
   assert.strictEqual(config.ai.search_negative_cache_seconds, 60);
   assert.strictEqual(config.ai.knowledge_aggressive_auto_commit, true);
   assert.strictEqual(config.ai.knowledge_auto_batch_max_sources, 6);
+  assert.ok(config.ai.trigger_keywords.includes('抽道具'), 'example trigger keywords should include daily CS utility');
+  assert.ok(config.ai.trigger_keywords.includes('今日套餐'), 'example trigger keywords should include daily CS loadout');
   assert.strictEqual(hasUsableApiKey(config.ai.api_key), false, 'example placeholder key should not be treated as usable');
   assert.strictEqual(hasUsableApiKey('sk-live-test-key-1234567890'), true, 'real-looking key should be treated as usable');
 }
@@ -130,6 +145,12 @@ async function testVoiceStats() {
   assert.strictEqual(stats.cloneEnabled, true);
   assert.strictEqual(stats.maxChars, 120);
   assert.ok(stats.samplePath.endsWith('voice_sample.mp3'), 'sample path should default to voice_sample.mp3');
+}
+
+async function testImageStats() {
+  const stats = imageCache.getCacheStats();
+  assert.ok(Object.prototype.hasOwnProperty.call(stats, 'downloadFailures'), 'image stats should expose download failures');
+  assert.ok(Object.prototype.hasOwnProperty.call(stats, 'lastError'), 'image stats should expose last error');
 }
 
 async function testGates() {
@@ -229,6 +250,25 @@ function makePlainEvent(messageId, userId, text, extraSegments = [], groupId = 6
     raw_message: text,
     font: 0,
     sender: { user_id: userId, nickname: `user${userId}` },
+  };
+}
+
+function makePrivateEvent(messageId, userId, text, extraSegments = []) {
+  return {
+    time: Math.floor(Date.now() / 1000),
+    self_id: 3853043835,
+    post_type: 'message',
+    message_type: 'private',
+    sub_type: 'friend',
+    message_id: messageId,
+    user_id: userId,
+    message: [
+      ...extraSegments,
+      { type: 'text', data: { text } },
+    ],
+    raw_message: text,
+    font: 0,
+    sender: { user_id: userId, nickname: `private${userId}` },
   };
 }
 
@@ -418,6 +458,64 @@ async function testPassiveTriggerFiltering() {
   }
 }
 
+async function testPrivateMessages() {
+  const config = makeConfigForHandler();
+  const sentPrivate = [];
+  const sentGroup = [];
+  const bot = {
+    getConfig: () => config,
+    sendGroupMessage: async (groupId, message, onMessageId) => {
+      sentGroup.push({ groupId, message });
+      if (onMessageId) onMessageId(40_000 + sentGroup.length);
+      return true;
+    },
+    sendPrivateMessage: async (userId, message, onMessageId) => {
+      sentPrivate.push({ userId, message });
+      if (onMessageId) onMessageId(45_000 + sentPrivate.length);
+      return true;
+    },
+    callApiAsync: async () => ({ retcode: 0, data: {} }),
+  };
+  const handler = new MessageHandler(bot);
+  handler.use(pingPlugin);
+  handler.use(funPlugin);
+  handler.use(aiChat.aiChatPlugin);
+  const prompts = [];
+
+  aiChat.__setLLMCallerForTests(async (_config, messages) => {
+    const current = messages[messages.length - 1];
+    const content = typeof current.content === 'string'
+      ? current.content
+      : current.content.map((item) => item.text || '').join('\n');
+    prompts.push(content);
+    const id = (content.match(/message_id: (\d+)/) || [])[1] || 'unknown';
+    return `私聊收到-${id} 😂 笑哭`;
+  });
+
+  try {
+    handler.handleEvent(makePrivateEvent(701, 71, '/ping'));
+    await waitFor(() => sentPrivate.length === 1, 'private ping');
+    assert.strictEqual(firstText(sentPrivate[0].message), '🏓 pong!');
+    assert.strictEqual(sentGroup.length, 0, 'private ping should not send a group message');
+
+    handler.handleEvent(makePrivateEvent(702, 72, '你好，今天怎么看NAVI'));
+    await waitFor(() => sentPrivate.length === 2, 'private ai forced reply');
+    assert.strictEqual(sentPrivate[1].userId, 72);
+    assert.ok(firstText(sentPrivate[1].message).includes('私聊收到-702'), 'private AI should reply to the sender');
+    assert.ok(!/[😂🤣]|笑哭/.test(firstText(sentPrivate[1].message)), 'private AI replies should strip forbidden smile-cry output');
+    assert.ok(prompts.at(-1).includes('chat_type: private'), 'private prompt should mark chat_type');
+    assert.ok(prompts.at(-1).includes('chat_id: 72'), 'private prompt should include private chat id');
+
+    handler.handleEvent(makePrivateEvent(703, 73, '今天抽个CS选手'));
+    await waitFor(() => sentPrivate.length === 3, 'private fuzzy csplayer');
+    assert.ok(sentPrivate[2].message.some((seg) => seg.type === 'image'), 'private csplayer should send player image');
+    assert.ok(!sentPrivate[2].message.some((seg) => seg.type === 'at'), 'private csplayer should not include @ segment');
+  } finally {
+    aiChat.__setLLMCallerForTests();
+    aiChat.shutdownAiChat();
+  }
+}
+
 async function testRepeaterAndPoke() {
   const config = makeConfigForHandler();
   config.ai.poke_reply_probability = 1;
@@ -493,6 +591,14 @@ async function testFunCsPlayer() {
   assert.strictEqual(funTest.dailyPlayerFor(61, 6657).nick, funTest.dailyPlayerFor(61, 6657).nick, 'daily player should be stable per group and day');
   assert.strictEqual(funTest.isCsPlayerDrawRequest(null, '今天抽个CS选手'), true, 'fuzzy draw text should trigger');
   assert.strictEqual(funTest.isCsPlayerDrawRequest(null, 'NiKo 现在在哪队'), false, 'normal player lookup should not be hijacked by draw');
+  assert.strictEqual(funTest.isDailyCardRequest(null, '今天抽个CS队伍', 'team'), true, 'fuzzy daily team should trigger');
+  assert.strictEqual(funTest.isDailyCardRequest(null, '今天抽个CS地图', 'map'), true, 'fuzzy daily map should trigger');
+  assert.strictEqual(funTest.isDailyCardRequest(null, '今天用什么枪', 'weapon'), true, 'fuzzy daily weapon should trigger');
+  assert.strictEqual(funTest.isDailyCardRequest(null, '今天打什么位', 'role'), true, 'fuzzy daily role should trigger');
+  assert.strictEqual(funTest.isDailyCardRequest(null, '今天丢什么道具', 'utility'), true, 'fuzzy daily utility should trigger');
+  assert.strictEqual(funTest.isDailyCardRequest(null, '今天打什么战术', 'tactic'), true, 'fuzzy daily tactic should trigger');
+  assert.strictEqual(funTest.isDailyCardRequest(null, '今天残局怎么打', 'clutch'), true, 'fuzzy daily clutch should trigger');
+  assert.strictEqual(funTest.isDailyCardRequest(null, '今日cs', 'loadout'), true, 'short daily CS text should trigger loadout');
 
   handler.handleEvent(makePlainEvent(601, 61, '/csplayer'));
   await waitFor(() => sent.length === 1, 'csplayer command');
@@ -509,6 +615,43 @@ async function testFunCsPlayer() {
   handler.handleEvent(makeEvent(603, 63, ' 今天抽个CS选手'));
   await waitFor(() => sent.length === 3, 'at fuzzy csplayer command');
   assert.ok(sent[2].message.some((seg) => seg.type === 'image'), 'at fuzzy csplayer should be handled by fun plugin');
+
+  handler.handleEvent(makePlainEvent(604, 64, '/csteam'));
+  await waitFor(() => sent.length === 4, 'daily team command');
+  assert.ok(firstText(sent[3].message).includes('今日CS队伍'), 'daily team should include title');
+  assert.ok(sent[3].message.some((seg) => seg.type === 'image'), 'daily team should include team image');
+
+  handler.handleEvent(makePlainEvent(605, 65, '今天抽个CS地图'));
+  await waitFor(() => sent.length === 5, 'daily map fuzzy');
+  assert.ok(firstText(sent[4].message).includes('今日CS地图'), 'daily map should include title');
+
+  handler.handleEvent(makePlainEvent(606, 66, '/csweapon'));
+  await waitFor(() => sent.length === 6, 'daily weapon command');
+  assert.ok(firstText(sent[5].message).includes('今日CS武器'), 'daily weapon should include title');
+
+  handler.handleEvent(makePlainEvent(607, 67, '今日定位'));
+  await waitFor(() => sent.length === 7, 'daily role fuzzy');
+  assert.ok(firstText(sent[6].message).includes('今日CS定位'), 'daily role should include title');
+
+  handler.handleEvent(makePlainEvent(608, 68, '/csutility'));
+  await waitFor(() => sent.length === 8, 'daily utility command');
+  assert.ok(firstText(sent[7].message).includes('今日CS道具'), 'daily utility should include title');
+
+  handler.handleEvent(makePlainEvent(609, 69, '今天打什么战术'));
+  await waitFor(() => sent.length === 9, 'daily tactic fuzzy');
+  assert.ok(firstText(sent[8].message).includes('今日CS战术'), 'daily tactic should include title');
+
+  handler.handleEvent(makePlainEvent(610, 70, '今天残局怎么打'));
+  await waitFor(() => sent.length === 10, 'daily clutch fuzzy');
+  assert.ok(firstText(sent[9].message).includes('今日CS残局'), 'daily clutch should include title');
+
+  handler.handleEvent(makePlainEvent(611, 71, '/csloadout'));
+  await waitFor(() => sent.length === 11, 'daily loadout command');
+  assert.ok(firstText(sent[10].message).includes('今日CS套餐'), 'daily loadout should include title');
+
+  handler.handleEvent(makePlainEvent(612, 72, '今日cs'));
+  await waitFor(() => sent.length === 12, 'short daily cs fuzzy');
+  assert.ok(firstText(sent[11].message).includes('今日CS套餐'), 'short daily CS should trigger loadout');
 }
 
 async function testCrossGroupAiConcurrency() {
@@ -560,14 +703,17 @@ async function testCrossGroupAiConcurrency() {
 }
 
 async function main() {
+  await testOutgoingSanitize();
   await testConfig();
   await testKnowledge();
   await testKnowledgeSourceState();
   await testVoiceStats();
+  await testImageStats();
   await testGates();
   await testSearchSingleFlight();
   await testMessageReplyTargeting();
   await testPassiveTriggerFiltering();
+  await testPrivateMessages();
   await testRepeaterAndPoke();
   await testFunCsPlayer();
   await testCrossGroupAiConcurrency();

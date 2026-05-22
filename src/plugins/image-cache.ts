@@ -18,6 +18,8 @@ let maxCacheSizeMB = 100;
 let maxFileSizeBytes = 1 * 1024 * 1024;
 let maxCacheAgeHours = 24;
 let cacheConfigKey = '';
+let downloadFailures = 0;
+let lastImageError = '';
 
 if (!fs.existsSync(CACHE_DIR)) {
   fs.mkdirSync(CACHE_DIR, { recursive: true });
@@ -36,6 +38,10 @@ interface CacheEntry {
 const memIndex: Map<string, CacheEntry> = new Map();
 let cacheHits = 0;
 let cacheMisses = 0;
+
+function setImageError(message: string): void {
+  lastImageError = message.slice(0, 160);
+}
 
 /** 启动时扫描磁盘恢复索引 */
 function loadCacheIndex(): void {
@@ -85,6 +91,8 @@ function downloadAndCache(url: string): Promise<CacheEntry | null> {
     };
 
     if (!url || !url.startsWith('http')) {
+      setImageError('image url is empty or not http');
+      downloadFailures++;
       safeResolve(null);
       return;
     }
@@ -93,6 +101,8 @@ function downloadAndCache(url: string): Promise<CacheEntry | null> {
     try {
       parsedUrl = new URL(url);
     } catch {
+      setImageError('invalid image url');
+      downloadFailures++;
       safeResolve(null);
       return;
     }
@@ -107,6 +117,8 @@ function downloadAndCache(url: string): Promise<CacheEntry | null> {
       headers: { 'User-Agent': 'Mozilla/5.0' },
     }, (res) => {
       if (res.statusCode !== 200) {
+        setImageError(`HTTP ${res.statusCode}`);
+        downloadFailures++;
         safeResolve(null);
         res.resume();
         return;
@@ -121,6 +133,8 @@ function downloadAndCache(url: string): Promise<CacheEntry | null> {
         totalSize += chunk.length;
         if (totalSize > maxFileSizeBytes) {
           aborted = true;
+          setImageError(`image too large > ${Math.round(maxFileSizeBytes / 1024 / 1024 * 10) / 10}MB`);
+          downloadFailures++;
           req.destroy();
           safeResolve(null);
           return;
@@ -152,16 +166,28 @@ function downloadAndCache(url: string): Promise<CacheEntry | null> {
 
           // 立即清理大对象
           chunks.length = 0;
-        } catch {
+        } catch (err) {
+          setImageError(`write failed: ${err instanceof Error ? err.message : String(err)}`);
+          downloadFailures++;
           safeResolve(null);
         }
       });
 
-      res.on('error', () => safeResolve(null));
+      res.on('error', (err) => {
+        setImageError(`response error: ${err.message}`);
+        downloadFailures++;
+        safeResolve(null);
+      });
     });
 
-    req.on('error', () => safeResolve(null));
+    req.on('error', (err) => {
+      setImageError(`network: ${err.message}`);
+      downloadFailures++;
+      safeResolve(null);
+    });
     req.setTimeout(8000, () => {
+      setImageError('download timeout');
+      downloadFailures++;
       safeResolve(null);
       req.destroy();
     });
@@ -199,7 +225,8 @@ export async function getImageDataUrl(url: string): Promise<string | null> {
   try {
     const buffer = fs.readFileSync(entry.filepath);
     return `data:${entry.mime};base64,${buffer.toString('base64')}`;
-  } catch {
+  } catch (err) {
+    setImageError(`read failed: ${err instanceof Error ? err.message : String(err)}`);
     return null;
   }
 }
@@ -240,7 +267,7 @@ export function cleanupCache(): void {
 const cleanupTimer = setInterval(cleanupCache, 30 * 60 * 1000);
 cleanupTimer.unref();
 
-export function getCacheStats(): { count: number; sizeMB: number; maxSizeMB: number; maxFileMB: number; maxAgeHours: number; hits: number; misses: number } {
+export function getCacheStats(): { count: number; sizeMB: number; maxSizeMB: number; maxFileMB: number; maxAgeHours: number; hits: number; misses: number; downloadFailures: number; lastError: string } {
   let total = 0;
   for (const entry of memIndex.values()) total += entry.size;
   return {
@@ -251,6 +278,8 @@ export function getCacheStats(): { count: number; sizeMB: number; maxSizeMB: num
     maxAgeHours: maxCacheAgeHours,
     hits: cacheHits,
     misses: cacheMisses,
+    downloadFailures,
+    lastError: lastImageError,
   };
 }
 

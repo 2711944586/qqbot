@@ -252,6 +252,20 @@ function normalizeTranscript(text: string): string {
     .slice(0, 800);
 }
 
+function firstString(...items: any[]): string {
+  for (const item of items) {
+    if (typeof item === 'string' && item.trim()) return item;
+    if (Array.isArray(item)) {
+      const nested = firstString(...item);
+      if (nested) return nested;
+    } else if (item && typeof item === 'object') {
+      const nested = firstString(item.text, item.content, item.transcript);
+      if (nested) return nested;
+    }
+  }
+  return '';
+}
+
 function extractTranscript(json: any): string {
   const candidates = [
     json.text,
@@ -259,11 +273,14 @@ function extractTranscript(json: any): string {
     json.choices?.[0]?.message?.content,
     json.choices?.[0]?.text,
     json.data?.text,
+    json.data?.transcript,
+    json.output_text,
+    json.output?.text,
+    json.output?.[0]?.content,
+    json.response?.text,
+    json.result?.text,
   ];
-  for (const item of candidates) {
-    if (typeof item === 'string' && item.trim()) return normalizeTranscript(item);
-  }
-  return '';
+  return normalizeTranscript(firstString(...candidates));
 }
 
 function audioFormat(mime: string, source: string): 'wav' | 'mp3' | 'ogg' | 'm4a' {

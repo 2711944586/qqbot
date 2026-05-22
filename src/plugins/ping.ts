@@ -13,7 +13,7 @@ export const pingPlugin: Plugin = {
       ctx.reply([
         `当前bot号: ${ctx.event.self_id}`,
         `配置bot_qq: ${configured || '未填写'}`,
-        `群号: ${ctx.event.group_id}`,
+        ctx.groupId ? `群号: ${ctx.groupId}` : '私聊: 是',
         `你的QQ: ${ctx.event.user_id}`,
         `当前消息ID: ${ctx.event.message_id}`,
       ].join('\n'));

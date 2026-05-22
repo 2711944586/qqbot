@@ -1,5 +1,5 @@
 import { Bot } from './bot';
-import { BotConfig, GroupMessageEvent, OneBotEvent, Plugin, PluginContext, MessageSegment } from './types';
+import { BotConfig, GroupMessageEvent, MessageEvent, OneBotEvent, Plugin, PluginContext, MessageSegment } from './types';
 
 export class MessageHandler {
   private bot: Bot;
@@ -30,50 +30,68 @@ export class MessageHandler {
     }
   }
 
-  /** 处理事件（非阻塞，每个群并行处理） */
+  /** 处理事件（非阻塞，每个聊天独立处理） */
   async handleEvent(event: OneBotEvent): Promise<void> {
-    // 只处理群消息
     if (event.post_type !== 'message') return;
-    if (event.message_type !== 'group') return;
+    if (event.message_type !== 'group' && event.message_type !== 'private') return;
 
-    const groupEvent = this.normalizeGroupMessage(event as GroupMessageEvent);
+    const messageEvent = this.normalizeMessage(event as MessageEvent);
     const config = this.bot.getConfig();
     if (
       config.bot_qq &&
-      config.bot_qq !== groupEvent.self_id &&
+      config.bot_qq !== messageEvent.self_id &&
       !this.warnedSelfIdMismatch
     ) {
       this.warnedSelfIdMismatch = true;
-      console.warn(`[Handler] config.bot_qq=${config.bot_qq} 但 OneBot self_id=${groupEvent.self_id}，请确认是否已切换到目标QQ号。`);
+      console.warn(`[Handler] config.bot_qq=${config.bot_qq} 但 OneBot self_id=${messageEvent.self_id}，请确认是否已切换到目标QQ号。`);
     }
-    if (groupEvent.user_id === groupEvent.self_id) return;
+    if (messageEvent.user_id === messageEvent.self_id) return;
 
-    const isReplyToBot = await this.checkReplyToBot(groupEvent);
-    const isAtBot = this.checkAtBot(groupEvent);
+    const isGroup = messageEvent.message_type === 'group';
+    const isReplyToBot = isGroup
+      ? await this.checkReplyToBot(messageEvent as GroupMessageEvent)
+      : true;
+    const isAtBot = isGroup
+      ? this.checkAtBot(messageEvent as GroupMessageEvent)
+      : false;
 
     // 如果配置了群白名单，普通消息只处理白名单内的群；直接@或回复bot仍然放行，避免“@了没反应”。
-    if (config.enabled_groups.length > 0 && !config.enabled_groups.includes(groupEvent.group_id) && !isAtBot && !isReplyToBot) {
+    if (
+      isGroup &&
+      config.enabled_groups.length > 0 &&
+      !config.enabled_groups.includes((messageEvent as GroupMessageEvent).group_id) &&
+      !isAtBot &&
+      !isReplyToBot
+    ) {
       return;
     }
 
     // 非阻塞处理：不await，让每条消息独立处理
     this.activeMessages++;
-    this.processMessage(groupEvent, config, isReplyToBot, isAtBot).catch((err) => {
+    this.processMessage(messageEvent, config, isReplyToBot, isAtBot).catch((err) => {
       console.error('[Handler] 消息处理异常:', err);
       if (isAtBot || isReplyToBot) {
-        const fallbackMsg: MessageSegment[] = [
-          { type: 'reply', data: { id: String(groupEvent.message_id) } },
-          { type: 'text', data: { text: '我在 刚才没接住，你再说' } },
-        ];
-        void this.bot.sendGroupMessage(groupEvent.group_id, fallbackMsg);
+        this.sendFallback(messageEvent, '我在 刚才没接住，你再说');
       }
     }).finally(() => {
       this.activeMessages = Math.max(0, this.activeMessages - 1);
     });
   }
 
-  private normalizeGroupMessage(event: GroupMessageEvent): GroupMessageEvent {
-    const runtimeEvent = event as GroupMessageEvent & { message: MessageSegment[] | string };
+  private sendFallback(event: MessageEvent, text: string): void {
+    if (event.message_type === 'group') {
+      const fallbackMsg: MessageSegment[] = [
+        { type: 'reply', data: { id: String(event.message_id) } },
+        { type: 'text', data: { text } },
+      ];
+      void this.bot.sendGroupMessage(event.group_id, fallbackMsg);
+      return;
+    }
+    void this.bot.sendPrivateMessage(event.user_id, text);
+  }
+
+  private normalizeMessage(event: MessageEvent): MessageEvent {
+    const runtimeEvent = event as MessageEvent & { message: MessageSegment[] | string };
     if (Array.isArray(runtimeEvent.message)) return event;
 
     if (!this.warnedNonArrayMessage) {
@@ -143,65 +161,98 @@ export class MessageHandler {
 
   /** 实际处理消息 */
   private async processMessage(
-    groupEvent: GroupMessageEvent,
+    messageEvent: MessageEvent,
     config: BotConfig,
     isReplyToBot: boolean,
     isAtBot: boolean,
   ): Promise<void> {
+    const isPrivate = messageEvent.message_type === 'private';
+    const chatType = isPrivate ? 'private' : 'group';
+    const chatId = isPrivate ? messageEvent.user_id : messageEvent.group_id;
+    const groupId = isPrivate ? undefined : messageEvent.group_id;
 
     // 提取纯文本
-    const rawText = this.extractText(groupEvent.message).trim();
+    const rawText = this.extractText(messageEvent.message).trim();
 
     // 解析命令
     const { command, args } = this.parseCommand(rawText, config.command_prefix);
 
+    const sendMessage = (message: string | MessageSegment[], onMessageId?: (id: number) => void): Promise<boolean> => {
+      if (messageEvent.message_type === 'group') {
+        return this.bot.sendGroupMessage(messageEvent.group_id, message, onMessageId);
+      }
+      return this.bot.sendPrivateMessage(messageEvent.user_id, message, onMessageId);
+    };
+
     // 构建插件上下文
     const ctx: PluginContext = {
-      event: groupEvent,
+      event: messageEvent,
       rawText,
       command,
       args,
+      chatType,
+      chatId,
+      groupId,
+      isPrivate,
       isAtBot,
       isReplyToBot,
       bot: this.bot,
       reply: (message: string | MessageSegment[]) => {
-        void this.bot.sendGroupMessage(groupEvent.group_id, message, (id) => {
+        void sendMessage(message, (id) => {
           this.trackBotMessage(id);
         });
       },
       replyAt: (message: string) => {
+        if (isPrivate) {
+          void sendMessage(message, (id) => {
+            this.trackBotMessage(id);
+          });
+          return;
+        }
         const atMsg: MessageSegment[] = [
-          { type: 'at', data: { qq: String(groupEvent.user_id) } },
+          { type: 'at', data: { qq: String(messageEvent.user_id) } },
           { type: 'text', data: { text: ' ' + message } },
         ];
-        void this.bot.sendGroupMessage(groupEvent.group_id, atMsg, (id) => {
+        void sendMessage(atMsg, (id) => {
           this.trackBotMessage(id);
         });
       },
       replyQuote: (message: string) => {
+        if (isPrivate) {
+          void sendMessage(message, (id) => {
+            this.trackBotMessage(id);
+          });
+          return;
+        }
         const quoteMsg: MessageSegment[] = [
-          { type: 'reply', data: { id: String(groupEvent.message_id) } },
+          { type: 'reply', data: { id: String(messageEvent.message_id) } },
           { type: 'text', data: { text: message } },
         ];
-        void this.bot.sendGroupMessage(groupEvent.group_id, quoteMsg, (id) => {
+        void sendMessage(quoteMsg, (id) => {
           this.trackBotMessage(id);
         }).then((sent) => {
           if (sent) return;
           const fallbackMsg: MessageSegment[] = [
-            { type: 'at', data: { qq: String(groupEvent.user_id) } },
+            { type: 'at', data: { qq: String(messageEvent.user_id) } },
             { type: 'text', data: { text: ' ' + message } },
           ];
-          return this.bot.sendGroupMessage(groupEvent.group_id, fallbackMsg, (id) => {
+          return sendMessage(fallbackMsg, (id) => {
             this.trackBotMessage(id);
           });
         });
       },
       replyQuoteTo: (messageId: number, userId: number, message: string) => {
+        if (isPrivate) {
+          void sendMessage(message, (id) => {
+            this.trackBotMessage(id);
+          });
+          return;
+        }
         const quoteMsg: MessageSegment[] = [
           { type: 'reply', data: { id: String(messageId) } },
           { type: 'text', data: { text: message } },
         ];
-        void this.bot.sendGroupMessage(groupEvent.group_id, quoteMsg, (id) => {
+        void sendMessage(quoteMsg, (id) => {
           this.trackBotMessage(id);
         }).then((sent) => {
           if (sent) return;
@@ -209,7 +260,7 @@ export class MessageHandler {
             { type: 'at', data: { qq: String(userId) } },
             { type: 'text', data: { text: ' ' + message } },
           ];
-          return this.bot.sendGroupMessage(groupEvent.group_id, fallbackMsg, (id) => {
+          return sendMessage(fallbackMsg, (id) => {
             this.trackBotMessage(id);
           });
         });
@@ -220,6 +271,7 @@ export class MessageHandler {
     let handled = false;
     for (const plugin of this.plugins) {
       try {
+        if (isPrivate && this.isGroupOnlyPlugin(plugin.name)) continue;
         handled = await this.runPlugin(plugin, ctx, config);
         if (handled && (isAtBot || isReplyToBot) && !ctx.command && !['ai-chat', 'fun'].includes(plugin.name)) {
           handled = false;
@@ -234,6 +286,10 @@ export class MessageHandler {
     if (!handled && (isAtBot || isReplyToBot || this.isDirectAiCommand(command))) {
       ctx.replyQuote('我在 刚才没接住，你再说');
     }
+  }
+
+  private isGroupOnlyPlugin(pluginName: string): boolean {
+    return pluginName === 'stats' || pluginName === 'repeater';
   }
 
   private isDirectAiCommand(command: string | null): boolean {

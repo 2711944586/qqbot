@@ -104,13 +104,14 @@ export const statsPlugin: Plugin = {
   description: '群消息统计 - 活跃度、话痨排行等',
 
   handler: (ctx) => {
+    if (!ctx.groupId) return false;
     // 记录每条消息（无论是否命令）
     const nickname = ctx.event.sender.card || ctx.event.sender.nickname;
-    statsManager.record(ctx.event.group_id, ctx.event.user_id, nickname);
+    statsManager.record(ctx.groupId, ctx.event.user_id, nickname);
 
     // 只处理命令
     if (ctx.command === 'stats' || ctx.command === 'stat') {
-      ctx.reply(statsManager.getSummary(ctx.event.group_id));
+      ctx.reply(statsManager.getSummary(ctx.groupId));
       return true;
     }
 
@@ -120,7 +121,7 @@ export const statsPlugin: Plugin = {
         ctx.replyAt('⛔ 权限不足');
         return true;
       }
-      statsManager.reset(ctx.event.group_id);
+      statsManager.reset(ctx.groupId);
       ctx.reply('✅ 统计数据已重置');
       return true;
     }
