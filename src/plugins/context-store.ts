@@ -55,6 +55,7 @@ function scheduleFlush(): void {
     writeTimer = null;
     flush();
   }, 5000); // 5秒后批量写
+  writeTimer.unref();
 }
 
 /** 实际写盘函数（由 flushSessionMap 调用） */
@@ -73,28 +74,43 @@ function flush(): void {
   }
 }
 
+export function flushNow(): void {
+  if (writeTimer) {
+    clearTimeout(writeTimer);
+    writeTimer = null;
+  }
+  flush();
+}
+
 /** 实际写入单个会话到磁盘 */
-export function writeSession(sessionId: string, ctx: StoredContext): void {
+export function writeSession(sessionId: string, ctx: StoredContext): boolean {
   try {
     const filepath = getFilePath(sessionId);
-    fs.writeFileSync(filepath, JSON.stringify(ctx), 'utf-8');
+    const tempPath = `${filepath}.${process.pid}.tmp`;
+    fs.writeFileSync(tempPath, JSON.stringify(ctx), 'utf-8');
+    fs.renameSync(tempPath, filepath);
+    return true;
   } catch (err) {
     console.error(`[ContextStore] 写入失败 ${sessionId}:`, err);
+    return false;
   }
 }
 
 /** 删除会话文件 */
 export function deleteSession(sessionId: string): void {
   try {
+    dirtySessions.delete(sessionId);
     const filepath = getFilePath(sessionId);
     if (fs.existsSync(filepath)) fs.unlinkSync(filepath);
   } catch { /* */ }
 }
 
 export function getDirtySessions(): string[] {
-  const list = [...dirtySessions];
-  dirtySessions.clear();
-  return list;
+  return [...dirtySessions];
+}
+
+export function clearDirtySession(sessionId: string): void {
+  dirtySessions.delete(sessionId);
 }
 
 /** 启动时加载所有现存会话的ID列表 */

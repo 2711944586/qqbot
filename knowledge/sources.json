@@ -1,0 +1,154 @@
+[
+  {
+    "id": "moegirl-wanjier-profile",
+    "query": "玩机器Machine 萌娘百科 公式解说 外号 6657",
+    "sourceType": "public_fact",
+    "trusted": true,
+    "autoCommitEligible": true,
+    "intervalMinutes": 720
+  },
+  {
+    "id": "douyu-6657-live",
+    "query": "斗鱼 6657 玩机器 Machine CS2 直播间",
+    "sourceType": "public_fact",
+    "trusted": true,
+    "autoCommitEligible": true,
+    "intervalMinutes": 360
+  },
+  {
+    "id": "douyu-machine-official",
+    "query": "斗鱼 玩机器 6657 官方 直播 解说 CS GO CS2",
+    "sourceType": "public_fact",
+    "trusted": true,
+    "autoCommitEligible": true,
+    "intervalMinutes": 1440
+  },
+  {
+    "id": "bilibili-6657-cut-index",
+    "query": "Bilibili 玩机器 6657 CS2 切片 录播 弹幕版",
+    "sourceType": "public_summary",
+    "trusted": false,
+    "autoCommitEligible": false,
+    "intervalMinutes": 720
+  },
+  {
+    "id": "bilibili-machine-quote-index",
+    "query": "Bilibili 玩机器 公式解说 经典语录 让人不禁感叹",
+    "sourceType": "public_summary",
+    "trusted": false,
+    "autoCommitEligible": false,
+    "intervalMinutes": 720
+  },
+  {
+    "id": "bilibili-machine-cs2-replay",
+    "query": "Bilibili 玩机器 6657 CS2 直播回放 Major IEM BLAST",
+    "sourceType": "public_summary",
+    "trusted": false,
+    "autoCommitEligible": false,
+    "intervalMinutes": 720
+  },
+  {
+    "id": "sb6657-scriptcat",
+    "query": "ScriptCat sb6657 斗鱼玩机器烂梗收集 2600 弹幕",
+    "sourceType": "public_summary",
+    "trusted": true,
+    "autoCommitEligible": true,
+    "intervalMinutes": 720
+  },
+  {
+    "id": "sb6657-greasyfork",
+    "query": "GreasyFork sb6657.cn 斗鱼玩机器烂梗收集 弹幕",
+    "sourceType": "public_summary",
+    "trusted": true,
+    "autoCommitEligible": true,
+    "intervalMinutes": 720
+  },
+  {
+    "id": "sb6657-gitcode-summary",
+    "query": "GitCode sb6657 斗鱼玩机器弹幕文化 烂梗 项目说明",
+    "sourceType": "public_summary",
+    "trusted": true,
+    "autoCommitEligible": true,
+    "intervalMinutes": 1440
+  },
+  {
+    "id": "hltv-top20-2025",
+    "query": "HLTV Top 20 players 2025 ZywOo donk ropz m0NESY sh1ro",
+    "sourceType": "public_fact",
+    "trusted": true,
+    "autoCommitEligible": true,
+    "intervalMinutes": 1440
+  },
+  {
+    "id": "hltv-team-ranking-current",
+    "query": "HLTV team ranking 2026 Vitality Spirit Falcons MOUZ NAVI G2 FaZe",
+    "sourceType": "public_fact",
+    "trusted": true,
+    "autoCommitEligible": true,
+    "intervalMinutes": 720
+  },
+  {
+    "id": "hltv-events-current",
+    "query": "HLTV CS2 events 2026 IEM BLAST Major ESL schedule results",
+    "sourceType": "public_fact",
+    "trusted": true,
+    "autoCommitEligible": true,
+    "intervalMinutes": 720
+  },
+  {
+    "id": "valve-regional-standings",
+    "query": "Valve Regional Standings Counter-Strike 2 2026 Vitality Spirit Falcons",
+    "sourceType": "public_fact",
+    "trusted": true,
+    "autoCommitEligible": true,
+    "intervalMinutes": 720
+  },
+  {
+    "id": "liquipedia-cs2-teams",
+    "query": "Liquipedia Counter-Strike 2 teams roster 2026 NAVI Vitality Spirit G2 FaZe",
+    "sourceType": "public_fact",
+    "trusted": true,
+    "autoCommitEligible": true,
+    "intervalMinutes": 1440
+  },
+  {
+    "id": "liquipedia-cs2-events",
+    "query": "Liquipedia Counter-Strike 2 S-Tier events 2026 IEM BLAST Major ESL",
+    "sourceType": "public_fact",
+    "trusted": true,
+    "autoCommitEligible": true,
+    "intervalMinutes": 1440
+  },
+  {
+    "id": "cs2-map-pool-current",
+    "query": "Counter-Strike 2 active duty map pool 2026 Train Nuke Ancient Inferno Mirage",
+    "sourceType": "public_fact",
+    "trusted": true,
+    "autoCommitEligible": true,
+    "intervalMinutes": 1440
+  },
+  {
+    "id": "cs2-update-current",
+    "query": "Counter-Strike 2 latest update patch notes 2026 official",
+    "sourceType": "public_fact",
+    "trusted": true,
+    "autoCommitEligible": true,
+    "intervalMinutes": 720
+  },
+  {
+    "id": "machine-gift-lines-risky",
+    "query": "玩机器 6657 斗鱼 礼物 感谢 老板大气 切片",
+    "sourceType": "unknown",
+    "trusted": false,
+    "autoCommitEligible": false,
+    "intervalMinutes": 1440
+  },
+  {
+    "id": "machine-player-comment-risky",
+    "query": "玩机器 NiKo m0NESY ZywOo donk 评价 切片 6657",
+    "sourceType": "unknown",
+    "trusted": false,
+    "autoCommitEligible": false,
+    "intervalMinutes": 1440
+  }
+]

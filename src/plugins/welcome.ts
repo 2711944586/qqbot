@@ -8,10 +8,10 @@ import { Bot } from '../bot';
 
 /** 欢迎消息模板 */
 const welcomeTemplates = [
-  '🎉 欢迎 {name} 加入本群！有什么问题可以 @我 哦~',
-  '👋 {name} 来啦！欢迎欢迎~',
-  '✨ 欢迎新朋友 {name}！祝你在群里玩得开心~',
-  '🌟 {name} 加入了我们，大家热烈欢迎！',
+  '欢迎 {name}，先别急着白给，有事群里说。',
+  '{name} 来了，可以的，直播间又多一个观众。',
+  '欢迎 {name}，进群先默认控图，别第一时间上头。',
+  '{name} 加入了，兄弟们这波有说法。',
 ];
 
 function getRandomWelcome(name: string): string {

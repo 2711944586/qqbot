@@ -1,6 +1,5 @@
-import * as fs from 'fs';
-import * as path from 'path';
-import { Plugin, BotConfig } from '../types';
+import { loadConfig } from '../config';
+import { Plugin } from '../types';
 
 export const adminPlugin: Plugin = {
   name: 'admin',
@@ -18,9 +17,7 @@ export const adminPlugin: Plugin = {
       }
 
       try {
-        const configPath = path.resolve(__dirname, '..', '..', 'config.json');
-        const raw = fs.readFileSync(configPath, 'utf-8');
-        const newConfig = JSON.parse(raw) as BotConfig;
+        const newConfig = loadConfig();
         ctx.bot.updateConfig(newConfig);
         ctx.reply('✅ 配置已重载');
       } catch (err) {

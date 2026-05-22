@@ -24,10 +24,10 @@ export function recordMessage(messageId: number, userName: string, text: string)
 
 const recallReplies = [
   '{name} 撤回了什么 让我看看',
-  '撤回也没用 我都看到了',
-  '{name} 你心虚什么',
-  '诶 刚才谁说了什么 被撤回了',
-  '来不及了 我已经截图了（没有',
+  '撤回也没用 弹幕已经看到了',
+  '{name} 你这个撤回timing很怪',
+  '不是哥们 刚说完就撤回？',
+  '来不及了 我已经记住了（没有',
 ];
 
 export function registerRecallListener(bot: Bot, enabled: boolean = true): void {
@@ -59,9 +59,9 @@ export function registerRecallListener(bot: Bot, enabled: boolean = true): void 
     let reply: string;
     if (cached) {
       const templates = [
-        `${cached.user} 刚才说了啥就撤回了？我看到是「${cached.text.slice(0, 30)}」`,
-        `来不及了 ${cached.user}`,
-        `${cached.user} 心虚了？`,
+        `${cached.user} 刚才这句「${cached.text.slice(0, 30)}」怎么撤了，不是哥们`,
+        `来不及了 ${cached.user}，这波已经被弹幕捕获`,
+        `${cached.user} 这个撤回有点心虚啊`,
       ];
       reply = templates[Math.floor(Math.random() * templates.length)];
     } else {

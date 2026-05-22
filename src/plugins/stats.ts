@@ -6,18 +6,24 @@ interface GroupStats {
   userMessages: Map<number, { count: number; nickname: string }>;
   hourly: number[];
   lastReset: number;
+  lastActive: number;
 }
 
 class StatsManager {
   private stats: Map<number, GroupStats> = new Map();
+  private readonly maxGroups = 200;
+  private readonly maxUsersPerGroup = 1000;
+  private readonly keepUsersPerGroup = 800;
 
   private getGroupStats(groupId: number): GroupStats {
     if (!this.stats.has(groupId)) {
+      this.pruneGroupsIfNeeded();
       this.stats.set(groupId, {
         totalMessages: 0,
         userMessages: new Map(),
         hourly: new Array(24).fill(0),
         lastReset: Date.now(),
+        lastActive: Date.now(),
       });
     }
     return this.stats.get(groupId)!;
@@ -26,11 +32,13 @@ class StatsManager {
   record(groupId: number, userId: number, nickname: string): void {
     const stats = this.getGroupStats(groupId);
     stats.totalMessages++;
+    stats.lastActive = Date.now();
 
     const user = stats.userMessages.get(userId) || { count: 0, nickname };
     user.count++;
     user.nickname = nickname;
     stats.userMessages.set(userId, user);
+    this.pruneUsersIfNeeded(stats);
 
     const hour = new Date().getHours();
     stats.hourly[hour]++;
@@ -71,6 +79,21 @@ class StatsManager {
 
   reset(groupId: number): void {
     this.stats.delete(groupId);
+  }
+
+  private pruneGroupsIfNeeded(): void {
+    if (this.stats.size < this.maxGroups) return;
+    const sorted = [...this.stats.entries()].sort((a, b) => a[1].lastActive - b[1].lastActive);
+    const removeCount = Math.max(1, this.stats.size - this.maxGroups + 1);
+    for (const [groupId] of sorted.slice(0, removeCount)) {
+      this.stats.delete(groupId);
+    }
+  }
+
+  private pruneUsersIfNeeded(stats: GroupStats): void {
+    if (stats.userMessages.size <= this.maxUsersPerGroup) return;
+    const sorted = [...stats.userMessages.entries()].sort((a, b) => b[1].count - a[1].count);
+    stats.userMessages = new Map(sorted.slice(0, this.keepUsersPerGroup));
   }
 }
 

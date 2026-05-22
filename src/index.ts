@@ -1,8 +1,7 @@
-import * as fs from 'fs';
-import * as path from 'path';
 import { Bot } from './bot';
 import { MessageHandler } from './handler';
-import { BotConfig, GroupMessageEvent } from './types';
+import { GroupMessageEvent } from './types';
+import { CONFIG_PATH, loadConfig } from './config';
 
 // 插件
 import { helpPlugin } from './plugins/help';
@@ -10,30 +9,15 @@ import { pingPlugin } from './plugins/ping';
 import { statusPlugin } from './plugins/status';
 import { timePlugin } from './plugins/time';
 import { funPlugin } from './plugins/fun';
+import { diagPlugin } from './plugins/diag';
 import { statsPlugin } from './plugins/stats';
 import { adminPlugin } from './plugins/admin';
 import { repeaterPlugin } from './plugins/repeater';
-import { aiChatPlugin } from './plugins/ai-chat';
+import { aiChatPlugin, shutdownAiChat, startAiChatBackgroundTasks } from './plugins/ai-chat';
 import { registerWelcomeListener } from './plugins/welcome';
 import { registerPokeListener } from './plugins/poke';
 import { registerPrivateForward } from './plugins/private-forward';
 import { registerRecallListener, recordMessage } from './plugins/recall';
-
-function loadConfig(): BotConfig {
-  const configPath = path.resolve(__dirname, '..', 'config.json');
-
-  if (!fs.existsSync(configPath)) {
-    console.error('');
-    console.error('  ❌ 未找到 config.json');
-    console.error('  请复制 config.example.json 为 config.json 并填入配置');
-    console.error(`  路径: ${configPath}`);
-    console.error('');
-    process.exit(1);
-  }
-
-  const raw = fs.readFileSync(configPath, 'utf-8');
-  return JSON.parse(raw) as BotConfig;
-}
 
 function main(): void {
   console.log('');
@@ -43,15 +27,29 @@ function main(): void {
   console.log('  ╚══════════════════════════════════╝');
   console.log('');
 
-  const config = loadConfig();
+  let config;
+  try {
+    config = loadConfig();
+  } catch (err) {
+    console.error('');
+    console.error('  ❌ 配置加载失败');
+    console.error('  请复制 config.example.json 为 config.json 并填入配置');
+    console.error(`  路径: ${CONFIG_PATH}`);
+    console.error(`  原因: ${err instanceof Error ? err.message : String(err)}`);
+    console.error('');
+    process.exit(1);
+  }
 
   console.log(`  🤖 名称: ${config.bot_name}`);
+  console.log(`  🆔 Bot QQ: ${config.bot_qq || '未填写(以OneBot self_id为准)'}`);
   console.log(`  🔗 连接: ${config.ws_url}`);
   console.log(`  🎭 预设: ${config.ai?.active_preset || '未配置'}`);
   console.log(`  📡 触发: ${config.ai?.trigger_mode || 'command'}`);
   console.log(`  📋 群: ${config.enabled_groups.length > 0 ? config.enabled_groups.join(', ') : '全部群'}`);
   console.log(`  👑 管理: ${config.admin_qq.length > 0 ? config.admin_qq.join(', ') : '未设置'}`);
   console.log('');
+
+  startAiChatBackgroundTasks(config.ai);
 
   const bot = new Bot(config);
   const handler = new MessageHandler(bot);
@@ -63,6 +61,7 @@ function main(): void {
   handler.use(helpPlugin);
   handler.use(pingPlugin);
   handler.use(statusPlugin);
+  handler.use(diagPlugin);
   handler.use(timePlugin);
   handler.use(funPlugin);
   handler.use(aiChatPlugin);    // AI 放最后
@@ -86,20 +85,21 @@ function main(): void {
       recordMessage(e.message_id, name, e.raw_message);
     }
 
-    handler.handleEvent(event);
+    void handler.handleEvent(event);
   });
 
   bot.connect();
 
   // 优雅退出
+  let shuttingDown = false;
   const shutdown = () => {
+    if (shuttingDown) return;
+    shuttingDown = true;
     console.log('\n[Bot] 正在关闭...');
-    // 触发上下文最终刷盘
-    try {
-      const cm = require('./plugins/ai-chat');
-      // 这里依赖ai-chat内的flush机制（已在context-store中）
-    } catch { /* */ }
-    setTimeout(() => process.exit(0), 1000);
+    bot.close();
+    shutdownAiChat();
+    const timer = setTimeout(() => process.exit(0), 500);
+    timer.unref();
   };
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);

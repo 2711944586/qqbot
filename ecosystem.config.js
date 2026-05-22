@@ -1,12 +1,12 @@
-// PM2 配置文件 - 针对小内存服务器(1G/1核)优化
+// PM2 配置文件 - 针对 2G 内存 / 1 核 / 70GB 存储服务器优化
 module.exports = {
   apps: [{
     name: 'wanjier',
     script: 'dist/index.js',
-    // Node.js 内存限制 + 启用GC手动调用（节省内存关键）
-    node_args: '--max-old-space-size=400 --expose-gc',
-    // 进程内存超过 500MB 自动重启
-    max_memory_restart: '500M',
+    // 单进程运行：1核机器不要开 cluster；给 Node 留足堆空间，同时给 NapCat/系统保留余量
+    node_args: '--max-old-space-size=768 --expose-gc',
+    // RSS 超过约 1.1GB 自动重启，避免长期缓存/供应商异常响应拖垮整机
+    max_memory_restart: '1100M',
     // 异常退出自动重启
     autorestart: true,
     // 最多每5秒重启一次

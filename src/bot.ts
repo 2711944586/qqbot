@@ -1,14 +1,25 @@
 import WebSocket from 'ws';
 import { BotConfig, OneBotEvent, MessageSegment } from './types';
 
+type ApiCallback = {
+  resolve: (data: unknown) => void;
+  reject: (err: Error) => void;
+  timer: NodeJS.Timeout;
+};
+
 export class Bot {
   private ws: WebSocket | null = null;
   private config: BotConfig;
-  private reconnectInterval = 5000;
+  private readonly minReconnectInterval = 1000;
+  private readonly maxReconnectInterval = 60000;
+  private reconnectInterval = this.minReconnectInterval;
+  private reconnectTimer: NodeJS.Timeout | null = null;
   private eventHandlers: ((event: OneBotEvent) => void)[] = [];
-  private apiCallbacks: Map<string, (data: unknown) => void> = new Map();
+  private apiCallbacks: Map<string, ApiCallback> = new Map();
   private echoCounter = 0;
   private heartbeatTimer: NodeJS.Timeout | null = null;
+  private manuallyClosed = false;
+  private connecting = false;
 
   constructor(config: BotConfig) {
     this.config = config;
@@ -19,9 +30,15 @@ export class Bot {
     if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
     this.heartbeatTimer = setInterval(() => {
       if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-        this.ws.ping();
+        try {
+          this.ws.ping();
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          console.error('[Bot] 心跳发送失败:', message);
+        }
       }
     }, 30000);
+    this.heartbeatTimer.unref();
   }
 
   /** 注册事件处理器 */
@@ -31,16 +48,24 @@ export class Bot {
 
   /** 启动连接 */
   connect(): void {
-    console.log(`[Bot] 正在连接 ${this.config.ws_url} ...`);
-    this.ws = new WebSocket(this.config.ws_url);
+    if (this.manuallyClosed) return;
+    if (this.connecting) return;
+    if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) return;
 
-    this.ws.on('open', () => {
+    this.connecting = true;
+    console.log(`[Bot] 正在连接 ${this.config.ws_url} ...`);
+    const ws = new WebSocket(this.config.ws_url);
+    this.ws = ws;
+
+    ws.on('open', () => {
+      this.connecting = false;
+      this.reconnectInterval = this.minReconnectInterval;
       console.log('[Bot] ✅ WebSocket 连接成功！');
       // 定时发送心跳保持连接活跃
       this.startHeartbeat();
     });
 
-    this.ws.on('message', (data) => {
+    ws.on('message', (data) => {
       try {
         const parsed = JSON.parse(data.toString());
 
@@ -48,7 +73,8 @@ export class Bot {
         if (parsed.echo && this.apiCallbacks.has(parsed.echo)) {
           const cb = this.apiCallbacks.get(parsed.echo)!;
           this.apiCallbacks.delete(parsed.echo);
-          cb(parsed);
+          clearTimeout(cb.timer);
+          cb.resolve(parsed);
           return;
         }
 
@@ -59,14 +85,63 @@ export class Bot {
       }
     });
 
-    this.ws.on('close', () => {
-      console.log(`[Bot] 连接断开，${this.reconnectInterval / 1000}秒后重连...`);
-      setTimeout(() => this.connect(), this.reconnectInterval);
+    ws.on('close', (code, reason) => {
+      this.connecting = false;
+      if (this.ws === ws) this.ws = null;
+      this.stopHeartbeat();
+      this.rejectPendingApi(new Error(`WebSocket 已断开 code=${code}`));
+      if (this.manuallyClosed) return;
+
+      const reasonText = reason.length > 0 ? ` reason=${reason.toString()}` : '';
+      console.log(`[Bot] 连接断开 code=${code}${reasonText}，${Math.round(this.reconnectInterval / 1000)}秒后重连...`);
+      this.scheduleReconnect();
     });
 
-    this.ws.on('error', (err) => {
+    ws.on('error', (err) => {
+      this.connecting = false;
       console.error('[Bot] WebSocket 错误:', err.message);
     });
+  }
+
+  private scheduleReconnect(): void {
+    if (this.manuallyClosed || this.reconnectTimer) return;
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      this.connect();
+    }, this.reconnectInterval);
+    this.reconnectInterval = Math.min(this.reconnectInterval * 2, this.maxReconnectInterval);
+  }
+
+  private stopHeartbeat(): void {
+    if (!this.heartbeatTimer) return;
+    clearInterval(this.heartbeatTimer);
+    this.heartbeatTimer = null;
+  }
+
+  private rejectPendingApi(error: Error): void {
+    for (const [echo, callback] of this.apiCallbacks) {
+      clearTimeout(callback.timer);
+      callback.reject(error);
+      this.apiCallbacks.delete(echo);
+    }
+  }
+
+  close(): void {
+    this.manuallyClosed = true;
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    this.stopHeartbeat();
+    this.rejectPendingApi(new Error('Bot 正在关闭'));
+    if (this.ws) {
+      try {
+        this.ws.close(1000, 'shutdown');
+      } catch {
+        this.ws.terminate();
+      }
+      this.ws = null;
+    }
   }
 
   /** 分发事件 */
@@ -120,7 +195,7 @@ export class Bot {
   }
 
   /** 调用 OneBot API（带回调） */
-  callApiAsync(action: string, params: Record<string, unknown> = {}): Promise<unknown> {
+  callApiAsync(action: string, params: Record<string, unknown> = {}, timeoutMs: number = 10000): Promise<unknown> {
     return new Promise((resolve, reject) => {
       if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
         reject(new Error('WebSocket 未连接'));
@@ -128,18 +203,25 @@ export class Bot {
       }
 
       const echo = `${action}_${++this.echoCounter}_${Date.now()}`;
-      this.apiCallbacks.set(echo, resolve);
+      const timer = setTimeout(() => {
+        const callback = this.apiCallbacks.get(echo);
+        if (!callback) return;
+        this.apiCallbacks.delete(echo);
+        callback.reject(new Error('API 调用超时'));
+      }, Math.max(500, timeoutMs));
+      timer.unref();
+
+      this.apiCallbacks.set(echo, { resolve, reject, timer });
 
       const payload = JSON.stringify({ action, params, echo });
-      this.ws.send(payload);
-
-      // 超时清理
-      setTimeout(() => {
-        if (this.apiCallbacks.has(echo)) {
-          this.apiCallbacks.delete(echo);
-          reject(new Error('API 调用超时'));
-        }
-      }, 10000);
+      this.ws.send(payload, (err) => {
+        if (!err) return;
+        const callback = this.apiCallbacks.get(echo);
+        if (!callback) return;
+        this.apiCallbacks.delete(echo);
+        clearTimeout(callback.timer);
+        callback.reject(err);
+      });
     });
   }
 
@@ -151,7 +233,11 @@ export class Bot {
     }
 
     const payload = JSON.stringify({ action, params });
-    this.ws.send(payload);
+    this.ws.send(payload, (err) => {
+      if (err) {
+        console.error(`[Bot] API 发送失败 ${action}:`, err.message);
+      }
+    });
   }
 
   /** 获取配置 */

@@ -9,9 +9,20 @@ interface RepeatState {
   lastMessage: string;
   count: number;
   hasRepeated: boolean;
+  updatedAt: number;
 }
 
 const groupRepeatState: Map<number, RepeatState> = new Map();
+const MAX_GROUP_STATES = 500;
+
+function pruneStatesIfNeeded(): void {
+  if (groupRepeatState.size < MAX_GROUP_STATES) return;
+  const sorted = [...groupRepeatState.entries()].sort((a, b) => a[1].updatedAt - b[1].updatedAt);
+  const removeCount = Math.max(1, groupRepeatState.size - MAX_GROUP_STATES + 1);
+  for (const [groupId] of sorted.slice(0, removeCount)) {
+    groupRepeatState.delete(groupId);
+  }
+}
 
 export const repeaterPlugin: Plugin = {
   name: 'repeater',
@@ -29,16 +40,19 @@ export const repeaterPlugin: Plugin = {
 
     if (!state || state.lastMessage !== ctx.rawText) {
       // 新消息或不同消息，重置状态
+      pruneStatesIfNeeded();
       groupRepeatState.set(groupId, {
         lastMessage: ctx.rawText,
         count: 1,
         hasRepeated: false,
+        updatedAt: Date.now(),
       });
       return false;
     }
 
     // 相同消息，计数+1
     state.count++;
+    state.updatedAt = Date.now();
 
     // 3人复读后，bot跟着复读一次（只复读一次）
     if (state.count >= 3 && !state.hasRepeated) {

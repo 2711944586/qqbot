@@ -3,6 +3,7 @@ import * as http from 'http';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
+import type { AIConfig } from '../types';
 
 /**
  * 图片缓存管理器
@@ -13,9 +14,10 @@ import * as crypto from 'crypto';
  */
 
 const CACHE_DIR = path.resolve(__dirname, '..', '..', 'image_cache');
-const MAX_CACHE_SIZE_MB = 100;  // 缓存总大小上限100MB
-const MAX_FILE_SIZE = 1 * 1024 * 1024;  // 单图最大1MB
-const MAX_CACHE_AGE_HOURS = 24;  // 24小时过期
+let maxCacheSizeMB = 100;
+let maxFileSizeBytes = 1 * 1024 * 1024;
+let maxCacheAgeHours = 24;
+let cacheConfigKey = '';
 
 if (!fs.existsSync(CACHE_DIR)) {
   fs.mkdirSync(CACHE_DIR, { recursive: true });
@@ -32,6 +34,8 @@ interface CacheEntry {
 }
 
 const memIndex: Map<string, CacheEntry> = new Map();
+let cacheHits = 0;
+let cacheMisses = 0;
 
 /** 启动时扫描磁盘恢复索引 */
 function loadCacheIndex(): void {
@@ -73,8 +77,15 @@ function detectMime(buffer: Buffer): { mime: string; ext: string } {
 /** 下载图片并缓存到磁盘 */
 function downloadAndCache(url: string): Promise<CacheEntry | null> {
   return new Promise((resolve) => {
+    let settled = false;
+    const safeResolve = (value: CacheEntry | null): void => {
+      if (settled) return;
+      settled = true;
+      resolve(value);
+    };
+
     if (!url || !url.startsWith('http')) {
-      resolve(null);
+      safeResolve(null);
       return;
     }
 
@@ -82,7 +93,7 @@ function downloadAndCache(url: string): Promise<CacheEntry | null> {
     try {
       parsedUrl = new URL(url);
     } catch {
-      resolve(null);
+      safeResolve(null);
       return;
     }
 
@@ -96,7 +107,8 @@ function downloadAndCache(url: string): Promise<CacheEntry | null> {
       headers: { 'User-Agent': 'Mozilla/5.0' },
     }, (res) => {
       if (res.statusCode !== 200) {
-        resolve(null);
+        safeResolve(null);
+        res.resume();
         return;
       }
 
@@ -107,10 +119,10 @@ function downloadAndCache(url: string): Promise<CacheEntry | null> {
       res.on('data', (chunk) => {
         if (aborted) return;
         totalSize += chunk.length;
-        if (totalSize > MAX_FILE_SIZE) {
+        if (totalSize > maxFileSizeBytes) {
           aborted = true;
           req.destroy();
-          resolve(null);
+          safeResolve(null);
           return;
         }
         chunks.push(chunk);
@@ -136,20 +148,23 @@ function downloadAndCache(url: string): Promise<CacheEntry | null> {
             lastUsed: Date.now(),
           };
           memIndex.set(hash, entry);
-          resolve(entry);
+          safeResolve(entry);
 
           // 立即清理大对象
           chunks.length = 0;
         } catch {
-          resolve(null);
+          safeResolve(null);
         }
       });
 
-      res.on('error', () => resolve(null));
+      res.on('error', () => safeResolve(null));
     });
 
-    req.on('error', () => resolve(null));
-    req.setTimeout(8000, () => { req.destroy(); resolve(null); });
+    req.on('error', () => safeResolve(null));
+    req.setTimeout(8000, () => {
+      safeResolve(null);
+      req.destroy();
+    });
   });
 }
 
@@ -166,6 +181,7 @@ export async function getImageDataUrl(url: string): Promise<string | null> {
       try {
         const buffer = fs.readFileSync(cached.filepath);
         cached.lastUsed = Date.now();
+        cacheHits++;
         return `data:${cached.mime};base64,${buffer.toString('base64')}`;
       } catch {
         memIndex.delete(hash);
@@ -176,6 +192,7 @@ export async function getImageDataUrl(url: string): Promise<string | null> {
   }
 
   // 下载新图
+  cacheMisses++;
   const entry = await downloadAndCache(url);
   if (!entry) return null;
 
@@ -191,7 +208,7 @@ export async function getImageDataUrl(url: string): Promise<string | null> {
 export function cleanupCache(): void {
   try {
     const now = Date.now();
-    const maxAge = MAX_CACHE_AGE_HOURS * 3600 * 1000;
+    const maxAge = maxCacheAgeHours * 3600 * 1000;
     let totalSize = 0;
     const entries = [...memIndex.values()];
 
@@ -206,7 +223,7 @@ export function cleanupCache(): void {
     }
 
     // 如果还超出大小限制，按LRU删
-    const maxSize = MAX_CACHE_SIZE_MB * 1024 * 1024;
+    const maxSize = maxCacheSizeMB * 1024 * 1024;
     if (totalSize > maxSize) {
       const sorted = [...memIndex.values()].sort((a, b) => a.lastUsed - b.lastUsed);
       for (const entry of sorted) {
@@ -220,10 +237,33 @@ export function cleanupCache(): void {
 }
 
 // 每30分钟清理一次
-setInterval(cleanupCache, 30 * 60 * 1000);
+const cleanupTimer = setInterval(cleanupCache, 30 * 60 * 1000);
+cleanupTimer.unref();
 
-export function getCacheStats(): { count: number; sizeMB: number } {
+export function getCacheStats(): { count: number; sizeMB: number; maxSizeMB: number; maxFileMB: number; maxAgeHours: number; hits: number; misses: number } {
   let total = 0;
   for (const entry of memIndex.values()) total += entry.size;
-  return { count: memIndex.size, sizeMB: Math.round(total / 1024 / 1024 * 10) / 10 };
+  return {
+    count: memIndex.size,
+    sizeMB: Math.round(total / 1024 / 1024 * 10) / 10,
+    maxSizeMB: maxCacheSizeMB,
+    maxFileMB: Math.round(maxFileSizeBytes / 1024 / 1024 * 10) / 10,
+    maxAgeHours: maxCacheAgeHours,
+    hits: cacheHits,
+    misses: cacheMisses,
+  };
+}
+
+export function configureImageCache(config?: Pick<AIConfig, 'image_cache_max_mb' | 'image_cache_max_file_mb' | 'image_cache_max_age_hours'>): void {
+  const nextCacheSizeMB = Math.max(20, Math.min(Math.floor(Number(config?.image_cache_max_mb) || 100), 4096));
+  const maxFileMB = Math.max(0.5, Math.min(Number(config?.image_cache_max_file_mb) || 1, 8));
+  const nextFileSizeBytes = Math.floor(maxFileMB * 1024 * 1024);
+  const nextCacheAgeHours = Math.max(1, Math.min(Math.floor(Number(config?.image_cache_max_age_hours) || 24), 720));
+  const nextKey = `${nextCacheSizeMB}:${nextFileSizeBytes}:${nextCacheAgeHours}`;
+  if (cacheConfigKey === nextKey) return;
+  cacheConfigKey = nextKey;
+  maxCacheSizeMB = nextCacheSizeMB;
+  maxFileSizeBytes = nextFileSizeBytes;
+  maxCacheAgeHours = nextCacheAgeHours;
+  cleanupCache();
 }

@@ -1,11 +1,42 @@
-import { Plugin, AIConfig, GroupMessageEvent, MessageSegment } from '../types';
+import { Plugin, PluginContext, AIConfig, GroupMessageEvent, MessageSegment } from '../types';
 import { Bot } from '../bot';
-import { webSearch } from './web-search';
-import { generateVoice } from './tts';
-import { getImageDataUrl } from './image-cache';
-import { loadContext, writeSession, deleteSession, markDirty, setFlushHandler, getDirtySessions, listAllSessions } from './context-store';
+import { hasUsableApiKey } from '../config';
+import { cleanSearchCache, configureSearchCache, webSearch } from './web-search';
+import { cleanVoiceCache, generateVoice, getVoiceStats } from './tts';
+import { cleanupCache as cleanImageCache, configureImageCache, getImageDataUrl } from './image-cache';
+import { configureGates, getGateStats, withGate } from './concurrency';
+import {
+  commitKnowledgeCandidate,
+  dropKnowledgeCandidate,
+  getKnowledgeCandidate,
+  getKnowledgeKeywords,
+  getKnowledgeStats,
+  KnowledgeCandidate,
+  KnowledgeSource,
+  auditKnowledge,
+  autoCommitKnowledgeCandidate,
+  getLastKnowledgeAudit,
+  filterDueKnowledgeSources,
+  getRandomKnowledgeLine,
+  isKnowledgeAutoEnabled,
+  isKnowledgeTopic,
+  listKnowledgeBatches,
+  listKnowledgeCandidates,
+  loadKnowledgeSources,
+  markKnowledgeSourceRefreshed,
+  markKnowledgeAutoRefresh,
+  pruneKnowledgeAutoLog,
+  previewInboxCandidates,
+  previewKnowledgeCandidate,
+  rollbackKnowledgeBatch,
+  searchKnowledge,
+  selectKnowledge,
+  setKnowledgeAutoEnabled,
+} from './knowledge-base';
+import { loadContext, writeSession, deleteSession, markDirty, setFlushHandler, getDirtySessions, listAllSessions, clearDirtySession, flushNow } from './context-store';
 import * as https from 'https';
 import * as http from 'http';
+import * as crypto from 'crypto';
 
 // ============ 类型 ============
 interface ChatMessage {
@@ -26,6 +57,26 @@ interface SessionContext {
   lastActiveTime: number;
 }
 
+interface ReplyJob {
+  sessionId: string;
+  groupId: number;
+  userId: number;
+  selfId: number;
+  messageId: number;
+  senderName: string;
+  rawText: string;
+  effectiveText: string;
+  imageUrls: string[];
+  hasImages: boolean;
+  isAtBot: boolean;
+  isReplyToBot: boolean;
+  triggerReason: string;
+  forced: boolean;
+  createdAt: number;
+  contextSummary: string;
+  contextMessages: ChatMessage[];
+}
+
 // ============ 上下文管理器（内存+磁盘双层） ============
 class ContextManager {
   private sessions: Map<string, SessionContext> = new Map();
@@ -33,11 +84,12 @@ class ContextManager {
   private hardLimit: number;
   private keepRecent: number;
   private expireMs: number;
+  private cleanupTimer: NodeJS.Timeout;
 
   constructor(maxMessages: number, expireMinutes: number) {
-    this.softLimit = Math.floor(maxMessages * 0.8);
-    this.hardLimit = maxMessages;
-    this.keepRecent = Math.floor(maxMessages * 0.4);
+    this.softLimit = Math.max(5, Math.floor(maxMessages * 0.8));
+    this.hardLimit = Math.max(5, maxMessages);
+    this.keepRecent = Math.max(3, Math.floor(maxMessages * 0.4));
     this.expireMs = expireMinutes * 60 * 1000;
 
     // 启动时从磁盘恢复会话索引（按需加载，不一次性载入所有）
@@ -47,7 +99,8 @@ class ContextManager {
     setFlushHandler(() => this.flushDirtyToDisk());
 
     // 定时清理过期 + 内存压缩
-    setInterval(() => this.cleanup(), 5 * 60 * 1000);
+    this.cleanupTimer = setInterval(() => this.cleanup(), 5 * 60 * 1000);
+    this.cleanupTimer.unref();
   }
 
   /** 启动时只加载ID列表，不加载内容（按需加载省内存） */
@@ -90,6 +143,9 @@ class ContextManager {
         : message.content.filter(c => c.type === 'text').map(c => c.text || '').join(' '),
     };
     session.messages.push(stored);
+    if (session.messages.length > this.hardLimit) {
+      session.messages = session.messages.slice(-this.hardLimit);
+    }
     session.lastActiveTime = Date.now();
     markDirty(sessionId);
   }
@@ -134,7 +190,7 @@ class ContextManager {
     for (const id of dirty) {
       const session = this.sessions.get(id);
       if (session) {
-        writeSession(id, {
+        const written = writeSession(id, {
           summary: session.summary,
           messages: session.messages.map(m => ({
             role: m.role as any,
@@ -142,12 +198,16 @@ class ContextManager {
           })),
           lastActiveTime: session.lastActiveTime,
         });
+        if (written) clearDirtySession(id);
+      } else {
+        clearDirtySession(id);
       }
     }
   }
 
   /** 定时清理：内存中过期的踢出（仍保留磁盘） */
   private cleanup(): void {
+    this.flushDirtyToDisk();
     const now = Date.now();
     for (const [id, session] of this.sessions) {
       // 30分钟没活跃就从内存里清出去（释放内存，磁盘还在）
@@ -157,6 +217,15 @@ class ContextManager {
     }
     // 触发GC
     if (global.gc) global.gc();
+  }
+
+  shutdown(): void {
+    clearInterval(this.cleanupTimer);
+    flushNow();
+  }
+
+  getSessionCount(): number {
+    return this.sessions.size;
   }
 }
 
@@ -169,17 +238,35 @@ function extractImageUrls(message: MessageSegment[]): string[] {
 }
 
 function isAtBot(event: GroupMessageEvent): boolean {
+  const selfId = String(event.self_id);
   return event.message.some(
-    (seg) => seg.type === 'at' && seg.data.qq === String(event.self_id)
+    (seg) => seg.type === 'at' && String(seg.data.qq) === selfId
   );
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, ms);
+    timer.unref();
+  });
 }
 
 // ============ LLM API 调用 ============
 function callLLM(config: AIConfig, messages: ChatMessage[], useVision: boolean = false): Promise<string> {
   return new Promise((resolve, reject) => {
-    const url = new URL(config.api_url);
+    let url: URL;
+    try {
+      url = new URL(config.api_url);
+    } catch {
+      reject(new Error('API 地址无效'));
+      return;
+    }
+
     const isHttps = url.protocol === 'https:';
     const model = useVision ? (config.vision_model || config.model) : config.model;
+    const timeoutMs = config.api_timeout_ms || 45000;
+    const maxResponseBytes = 8 * 1024 * 1024;
+    let settled = false;
 
     const requestBody: any = {
       model,
@@ -205,40 +292,69 @@ function callLLM(config: AIConfig, messages: ChatMessage[], useVision: boolean =
 
     const transport = isHttps ? https : http;
 
+    const finish = (value: string): void => {
+      if (settled) return;
+      settled = true;
+      resolve(value);
+    };
+
+    const fail = (err: Error): void => {
+      if (settled) return;
+      settled = true;
+      reject(err);
+    };
+
     const req = transport.request(options, (res) => {
       let data = '';
-      res.on('data', (chunk) => { data += chunk; });
+      let totalBytes = 0;
+      res.on('data', (chunk: Buffer) => {
+        totalBytes += chunk.length;
+        if (totalBytes > maxResponseBytes) {
+          fail(new Error('响应过大'));
+          req.destroy();
+          return;
+        }
+        data += chunk.toString();
+      });
       res.on('end', () => {
+        if (settled) return;
+        if (res.statusCode && res.statusCode >= 400) {
+          fail(new Error(`HTTP ${res.statusCode}: ${data.slice(0, 200)}`));
+          return;
+        }
         try {
           const json = JSON.parse(data);
           if (json.error) {
-            reject(new Error(json.error.message || JSON.stringify(json.error)));
+            fail(new Error(json.error.message || JSON.stringify(json.error)));
             return;
           }
           const content = json.choices?.[0]?.message?.content;
-          if (content) resolve(content.trim());
-          else reject(new Error('无内容返回'));
+          if (content) finish(String(content).trim());
+          else fail(new Error('无内容返回'));
         } catch {
-          reject(new Error('解析失败'));
+          fail(new Error('解析失败'));
         }
       });
     });
 
-    req.on('error', (err) => reject(new Error('网络: ' + err.message)));
-    req.setTimeout(45000, () => { req.destroy(); reject(new Error('超时')); });
+    req.on('error', (err) => fail(new Error('网络: ' + err.message)));
+    req.setTimeout(timeoutMs, () => {
+      fail(new Error('超时'));
+      req.destroy();
+    });
     req.write(body);
     req.end();
   });
 }
 
-async function callLLMWithRetry(config: AIConfig, messages: ChatMessage[], useVision: boolean = false): Promise<string> {
+async function callLLMWithRetry(config: AIConfig, messages: ChatMessage[], useVision: boolean = false, maxAttempts: number = 3): Promise<string> {
   let lastError: Error | null = null;
-  for (let attempt = 0; attempt < 3; attempt++) {
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
     try {
       return await callLLM(config, messages, useVision);
     } catch (err) {
       lastError = err instanceof Error ? err : new Error(String(err));
-      if (attempt < 2) await new Promise(r => setTimeout(r, 500 * (attempt + 1)));
+      if (attempt < maxAttempts - 1) await delay(500 * (attempt + 1));
     }
   }
   throw lastError;
@@ -279,8 +395,13 @@ function buildApiMessages(
   history: ChatMessage[],
   currentMessage: ChatMessage,
   searchInfo?: string,
+  knowledgeInfo?: string,
 ): ChatMessage[] {
   const result: ChatMessage[] = [{ role: 'system', content: systemPrompt }];
+
+  if (knowledgeInfo) {
+    result.push({ role: 'system', content: `[知识库参考]\n${knowledgeInfo}` });
+  }
 
   if (summary) {
     result.push({ role: 'system', content: `[历史摘要]\n${summary}` });
@@ -310,9 +431,38 @@ function buildApiMessages(
   return result;
 }
 
+function buildTargetText(job: ReplyJob): string {
+  const body = job.effectiveText || (job.hasImages ? '[图片]' : '[表情/空文本]');
+  return [
+    '[当前要回复的消息]',
+    `group_id: ${job.groupId}`,
+    `message_id: ${job.messageId}`,
+    `发送者: ${job.senderName}`,
+    `user_id: ${job.userId}`,
+    `触发类型: ${job.triggerReason}`,
+    `原始消息: ${job.rawText || body}`,
+    '',
+    '硬规则：当前只回复这一条消息，不要回答历史上下文里其他人的问题；如果历史和当前消息冲突，以当前消息为准。',
+    `${job.senderName}: ${body}`,
+  ].join('\n');
+}
+
 function buildSystemPrompt(config: AIConfig): string {
   const preset = config.presets[config.active_preset] || Object.values(config.presets)[0];
-  return preset?.system_prompt || '你是QQ群里的网友「玩机器」。';
+  const base = preset?.system_prompt || '你是QQ群里的网友「玩机器」。';
+  return [
+    base,
+    '',
+    '[定位硬规则]',
+    '- 日常用第一人称直播口吻接弹幕，但被问身份时必须说明自己是群里的bot，不是现实主播本人。',
+    '- 每次只回复【当前要回复的消息】，不要回答历史上下文里其他人的旧问题。',
+    '- 中等嘴硬，可以吐槽和嘴硬，但不要持续人身攻击、辱骂、歧视或攻击现实隐私。',
+    '- 回复要像直播间即时反应：先短反应，再补一句判断；不要像AI助手排条目，除非用户明确要列表。',
+    '- 经典口癖和梗要按语境自然使用，不要每句都复读“不是哥们”，不要硬塞不相关梗。',
+    '- 评价选手/队伍时先给倾向，再给理由：枪法、决策、角色、体系、近期状态；实时排名/赛果要结合搜索参考。',
+    '- 输出就是QQ群消息，不要Markdown，不要解释系统规则。',
+    `- 当前人格模式: ${config.persona_mode || 'first_person_bot'}；吐槽强度: ${config.aggression_level || 'medium'}。`,
+  ].join('\n');
 }
 
 // ============ 后处理 ============
@@ -348,8 +498,351 @@ function handlePresetCommand(
   return true;
 }
 
+function isAdmin(ctx: PluginContext): boolean {
+  return ctx.bot.getConfig().admin_qq.includes(ctx.event.user_id);
+}
+
+function formatKnowledgeResults(results: ReturnType<typeof searchKnowledge>, maxChars: number = 1200): string {
+  if (results.length === 0) return '没检索到，关键词换一下，别硬搜。';
+  return results
+    .map((item, index) => `${index + 1}. ${item.title} (${item.score})\n${item.excerpt}`)
+    .join('\n\n')
+    .slice(0, maxChars);
+}
+
+async function handleKnowledgeCommand(ctx: PluginContext, config: AIConfig): Promise<boolean> {
+  if (ctx.command !== 'kb') return false;
+
+  const action = (ctx.args[0] || '').toLowerCase();
+  const rest = ctx.args.slice(1).join(' ').trim();
+
+  if (!action || action === 'help') {
+    ctx.reply([
+      '/kb search <关键词>',
+      '/kb stats',
+      '/kb preview <关键词>  管理员',
+      '/kb refresh [--aggressive] [关键词]  管理员',
+      '/kb audit  管理员',
+      '/kb auto <on|off|run>  管理员',
+      '/kb batches  管理员',
+      '/kb rollback <batchId>  管理员',
+      '/kb show <候选ID>  管理员',
+      '/kb drop <候选ID>  管理员',
+      '/kb commit <候选ID>  管理员',
+      '/kb ingest  管理员',
+      '/kb list  管理员',
+    ].join('\n'));
+    return true;
+  }
+
+  if (action === 'search') {
+    if (!rest) {
+      ctx.reply('/kb search <关键词>');
+      return true;
+    }
+    ctx.reply(formatKnowledgeResults(searchKnowledge(rest, 5, 260)));
+    return true;
+  }
+
+  if (action === 'stats') {
+    const stats = getKnowledgeStats();
+    ctx.reply([
+      `知识库: ${stats.sections}块 ${stats.chars}字`,
+      `索引词: ${stats.keywords}`,
+      `检索命中: ${stats.searchHits}/${stats.searchMisses}`,
+      `注入命中: ${stats.selectHits}/${stats.selectMisses}`,
+      `候选: ${stats.candidates}`,
+      `自动: ${stats.autoEnabled ? 'on' : 'off'} 最近${formatTime(stats.lastAutoRefreshAt)}`,
+      `自动写入: ${stats.autoCommitted} 隔离文件: ${stats.quarantineFiles} 审计问题: ${stats.auditIssues}`,
+      `来源状态: ${stats.sourceStates} 个`,
+    ].join('\n'));
+    return true;
+  }
+
+  if (!['preview', 'refresh', 'audit', 'auto', 'batches', 'rollback', 'show', 'drop', 'commit', 'ingest', 'list'].includes(action)) {
+    ctx.reply('不是哥们 /kb help 看一下用法。');
+    return true;
+  }
+
+  if (!isAdmin(ctx)) {
+    ctx.replyAt('这个得管理员来，知识库不能谁来都往里灌。');
+    return true;
+  }
+
+  if (config.knowledge_update_mode === 'static' && action !== 'list') {
+    ctx.reply('知识库现在是 static 模式，只能查不能写候选。');
+    return true;
+  }
+
+  if (action === 'list') {
+    const candidates = listKnowledgeCandidates();
+    if (candidates.length === 0) {
+      ctx.reply('现在没有待提交候选。');
+      return true;
+    }
+    ctx.reply(candidates
+      .slice(0, 8)
+      .map((item) => `${item.id} | ${item.title} | ${item.sourceType}/${item.confidence}/${item.risk} | ${item.source}`)
+      .join('\n'));
+    return true;
+  }
+
+  if (action === 'batches') {
+    const batches = listKnowledgeBatches(8);
+    if (batches.length === 0) {
+      ctx.reply('还没有自动写入批次。');
+      return true;
+    }
+    ctx.reply(batches.map((batch) => [
+      batch.batchId,
+      formatTime(batch.createdAt),
+      `entries ${batch.entries}`,
+      `committed ${batch.committed}`,
+      `rollback ${batch.rolledBack}`,
+      `quarantine ${batch.quarantined}`,
+    ].join(' | ')).join('\n'));
+    return true;
+  }
+
+  if (action === 'rollback') {
+    if (!rest) {
+      ctx.reply('/kb rollback <batchId>');
+      return true;
+    }
+    const result = rollbackKnowledgeBatch(rest);
+    ctx.reply(`回滚完成: 删除块 ${result.removedBlocks}，更新日志 ${result.updatedEntries}`);
+    return true;
+  }
+
+  if (action === 'audit') {
+    const report = auditKnowledge();
+    const hard = report.issues.filter((item) => item.level === 'hard').length;
+    const risk = report.issues.filter((item) => item.level === 'risk').length;
+    const info = report.issues.filter((item) => item.level === 'info').length;
+    ctx.reply([
+      `知识库审计: ${report.sections}块 ${report.chars}字`,
+      `问题: hard ${hard} / risk ${risk} / info ${info}`,
+      `隔离: ${report.quarantineFiles} 文件`,
+      ...report.issues.slice(0, 8).map((item) => `${item.level}: ${item.title}`),
+    ].join('\n'));
+    return true;
+  }
+
+  if (action === 'auto') {
+    const mode = rest.toLowerCase();
+    if (!mode) {
+      const stats = getKnowledgeStats();
+      const audit = getLastKnowledgeAudit();
+      ctx.reply([
+        `自动更新: ${isKnowledgeAutoEnabled() ? 'on' : 'off'}`,
+        `最近刷新: ${stats.lastAutoRefreshAt ? new Date(stats.lastAutoRefreshAt).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' }) : '无'}`,
+        `自动写入: ${stats.autoCommitted}`,
+        `隔离: ${stats.quarantineFiles}`,
+        `审计问题: ${audit?.issues.length || 0}`,
+        '/kb auto on|off|run',
+      ].join('\n'));
+      return true;
+    }
+    if (mode === 'on') {
+      setKnowledgeAutoEnabled(true);
+      ctx.reply('知识库自动更新打开了。');
+      return true;
+    }
+    if (mode === 'off') {
+      setKnowledgeAutoEnabled(false);
+      ctx.reply('知识库自动更新关了。');
+      return true;
+    }
+    if (mode === 'run') {
+      const result = await runKnowledgeRefresh(config, '', true);
+      ctx.reply(result);
+      return true;
+    }
+    ctx.reply('/kb auto on|off|run');
+    return true;
+  }
+
+  if (action === 'show') {
+    if (!rest) {
+      ctx.reply('/kb show <候选ID>');
+      return true;
+    }
+    const candidate = getKnowledgeCandidate(rest);
+    ctx.reply(candidate ? [
+      `${candidate.id} | ${candidate.title}`,
+      `来源: ${candidate.source}`,
+      `类型: ${candidate.sourceType} / 置信度: ${candidate.confidence} / 风险: ${candidate.risk} / 状态: ${candidate.status}`,
+      `证据: ${candidate.evidenceUrls.length > 0 ? candidate.evidenceUrls.join(' ') : '暂无'}`,
+      candidate.markdown.slice(0, 1800),
+    ].join('\n') : '没这个候选ID，/kb list 看一下。');
+    return true;
+  }
+
+  if (action === 'drop') {
+    if (!rest) {
+      ctx.reply('/kb drop <候选ID>');
+      return true;
+    }
+    const candidate = dropKnowledgeCandidate(rest);
+    ctx.reply(candidate ? `丢掉候选了: ${candidate.title}` : '没这个候选ID，/kb list 看一下。');
+    return true;
+  }
+
+  if (action === 'preview') {
+    if (!rest) {
+      ctx.reply('/kb preview <关键词>');
+      return true;
+    }
+    const result = await webSearch(
+      rest,
+      Math.max(config.search_timeout_ms || 1500, 1500),
+      config.search_cache_seconds ?? 300,
+      config.search_negative_cache_seconds ?? 60,
+    );
+    if (!result) {
+      ctx.reply('没搜到准信，先别写库。');
+      return true;
+    }
+    const candidate = previewKnowledgeCandidate(rest, result, `web:${rest}`);
+    ctx.reply([
+      `候选 ${candidate.id}`,
+      `类型: ${candidate.sourceType} / 置信度: ${candidate.confidence} / 风险: ${candidate.risk}`,
+      candidate.markdown.slice(0, 700),
+      '确认没问题再 /kb commit ' + candidate.id,
+    ].join('\n'));
+    return true;
+  }
+
+  if (action === 'refresh') {
+    const aggressive = rest.split(/\s+/).includes('--aggressive');
+    const query = rest.replace(/(^|\s)--aggressive(\s|$)/g, ' ').trim();
+    ctx.reply(await runKnowledgeRefresh(config, query, false, aggressive));
+    return true;
+  }
+
+  if (action === 'ingest') {
+    const mode = rest.toLowerCase() === 'full' ? 'full' : 'summary';
+    const candidates = previewInboxCandidates(mode);
+    if (candidates.length === 0) {
+      ctx.reply('knowledge/inbox 里没看到 md/txt 素材。');
+      return true;
+    }
+    ctx.reply([
+      `从 inbox 生成 ${candidates.length} 个候选(${mode}):`,
+      ...candidates.slice(0, 8).map((item) => `${item.id} | ${item.title}`),
+      '看完再 /kb commit <候选ID>',
+    ].join('\n'));
+    return true;
+  }
+
+  if (action === 'commit') {
+    if (!rest) {
+      ctx.reply('/kb commit <候选ID>');
+      return true;
+    }
+    const candidate = commitKnowledgeCandidate(rest);
+    ctx.reply(candidate ? `写进知识库了: ${candidate.title}` : '没这个候选ID，/kb list 看一下。');
+    return true;
+  }
+
+  return true;
+}
+
+async function liveKnowledgeLookup(config: AIConfig, kind: 'player' | 'team', query: string): Promise<string> {
+  const local = searchKnowledge(`${query} ${kind === 'player' ? '选手 player' : '队伍 team'}`, 3, 220);
+  const searchQuery = `${query} HLTV Liquipedia CS2`;
+  const live = await webSearch(
+    searchQuery,
+    Math.max(config.search_timeout_ms || 1500, 1200),
+    config.search_cache_seconds ?? 300,
+    config.search_negative_cache_seconds ?? 60,
+  );
+  const localText = local.length > 0 ? formatKnowledgeResults(local, 520) : '本地倾向还没写厚。';
+  const liveText = live ? live.slice(0, 520) : '没搜到准信，别硬编。';
+  return [
+    kind === 'player' ? '选手这块我按本地倾向加实时资料说。' : '队伍这块我按本地倾向加实时资料说。',
+    localText,
+    `实时参考:\n${liveText}`,
+  ].join('\n');
+}
+
+async function handleLocalKnowledgeCommand(ctx: PluginContext, config: AIConfig): Promise<boolean> {
+  if (ctx.command === 'quote') {
+    const query = ctx.args.join(' ').trim();
+    const line = getRandomKnowledgeLine('quote', query);
+    ctx.reply(line || '这关键词没逮到语录，换个词。');
+    return true;
+  }
+
+  if (ctx.command === 'player') {
+    const query = ctx.args.join(' ').trim();
+    if (!query) {
+      ctx.reply('/player <选手名>');
+      return true;
+    }
+    if (/最新|现在|排名|阵容|转会|加入|离队|近期|今天/.test(query)) {
+      ctx.reply(await liveKnowledgeLookup(config, 'player', query));
+      return true;
+    }
+    const results = searchKnowledge(`${query} 选手 player`, 3, 260);
+    const line = getRandomKnowledgeLine('player', query);
+    ctx.reply(results.length > 0 ? formatKnowledgeResults(results, 700) : (line || '这选手资料库里还没写，先 /kb preview 补一下。'));
+    return true;
+  }
+
+  if (ctx.command === 'team') {
+    const query = ctx.args.join(' ').trim();
+    if (!query) {
+      ctx.reply('/team <队伍名>');
+      return true;
+    }
+    if (/最新|现在|排名|阵容|转会|加入|离队|近期|今天/.test(query)) {
+      ctx.reply(await liveKnowledgeLookup(config, 'team', query));
+      return true;
+    }
+    const results = searchKnowledge(`${query} 队伍 team`, 3, 260);
+    const line = getRandomKnowledgeLine('team', query);
+    ctx.reply(results.length > 0 ? formatKnowledgeResults(results, 700) : (line || '这队伍资料库里还没写，先 /kb preview 补一下。'));
+    return true;
+  }
+
+  if (ctx.command === 'gift') {
+    const gift = ctx.args.join(' ').trim() || '礼物';
+    const template = getRandomKnowledgeLine('gift') || '感谢老板的{gift}，不是哥们这波真有点东西。';
+    ctx.reply(template.replace(/\{gift\}/g, gift));
+    return true;
+  }
+
+  return false;
+}
+
 // ============ 单例 ============
 let contextManager: ContextManager | null = null;
+const groupQueues: Map<string, Promise<void>> = new Map();
+const groupQueueStats: Map<string, { pending: number; forced: number; oldestCreatedAt: number }> = new Map();
+const groupQueueAges: Map<string, number[]> = new Map();
+const lastReplyAt: Map<string, number> = new Map();
+const replyCache: Map<string, { value: string; expiresAt: number }> = new Map();
+let skippedPassiveReplies = 0;
+let replyCacheHits = 0;
+let replyCacheMisses = 0;
+const directAiCommands = new Set(['ai', 'ask', 'chat']);
+const directTtsCommands = new Set(['voice', 'tts', 'say']);
+const directSearchCommands = new Set(['search', '搜', '搜索']);
+const defaultSearchPattern = /最新|最近|现在|今天|谁赢|比分|赛程|更新|版本|发布|新闻|热搜|多少钱|价格|天气/;
+const knowledgeRefreshQueries = [
+  '玩机器 Machine 6657 经典语录 切片 CS2 解说',
+  '玩机器 6657 斗鱼 礼物 感谢 老板大气',
+  '玩机器 6657 直播间 烂梗 弹幕 sb6657',
+  '玩机器 Machine 萌娘百科 6657 CSGO 解说',
+  'HLTV top 20 players 2025 ZywOo donk ropz m0NESY sh1ro NiKo',
+  'CS2 2026 team ranking Vitality NAVI Spirit MOUZ G2 Falcons FaZe',
+];
+let knowledgeAutoTimer: NodeJS.Timeout | null = null;
+let knowledgeAutoRunning = false;
+let knowledgeAutoConfig: AIConfig | null = null;
+let maintenanceTimer: NodeJS.Timeout | null = null;
+const compressionInFlight: Set<string> = new Set();
 
 function getContextManager(config: AIConfig): ContextManager {
   if (!contextManager) {
@@ -361,14 +854,414 @@ function getContextManager(config: AIConfig): ContextManager {
   return contextManager;
 }
 
+function makeFallbackKnowledgeSources(): KnowledgeSource[] {
+  return knowledgeRefreshQueries.map((query, index) => ({
+    id: `fallback-${index + 1}`,
+    query,
+    sourceType: /HLTV|ranking|team/i.test(query) ? 'public_fact' : 'public_summary',
+    trusted: !/礼物|感谢/.test(query),
+    autoCommitEligible: !/礼物|感谢|切片|语录/.test(query),
+    intervalMinutes: 720,
+  }));
+}
+
+function formatTime(timestamp: number): string {
+  return timestamp
+    ? new Date(timestamp).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })
+    : '无';
+}
+
+function chooseRefreshSources(config: AIConfig, queryOverride: string, autoRun: boolean): KnowledgeSource[] {
+  if (queryOverride.trim()) {
+    return [{
+      id: 'manual-query',
+      query: queryOverride.trim(),
+      sourceType: /HLTV|Liquipedia|排名|阵容|转会|赛程|比分/i.test(queryOverride) ? 'public_fact' : 'public_summary',
+      trusted: false,
+      autoCommitEligible: false,
+      intervalMinutes: 720,
+    }];
+  }
+
+  const configured = loadKnowledgeSources();
+  const sources = configured.length > 0 ? configured : makeFallbackKnowledgeSources();
+  const limit = autoRun
+    ? (config.knowledge_auto_batch_max_sources || 4)
+    : (config.knowledge_manual_batch_max_sources || 8);
+  return autoRun
+    ? filterDueKnowledgeSources(sources, limit)
+    : sources.slice(0, limit);
+}
+
+function summarizeRefreshResult(
+  batchId: string,
+  searched: number,
+  candidates: number,
+  committed: number,
+  quarantinedCount: number,
+  pending: KnowledgeCandidate[],
+  failed: string[],
+  auditIssues: number,
+  autoRun: boolean,
+): string {
+  return [
+    autoRun ? '知识库自动刷新完成' : '知识库刷新完成',
+    `批次: ${batchId}`,
+    `搜索源: ${searched}`,
+    `候选: ${candidates}`,
+    `自动写入: ${committed}`,
+    `隔离: ${quarantinedCount}`,
+    `待确认: ${pending.length}`,
+    `失败: ${failed.length}`,
+    `审计问题: ${auditIssues}`,
+    ...pending.slice(0, 5).map((item) => `候选 ${item.id}: ${item.title} (${item.risk}/${item.confidence})`),
+    ...failed.slice(0, 3).map((item) => `失败: ${item}`),
+  ].join('\n');
+}
+
+async function runKnowledgeRefresh(
+  config: AIConfig,
+  queryOverride: string = '',
+  autoRun: boolean = false,
+  aggressiveOverride: boolean = false,
+): Promise<string> {
+  if (config.knowledge_update_mode === 'static') {
+    return '知识库现在是 static 模式，只查不写候选。';
+  }
+  if (autoRun && (config.knowledge_auto_update === false || !isKnowledgeAutoEnabled())) {
+    return '知识库自动更新当前关闭。';
+  }
+
+  const sources = chooseRefreshSources(config, queryOverride, autoRun);
+  if (sources.length === 0) {
+    markKnowledgeAutoRefresh();
+    const audit = auditKnowledge();
+    return [
+      autoRun ? '知识库自动刷新跳过' : '知识库刷新跳过',
+      '原因: 没有到期来源',
+      `审计问题: ${audit.issues.length}`,
+    ].join('\n');
+  }
+  const timeoutMs = config.knowledge_source_timeout_ms || config.search_timeout_ms || 1800;
+  const cacheSeconds = config.search_cache_seconds ?? 300;
+  const aggressive = aggressiveOverride || config.knowledge_aggressive_auto_commit !== false;
+  const batchId = `${autoRun ? 'auto' : 'manual'}_${Date.now().toString(36)}`;
+  const pending: KnowledgeCandidate[] = [];
+  const failed: string[] = [];
+  let searched = 0;
+  let candidates = 0;
+  let committed = 0;
+  let quarantinedCount = 0;
+
+  for (const source of sources) {
+    try {
+      searched++;
+      const result = await webSearch(source.query, timeoutMs, cacheSeconds, config.search_negative_cache_seconds ?? 60);
+      if (!result) {
+        failed.push(`${source.id}: 无搜索结果`);
+        continue;
+      }
+
+      const autoCommitEligible = Boolean(
+        source.autoCommitEligible &&
+        config.knowledge_auto_commit_public_facts !== false &&
+        (
+          source.sourceType === 'public_fact' ||
+          (aggressive && source.trusted && source.sourceType === 'public_summary') ||
+          (aggressiveOverride && source.sourceType !== 'unknown')
+        ),
+      );
+      const risk = config.knowledge_quarantine_long_quotes === false ? 'review' : undefined;
+      const candidate = previewKnowledgeCandidate(source.query, result, `refresh:${source.id}`, {
+        sourceType: source.sourceType,
+        confidence: source.trusted ? 'high' : 'medium',
+        autoCommitEligible,
+        risk,
+      });
+      candidates++;
+
+      const wasEligible = candidate.autoCommitEligible;
+      const action = autoCommitKnowledgeCandidate(candidate, {
+        batchId,
+        maxBlockChars: config.knowledge_auto_max_block_chars || 1200,
+      });
+      if (action === 'committed') {
+        committed++;
+      } else if (action === 'quarantined') {
+        quarantinedCount++;
+      } else if (candidate.status === 'dropped' && wasEligible) {
+        // 重复内容已被去重丢弃，不算待确认。
+      } else {
+        pending.push(candidate);
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      failed.push(`${source.id}: ${message.slice(0, 80)}`);
+    } finally {
+      if (autoRun) markKnowledgeSourceRefreshed(source.id);
+    }
+  }
+
+  markKnowledgeAutoRefresh();
+  const audit = auditKnowledge();
+  return summarizeRefreshResult(batchId, searched, candidates, committed, quarantinedCount, pending, failed, audit.issues.length, autoRun);
+}
+
+function ensureKnowledgeAutoTimer(config: AIConfig): void {
+  configureGates({
+    ai: config.ai_global_concurrency,
+    search: config.search_global_concurrency,
+    vision: config.vision_global_concurrency,
+    tts: config.tts_global_concurrency,
+  });
+  configureSearchCache(config);
+  configureImageCache(config);
+  knowledgeAutoConfig = config;
+  if (knowledgeAutoTimer) return;
+  const intervalMinutes = Math.max(30, config.knowledge_auto_interval_minutes || 180);
+  knowledgeAutoTimer = setInterval(() => {
+    const activeConfig = knowledgeAutoConfig;
+    if (!activeConfig || activeConfig.knowledge_auto_update === false || !isKnowledgeAutoEnabled()) return;
+    if (knowledgeAutoRunning) return;
+    knowledgeAutoRunning = true;
+    runKnowledgeRefresh(activeConfig, '', true)
+      .then((summary) => console.log(`[KnowledgeAuto]\n${summary}`))
+      .catch((err) => console.error('[KnowledgeAuto] 刷新失败:', err instanceof Error ? err.message : err))
+      .finally(() => {
+        knowledgeAutoRunning = false;
+      });
+  }, intervalMinutes * 60 * 1000);
+  knowledgeAutoTimer.unref();
+}
+
+function ensureMaintenanceTimer(): void {
+  if (maintenanceTimer) return;
+  maintenanceTimer = setInterval(() => {
+    try {
+      cleanReplyCache();
+      cleanSearchCache();
+      cleanImageCache();
+      cleanVoiceCache(knowledgeAutoConfig || undefined);
+      auditKnowledge();
+      pruneKnowledgeAutoLog(knowledgeAutoConfig?.knowledge_auto_log_retention_days || 14);
+    } catch (err) {
+      console.error('[Maintenance] 轻量自检失败:', err instanceof Error ? err.message : err);
+    }
+  }, 60 * 60 * 1000);
+  maintenanceTimer.unref();
+}
+
+export function startAiChatBackgroundTasks(config: AIConfig): void {
+  ensureKnowledgeAutoTimer(config);
+  ensureMaintenanceTimer();
+}
+
+function includesAnyKeyword(text: string, keywords: string[] = []): boolean {
+  if (!text || keywords.length === 0) return false;
+  const lowerText = text.toLowerCase();
+  return keywords.some((keyword) => keyword && lowerText.includes(keyword.toLowerCase()));
+}
+
+function shouldSearch(config: AIConfig, text: string): boolean {
+  if (!config.enable_search || text.length <= 3) return false;
+  if (config.search_keywords && config.search_keywords.length > 0) {
+    if (includesAnyKeyword(text, config.search_keywords)) return true;
+  }
+  if (config.search_on_style_query && isKnowledgeTopic(text)) return true;
+  return defaultSearchPattern.test(text);
+}
+
+function shouldReply(
+  config: AIConfig,
+  text: string,
+  command: string | null,
+  atBot: boolean,
+  replyToBot: boolean,
+): { reply: boolean; forced: boolean } {
+  const directCommand = !!command && directAiCommands.has(command);
+  if (directCommand || atBot || replyToBot) {
+    return { reply: true, forced: true };
+  }
+  if (command) {
+    return { reply: false, forced: false };
+  }
+
+  if (isKnowledgeTopic(text) && Math.random() < (config.related_reply_probability ?? 0.65)) {
+    return { reply: true, forced: false };
+  }
+
+  switch (config.trigger_mode) {
+    case 'all':
+      return { reply: text.trim().length > 0, forced: false };
+    case 'smart': {
+      const named = includesAnyKeyword(text, [config.active_preset, ...config.trigger_keywords]);
+      const sampled = Math.random() < (config.trigger_probability || 0);
+      return { reply: named || sampled, forced: false };
+    }
+    case 'at':
+    case 'command':
+    default:
+      return { reply: false, forced: false };
+  }
+}
+
+function getQueueStats(sessionId: string): { pending: number; forced: number; oldestCreatedAt: number } {
+  return groupQueueStats.get(sessionId) || { pending: 0, forced: 0, oldestCreatedAt: 0 };
+}
+
+function normalizeCacheText(text: string): string {
+  return text.trim().replace(/\s+/g, ' ').toLowerCase().slice(0, 500);
+}
+
+function makeReplyCacheKey(config: AIConfig, text: string, knowledgeInfo: string): string {
+  return crypto
+    .createHash('sha1')
+    .update([
+      config.model,
+      config.active_preset,
+      config.persona_mode || '',
+      config.aggression_level || '',
+      normalizeCacheText(text),
+      knowledgeInfo.slice(0, 500),
+    ].join('\n'))
+    .digest('hex')
+    .slice(0, 24);
+}
+
+function getCachedReply(key: string): string | null {
+  const cached = replyCache.get(key);
+  if (!cached) return null;
+  if (cached.expiresAt <= Date.now()) {
+    replyCache.delete(key);
+    return null;
+  }
+  replyCache.delete(key);
+  replyCache.set(key, cached);
+  replyCacheHits++;
+  return cached.value;
+}
+
+function setCachedReply(key: string, value: string, ttlSeconds: number): void {
+  if (ttlSeconds <= 0 || !value) return;
+  if (replyCache.size > 300) {
+    for (const key of [...replyCache.keys()].slice(0, 80)) replyCache.delete(key);
+  }
+  replyCache.set(key, {
+    value,
+    expiresAt: Date.now() + ttlSeconds * 1000,
+  });
+}
+
+function cleanReplyCache(): void {
+  const now = Date.now();
+  for (const [key, cached] of replyCache) {
+    if (cached.expiresAt <= now) replyCache.delete(key);
+  }
+  if (replyCache.size > 300) {
+    for (const key of [...replyCache.keys()].slice(0, replyCache.size - 300)) {
+      replyCache.delete(key);
+    }
+  }
+}
+
+async function enqueueGroupTask(job: ReplyJob, task: () => Promise<void>): Promise<void> {
+  const sessionId = job.sessionId;
+  const stats = getQueueStats(sessionId);
+  const ages = groupQueueAges.get(sessionId) || [];
+  ages.push(job.createdAt);
+  groupQueueAges.set(sessionId, ages);
+  groupQueueStats.set(sessionId, {
+    pending: stats.pending + 1,
+    forced: stats.forced + (job.forced ? 1 : 0),
+    oldestCreatedAt: stats.oldestCreatedAt ? Math.min(stats.oldestCreatedAt, job.createdAt) : job.createdAt,
+  });
+
+  const previous = groupQueues.get(sessionId) || Promise.resolve();
+  const current = previous.catch(() => {}).then(task);
+  groupQueues.set(sessionId, current);
+  try {
+    await current;
+  } finally {
+    const nextStats = getQueueStats(sessionId);
+    const pending = Math.max(0, nextStats.pending - 1);
+    const forced = Math.max(0, nextStats.forced - (job.forced ? 1 : 0));
+    const ages = groupQueueAges.get(sessionId) || [];
+    if (ages.length > 0) ages.shift();
+    const oldestCreatedAt = ages[0] || 0;
+    if (pending === 0 && forced === 0) {
+      groupQueueStats.delete(sessionId);
+      groupQueueAges.delete(sessionId);
+    } else {
+      groupQueueStats.set(sessionId, { pending, forced, oldestCreatedAt });
+      groupQueueAges.set(sessionId, ages);
+    }
+    if (groupQueues.get(sessionId) === current) {
+      groupQueues.delete(sessionId);
+    }
+  }
+}
+
+export function shutdownAiChat(): void {
+  if (knowledgeAutoTimer) {
+    clearInterval(knowledgeAutoTimer);
+    knowledgeAutoTimer = null;
+  }
+  if (maintenanceTimer) {
+    clearInterval(maintenanceTimer);
+    maintenanceTimer = null;
+  }
+  if (contextManager) {
+    contextManager.shutdown();
+  } else {
+    flushNow();
+  }
+}
+
+export function getAiChatStats(): {
+  sessions: number;
+  queuedGroups: number;
+  pendingJobs: number;
+  forcedJobs: number;
+  oldestQueueAgeMs: number;
+  skippedPassiveReplies: number;
+  replyCacheEntries: number;
+  replyCacheHits: number;
+  replyCacheMisses: number;
+  gates: ReturnType<typeof getGateStats>;
+} {
+  let pendingJobs = 0;
+  let forcedJobs = 0;
+  let oldest = 0;
+  for (const stats of groupQueueStats.values()) {
+    pendingJobs += stats.pending;
+    forcedJobs += stats.forced;
+    if (stats.oldestCreatedAt && (!oldest || stats.oldestCreatedAt < oldest)) oldest = stats.oldestCreatedAt;
+  }
+  return {
+    sessions: contextManager ? contextManager.getSessionCount() : 0,
+    queuedGroups: groupQueues.size,
+    pendingJobs,
+    forcedJobs,
+    oldestQueueAgeMs: oldest ? Date.now() - oldest : 0,
+    skippedPassiveReplies,
+    replyCacheEntries: replyCache.size,
+    replyCacheHits,
+    replyCacheMisses,
+    gates: getGateStats(),
+  };
+}
+
 export const aiChatPlugin: Plugin = {
   name: 'ai-chat',
   description: 'AI 智能对话 - 玩机器核心',
 
   handler: async (ctx) => {
     const config = ctx.bot.getConfig().ai;
-    if (!config || !config.api_key) return false;
+    if (!config) return false;
+    const apiReady = hasUsableApiKey(config.api_key);
 
+    ensureKnowledgeAutoTimer(config);
+    ensureMaintenanceTimer();
     const cm = getContextManager(config);
     const sessionId = `group_${ctx.event.group_id}`;
 
@@ -388,119 +1281,320 @@ export const aiChatPlugin: Plugin = {
       ctx.reply(`预设:\n${list}\n\n/preset <名称> 切换`);
       return true;
     }
+    if (await handleKnowledgeCommand(ctx, config)) {
+      return true;
+    }
+    if (await handleLocalKnowledgeCommand(ctx, config)) {
+      return true;
+    }
+
+    // ===== 直接语音命令 =====
+    if (ctx.command && directTtsCommands.has(ctx.command)) {
+      const subCommand = (ctx.args[0] || '').toLowerCase();
+      if (subCommand === 'status') {
+        const stats = getVoiceStats(config);
+        ctx.reply([
+          '语音状态',
+          `TTS: ${config.enable_tts ? 'on' : 'off'}`,
+          `普通模型: ${stats.model}`,
+          `克隆模型: ${stats.cloneModel}`,
+          `克隆: ${stats.cloneEnabled ? (stats.cloneReady ? 'ready' : 'missing') : 'off'}`,
+          `样本: ${stats.samplePath}`,
+          `样本大小: ${stats.sampleSizeMB}MB`,
+          ...(stats.sampleReason ? [`样本原因: ${stats.sampleReason}`] : []),
+          `缓存: ${stats.cacheFiles}条 ${stats.sizeMB}MB 命中${stats.hits}/${stats.misses}`,
+          `最长文本: ${stats.maxChars}字`,
+          ...(stats.lastError ? [`最近错误: ${stats.lastError}`] : []),
+        ].join('\n'));
+        return true;
+      }
+
+      if (subCommand === 'clean') {
+        cleanVoiceCache(config);
+        ctx.reply('语音缓存清理过期文件了。');
+        return true;
+      }
+
+      const text = subCommand === 'test'
+        ? (ctx.args.slice(1).join(' ').trim() || '不是哥们，这波语音测试有点东西。')
+        : ctx.args.join(' ').trim();
+      if (!text) {
+        ctx.reply('/voice <内容>\n/voice status\n/voice test [内容]\n/voice clean');
+        return true;
+      }
+      if (!config.enable_tts) {
+        ctx.reply('语音没开');
+        return true;
+      }
+      if (!apiReady) {
+        ctx.reply('AI接口没配，语音也就别想了。');
+        return true;
+      }
+      const voicePath = await withGate('tts', () => generateVoice(config, text));
+      if (voicePath) {
+        ctx.reply([{ type: 'record', data: { file: `file://${voicePath}` } }]);
+      } else {
+        ctx.reply('语音生成失败');
+      }
+      return true;
+    }
+
+    // ===== 显式联网搜索 =====
+    if (ctx.command && directSearchCommands.has(ctx.command)) {
+      const query = ctx.args.join(' ').trim();
+      if (!query) {
+        ctx.reply('/search <关键词>');
+        return true;
+      }
+      const result = await webSearch(
+        query,
+        config.search_timeout_ms || 1500,
+        config.search_cache_seconds ?? 300,
+        config.search_negative_cache_seconds ?? 60,
+      );
+      ctx.reply(result ? `搜到点东西:\n${result.slice(0, 500)}` : '没搜到准信');
+      return true;
+    }
+
+    if (ctx.command && !directAiCommands.has(ctx.command)) {
+      return false;
+    }
+
+    if (!apiReady) {
+      if (ctx.command && directAiCommands.has(ctx.command)) {
+        ctx.reply('AI接口没配，/ai 现在打不出去。');
+        return true;
+      }
+      if (isAtBot(ctx.event) || ctx.isReplyToBot) {
+        ctx.replyQuote('AI接口没配，我现在只能查本地命令。');
+        return true;
+      }
+      return false;
+    }
 
     // ===== 提取信息 =====
     const senderName = ctx.event.sender.card || ctx.event.sender.nickname;
     const imageUrls = extractImageUrls(ctx.event.message);
     const hasImages = imageUrls.length > 0 && config.enable_vision;
+    const atBot = isAtBot(ctx.event);
+    const effectiveText = ctx.command && directAiCommands.has(ctx.command)
+      ? ctx.args.join(' ').trim()
+      : ctx.rawText.trim();
 
-    // 构建当前消息（双版本：API版含图，存储版纯文字）
-    let apiCurrentMessage: ChatMessage;
-    let storedText: string;
-    const textPart = ctx.rawText.trim()
-      ? `${senderName}: ${ctx.rawText.trim()}`
-      : `${senderName}: [图片]`;
-
-    if (hasImages) {
-      // 限制最多2张图，串行下载（节省内存）
-      const limitedUrls = imageUrls.slice(0, 2);
-      const dataUrls: string[] = [];
-      for (const url of limitedUrls) {
-        const d = await getImageDataUrl(url);
-        if (d) dataUrls.push(d);
-      }
-
-      if (dataUrls.length > 0) {
-        const parts: MessageContent[] = [{ type: 'text', text: textPart }];
-        for (const dataUrl of dataUrls) {
-          parts.push({ type: 'image_url', image_url: { url: dataUrl, detail: 'low' } });
-        }
-        apiCurrentMessage = { role: 'user', content: parts };
-        storedText = `${textPart} (含${dataUrls.length}张图)`;
-      } else {
-        apiCurrentMessage = { role: 'user', content: textPart };
-        storedText = `${textPart} (图片加载失败)`;
-      }
-    } else {
-      const text = `${senderName}: ${ctx.rawText || '[表情]'}`;
-      apiCurrentMessage = { role: 'user', content: text };
-      storedText = text;
+    if (ctx.command && directAiCommands.has(ctx.command) && !effectiveText && imageUrls.length === 0) {
+      ctx.reply('/ai <内容>');
+      return true;
     }
 
-    // 追加纯文字版到上下文（KV cache友好：不在前缀加图片）
-    cm.appendMessage(sessionId, { role: 'user', content: storedText });
+    const trigger = shouldReply(config, effectiveText, ctx.command, atBot, ctx.isReplyToBot);
 
-    // 检查压缩（异步，不阻塞）
-    if (cm.needsCompression(sessionId)) {
-      const oldMessages = cm.getOldMessagesToCompress(sessionId);
-      if (oldMessages.length > 0) {
-        summarizeMessages(config, oldMessages)
-          .then(summary => {
-            if (summary) {
-              cm.applyCompression(sessionId, summary);
-              console.log(`[Context] 群${ctx.event.group_id} 压缩${oldMessages.length}条`);
-            }
-          })
-          .catch(() => {});
-      }
+    const storedBaseText = effectiveText
+      ? `${senderName}: ${effectiveText}`
+      : `${senderName}: ${imageUrls.length > 0 ? '[图片]' : '[表情]'}`;
+
+    cm.appendMessage(sessionId, {
+      role: 'user',
+      content: imageUrls.length > 0 ? `${storedBaseText} (含${imageUrls.length}张图)` : storedBaseText,
+    });
+    const contextSnapshot = cm.getFullContext(sessionId);
+    const snapshotSummary = contextSnapshot.summary;
+    const snapshotMessages = [...contextSnapshot.messages];
+
+    if (!trigger.reply) {
+      return false;
     }
 
-    // ===== 联网搜索（按需 不阻塞）=====
-    let searchInfo = '';
-    const needSearch = /最新|最近|现在|今天|谁赢|比分|赛程|更新|版本|发布|新闻|热搜|多少钱|价格|天气/.test(ctx.rawText);
-    if (needSearch && ctx.rawText.length > 3) {
+    const triggerReason = ctx.command && directAiCommands.has(ctx.command)
+      ? `命令/${ctx.command}`
+      : ctx.isReplyToBot
+        ? '回复bot'
+        : atBot
+          ? '@bot'
+          : '相关话题主动接话';
+    const pendingStats = getQueueStats(sessionId);
+    const maxGroupQueue = config.max_group_queue ?? 3;
+    if (!trigger.forced && pendingStats.pending >= maxGroupQueue) {
+      skippedPassiveReplies++;
+      return false;
+    }
+
+    const cooldownMs = (config.cooldown_seconds || 0) * 1000;
+    const now = Date.now();
+    const lastReply = lastReplyAt.get(sessionId) || 0;
+    if (!trigger.forced && cooldownMs > 0 && now - lastReply < cooldownMs) {
+      return false;
+    }
+
+    const job: ReplyJob = {
+      sessionId,
+      groupId: ctx.event.group_id,
+      userId: ctx.event.user_id,
+      selfId: ctx.event.self_id,
+      messageId: ctx.event.message_id,
+      senderName,
+      rawText: ctx.rawText,
+      effectiveText,
+      imageUrls: [...imageUrls],
+      hasImages,
+      isAtBot: atBot,
+      isReplyToBot: ctx.isReplyToBot,
+      triggerReason,
+      forced: trigger.forced,
+      createdAt: Date.now(),
+      contextSummary: snapshotSummary,
+      contextMessages: [...snapshotMessages],
+    };
+
+    void enqueueGroupTask(job, async () => {
+      // 构建当前消息（双版本：API版含图，存储版纯文字）
+      let apiCurrentMessage: ChatMessage;
+      const targetText = buildTargetText(job);
+      const queueAgeMs = Date.now() - job.createdAt;
+      const skipHeavyEnhancements = job.forced && queueAgeMs > 120_000;
+      const skipVoice = job.forced && queueAgeMs > 60_000;
+      let usesVisionPayload = false;
+
       try {
-        const searchPromise = webSearch(ctx.rawText);
-        const timeoutPromise = new Promise<string>((r) => setTimeout(() => r(''), 1500));
-        const result = await Promise.race([searchPromise, timeoutPromise]);
-        if (result) searchInfo = result.slice(0, 200);
-      } catch { /* */ }
-    }
-
-    // ===== 构建发给API的消息 =====
-    // 注意：history是除当前消息外的历史（当前已经append了，需要排除最后一条）
-    const { summary, messages: allHistory } = cm.getFullContext(sessionId);
-    const history = allHistory.slice(0, -1); // 排除刚刚追加的当前消息纯文字版
-    const systemPrompt = buildSystemPrompt(config);
-
-    const apiMessages = buildApiMessages(systemPrompt, summary, history, apiCurrentMessage, searchInfo);
-
-    // ===== 调用 AI =====
-    try {
-      const reply = await callLLMWithRetry(config, apiMessages, hasImages);
-      const cleaned = postProcessReply(reply);
-
-      if (!cleaned) return true;
-
-      // 追加AI回复
-      cm.appendMessage(sessionId, { role: 'assistant', content: cleaned });
-
-      // 发送
-      const useQuote = ctx.isReplyToBot || isAtBot(ctx.event) || Math.random() < 0.2;
-
-      // 一定概率TTS
-      let sentVoice = false;
-      if (config.enable_tts && cleaned.length >= 4 && cleaned.length <= 100 && Math.random() < (config.tts_probability || 0.15)) {
-        try {
-          const voicePath = await generateVoice(config, cleaned);
-          if (voicePath) {
-            ctx.reply([{ type: 'record', data: { file: `file://${voicePath}` } }]);
-            sentVoice = true;
+        if (job.hasImages && !skipHeavyEnhancements) {
+          const limit = Math.max(1, Math.min(config.vision_max_images || 2, 4));
+          const limitedUrls = job.imageUrls.slice(0, limit);
+          const dataUrls: string[] = [];
+          for (const url of limitedUrls) {
+            const d = await withGate('vision', () => getImageDataUrl(url));
+            if (d) dataUrls.push(d);
           }
-        } catch { /* */ }
-      }
 
-      if (!sentVoice) {
-        if (useQuote && cleaned.length <= 200) {
-          ctx.replyQuote(cleaned);
+          if (dataUrls.length > 0) {
+            const parts: MessageContent[] = [{ type: 'text', text: targetText }];
+            for (const dataUrl of dataUrls) {
+              parts.push({ type: 'image_url', image_url: { url: dataUrl, detail: 'low' } });
+            }
+            apiCurrentMessage = { role: 'user', content: parts };
+            usesVisionPayload = true;
+          } else {
+            apiCurrentMessage = { role: 'user', content: targetText };
+          }
         } else {
-          ctx.reply(cleaned);
+          apiCurrentMessage = { role: 'user', content: targetText };
+        }
+
+        // 检查压缩（异步，不阻塞）
+        if (!compressionInFlight.has(job.sessionId) && getQueueStats(job.sessionId).pending <= 1 && cm.needsCompression(job.sessionId)) {
+          const oldMessages = cm.getOldMessagesToCompress(job.sessionId);
+          if (oldMessages.length > 0) {
+            compressionInFlight.add(job.sessionId);
+            summarizeMessages(config, oldMessages)
+              .then(summary => {
+                if (summary) {
+                  cm.applyCompression(job.sessionId, summary);
+                  console.log(`[Context] 群${job.groupId} 压缩${oldMessages.length}条`);
+                }
+              })
+              .catch(() => {})
+              .finally(() => compressionInFlight.delete(job.sessionId));
+          }
+        }
+
+        // ===== 联网搜索（按需 不阻塞）=====
+        let searchInfo = '';
+        if (!skipHeavyEnhancements && shouldSearch(config, job.effectiveText)) {
+          try {
+            const timeoutMs = config.search_timeout_ms || 1500;
+            const searchPromise = webSearch(
+              job.effectiveText,
+              timeoutMs,
+              config.search_cache_seconds ?? 300,
+              config.search_negative_cache_seconds ?? 60,
+            );
+            const timeoutPromise = new Promise<string>((r) => {
+              const timer = setTimeout(() => r(''), timeoutMs);
+              timer.unref();
+            });
+            const result = await Promise.race([searchPromise, timeoutPromise]);
+            if (result) searchInfo = result.slice(0, 350);
+          } catch { /* */ }
+        }
+
+        const knowledgeQuery = [
+          job.effectiveText,
+          searchInfo,
+          ...getKnowledgeKeywords().filter((keyword) => job.effectiveText.toLowerCase().includes(keyword.toLowerCase())),
+        ].join('\n');
+        const styleQuery = `${job.triggerReason}\n直播语态 回复铁律 真人化 口癖 反应强度\n${job.effectiveText}`;
+        const shouldInjectKnowledge = job.forced || isKnowledgeTopic(knowledgeQuery);
+        const knowledgeInfo = config.enable_knowledge === false || !shouldInjectKnowledge
+          ? ''
+          : selectKnowledge(
+            isKnowledgeTopic(knowledgeQuery) ? knowledgeQuery : styleQuery,
+            config.knowledge_max_chars || 1800,
+          );
+
+        // ===== 构建发给API的消息 =====
+        // 注意：history是除当前消息外的历史（当前已经append了，需要排除最后一条）
+        const sendLimit = config.context_send_messages || 25;
+        const history = job.contextMessages.slice(0, -1).slice(-sendLimit); // 排除刚刚追加的当前消息纯文字版
+        const systemPrompt = buildSystemPrompt(config);
+
+        const apiMessages = buildApiMessages(systemPrompt, job.contextSummary, history, apiCurrentMessage, searchInfo, knowledgeInfo);
+
+        // ===== 调用 AI =====
+        const canUseReplyCache = !job.forced && !job.hasImages && !searchInfo && !!job.effectiveText && (config.ai_reply_cache_seconds ?? 180) > 0;
+        const replyCacheKey = canUseReplyCache ? makeReplyCacheKey(config, job.effectiveText, knowledgeInfo) : '';
+        let cleaned = replyCacheKey ? getCachedReply(replyCacheKey) : null;
+        if (!cleaned) {
+          if (replyCacheKey) replyCacheMisses++;
+          const maxAttempts = job.forced ? 3 : 2;
+          const reply = await withGate('ai', () => callLLMWithRetry(config, apiMessages, usesVisionPayload, maxAttempts));
+          cleaned = postProcessReply(reply);
+          if (replyCacheKey && cleaned) {
+            setCachedReply(replyCacheKey, cleaned, config.ai_reply_cache_seconds ?? 180);
+          }
+        }
+
+        if (!cleaned) return;
+
+        // 追加AI回复
+        cm.appendMessage(job.sessionId, { role: 'assistant', content: cleaned });
+
+        // 发送
+        const quoteStrongTrigger = job.forced && config.forced_reply_quote !== false;
+        const quoteMention = config.must_reply_quote && (job.isReplyToBot || job.isAtBot);
+        const useQuote = quoteStrongTrigger || quoteMention || Math.random() < 0.18;
+
+        // 一定概率TTS；强触发优先文字引用，避免语音段弱化原消息定位。
+        let sentVoice = false;
+        if (!skipVoice && !job.forced && config.enable_tts && cleaned.length >= 4 && cleaned.length <= (config.tts_max_chars || 120) && Math.random() < (config.tts_probability || 0.15)) {
+          try {
+            const voicePath = await withGate('tts', () => generateVoice(config, cleaned));
+            if (voicePath) {
+              ctx.reply([{ type: 'record', data: { file: `file://${voicePath}` } }]);
+              sentVoice = true;
+            }
+          } catch { /* */ }
+        }
+
+        if (!sentVoice) {
+          if (useQuote && cleaned.length <= 200) {
+            ctx.replyQuoteTo(job.messageId, job.userId, cleaned);
+          } else {
+            ctx.reply(cleaned);
+          }
+        }
+        lastReplyAt.set(job.sessionId, Date.now());
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        console.error(`[AI][群${job.groupId}] 失败:`, errMsg);
+        if (job.forced) {
+          ctx.replyQuoteTo(job.messageId, job.userId, '接口有点卡 你等会再说');
         }
       }
-    } catch (err) {
+    }).catch((err) => {
       const errMsg = err instanceof Error ? err.message : String(err);
-      console.error(`[AI][群${ctx.event.group_id}] 失败:`, errMsg);
-    }
+      console.error(`[AI][群${job.groupId}] 队列异常:`, errMsg);
+      if (job.forced) {
+        ctx.replyQuoteTo(job.messageId, job.userId, '接口有点卡 你等会再说');
+      }
+    });
 
     return true;
   },

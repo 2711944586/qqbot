@@ -6,6 +6,8 @@ export class MessageHandler {
   private plugins: Plugin[] = [];
   /** 记录bot发出的消息ID，用于检测回复 */
   private botMessageIds: Set<number> = new Set();
+  private activeMessages = 0;
+  private warnedSelfIdMismatch = false;
 
   constructor(bot: Bot) {
     this.bot = bot;
@@ -35,7 +37,17 @@ export class MessageHandler {
 
     const groupEvent = event as GroupMessageEvent;
     const config = this.bot.getConfig();
-    const isReplyToBot = this.checkReplyToBot(groupEvent);
+    if (
+      config.bot_qq &&
+      config.bot_qq !== groupEvent.self_id &&
+      !this.warnedSelfIdMismatch
+    ) {
+      this.warnedSelfIdMismatch = true;
+      console.warn(`[Handler] config.bot_qq=${config.bot_qq} 但 OneBot self_id=${groupEvent.self_id}，请确认是否已切换到目标QQ号。`);
+    }
+    if (groupEvent.user_id === groupEvent.self_id) return;
+
+    const isReplyToBot = await this.checkReplyToBot(groupEvent);
     const isAtBot = this.checkAtBot(groupEvent);
 
     // 如果配置了群白名单，普通消息只处理白名单内的群；直接@或回复bot仍然放行，避免“@了没反应”。
@@ -43,15 +55,15 @@ export class MessageHandler {
       return;
     }
 
-    // 忽略自己发的消息
-    if (groupEvent.user_id === groupEvent.self_id) return;
-
     // 非阻塞处理：不await，让每条消息独立处理
+    this.activeMessages++;
     this.processMessage(groupEvent, config, isReplyToBot, isAtBot).catch((err) => {
       console.error('[Handler] 消息处理异常:', err);
       if (isAtBot || isReplyToBot) {
         void this.bot.sendGroupMessage(groupEvent.group_id, '我在 刚才没接住，你再说');
       }
+    }).finally(() => {
+      this.activeMessages = Math.max(0, this.activeMessages - 1);
     });
   }
 
@@ -109,13 +121,31 @@ export class MessageHandler {
           });
         });
       },
+      replyQuoteTo: (messageId: number, userId: number, message: string) => {
+        const quoteMsg: MessageSegment[] = [
+          { type: 'reply', data: { id: String(messageId) } },
+          { type: 'text', data: { text: message } },
+        ];
+        void this.bot.sendGroupMessage(groupEvent.group_id, quoteMsg, (id) => {
+          this.trackBotMessage(id);
+        }).then((sent) => {
+          if (sent) return;
+          const fallbackMsg: MessageSegment[] = [
+            { type: 'at', data: { qq: String(userId) } },
+            { type: 'text', data: { text: ' ' + message } },
+          ];
+          return this.bot.sendGroupMessage(groupEvent.group_id, fallbackMsg, (id) => {
+            this.trackBotMessage(id);
+          });
+        });
+      },
     };
 
     // 依次执行插件
     let handled = false;
     for (const plugin of this.plugins) {
       try {
-        handled = await plugin.handler(ctx);
+        handled = await this.runPlugin(plugin, ctx, config);
         if (handled && (isAtBot || isReplyToBot) && !ctx.command && plugin.name !== 'ai-chat') {
           handled = false;
           continue;
@@ -131,8 +161,51 @@ export class MessageHandler {
     }
   }
 
+  private runPlugin(plugin: Plugin, ctx: PluginContext, config: BotConfig): Promise<boolean> {
+    const baseTimeoutMs = Math.max(90000, (config.ai?.api_timeout_ms || 15000) * 3 + 30000);
+    const timeoutMs = plugin.name === 'ai-chat'
+      ? Math.max(300000, baseTimeoutMs)
+      : baseTimeoutMs;
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const timer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        console.error(`[Handler] 插件 ${plugin.name} 执行超时`);
+        resolve(false);
+      }, timeoutMs);
+      timer.unref();
+
+      let result: Promise<boolean> | boolean;
+      try {
+        result = plugin.handler(ctx);
+      } catch (err) {
+        if (!settled) {
+          settled = true;
+          clearTimeout(timer);
+          reject(err);
+        }
+        return;
+      }
+
+      Promise.resolve(result)
+        .then((handled) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          resolve(handled);
+        })
+        .catch((err) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          reject(err);
+        });
+    });
+  }
+
   /** 检测消息是否是回复bot的消息 */
-  private checkReplyToBot(event: GroupMessageEvent): boolean {
+  private async checkReplyToBot(event: GroupMessageEvent): Promise<boolean> {
     const replySeg = event.message.find((seg) => seg.type === 'reply');
     if (!replySeg || replySeg.type !== 'reply') return false;
     const data = replySeg.data as Record<string, unknown>;
@@ -140,7 +213,21 @@ export class MessageHandler {
     if (String(repliedUser || '') === String(event.self_id)) return true;
 
     const replyId = parseInt(String(replySeg.data.id));
-    return this.botMessageIds.has(replyId);
+    if (!Number.isFinite(replyId)) return false;
+    if (this.botMessageIds.has(replyId)) return true;
+
+    try {
+      const res = await this.bot.callApiAsync('get_msg', { message_id: replyId }, 1500) as {
+        data?: {
+          user_id?: number | string;
+          sender?: { user_id?: number | string };
+        };
+      };
+      const senderId = res.data?.sender?.user_id ?? res.data?.user_id;
+      return String(senderId || '') === String(event.self_id);
+    } catch {
+      return false;
+    }
   }
 
   /** 检测消息是否@了bot（兼容qq为数字/字符串以及raw_message格式） */

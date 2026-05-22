@@ -1,8 +1,18 @@
-import { Plugin, MessageSegment } from '../types';
+import { Plugin } from '../types';
+import { getRandomKnowledgeLine } from './knowledge-base';
 
 /** 随机选择 */
 function randomPick(items: string[]): string {
   return items[Math.floor(Math.random() * items.length)];
+}
+
+function styleLine(): string {
+  return getRandomKnowledgeLine('style') || randomPick([
+    '不是哥们 这波有说法',
+    '可以的 有点东西',
+    '我晕了 这也能开出来',
+    '先别急 看结果',
+  ]);
 }
 
 export const funPlugin: Plugin = {
@@ -22,11 +32,11 @@ export const funPlugin: Plugin = {
         const sides = parseInt(diceMatch[2]);
         const rolls = Array.from({ length: count }, () => Math.floor(Math.random() * sides) + 1);
         const sum = rolls.reduce((a, b) => a + b, 0);
-        result = `🎲 ${count}d${sides} = [${rolls.join(', ')}] = ${sum}`;
+        result = `${styleLine()}\n${count}d${sides} = [${rolls.join(', ')}] = ${sum}`;
       } else {
         const max = parseInt(input) || 100;
         const value = Math.floor(Math.random() * max) + 1;
-        result = `🎲 (1-${max}): ${value}`;
+        result = `${styleLine()}\n1-${max} 开出来是 ${value}`;
       }
       ctx.reply(result);
       return true;
@@ -35,13 +45,13 @@ export const funPlugin: Plugin = {
     // ===== 抽签 =====
     if (ctx.command === 'luck' || ctx.command === 'fortune') {
       const fortunes = [
-        '🌟 大吉 —— 万事顺遂，诸事皆宜',
-        '✨ 吉 —— 运势不错，可以行动',
-        '🍀 中吉 —— 平稳顺遂',
-        '☁️ 小吉 —— 小有收获',
-        '🌤 末吉 —— 还行，别太冒险',
-        '🌥 凶 —— 今日宜静不宜动',
-        '🌧 大凶 —— 小心为上，低调处事',
+        '大吉 - 今天枪法在线，timing也站你这边',
+        '吉 - 运势不错，可以主动找机会',
+        '中吉 - 稳一点打，别自己上头就行',
+        '小吉 - 小有收获，别贪别送',
+        '末吉 - 还行，但别硬起',
+        '凶 - 今天宜默认控图，别第一身位白给',
+        '大凶 - 不是哥们，今天真别硬拉',
       ];
       const weights = [5, 15, 25, 25, 15, 10, 5];
       const total = weights.reduce((a, b) => a + b, 0);
@@ -53,7 +63,7 @@ export const funPlugin: Plugin = {
       }
 
       const today = new Date().toLocaleDateString('zh-CN', { timeZone: 'Asia/Shanghai' });
-      ctx.replyAt(`${today} 的运势：\n${fortune}`);
+      ctx.replyAt(`${today} 的运势:\n${fortune}`);
       return true;
     }
 
@@ -65,7 +75,7 @@ export const funPlugin: Plugin = {
         return true;
       }
       const chosen = randomPick(options);
-      ctx.replyAt(`🤔 我建议你选: 「${chosen}」`);
+      ctx.replyAt(`别纠结了，就选「${chosen}」。${styleLine()}`);
       return true;
     }
 
@@ -73,8 +83,10 @@ export const funPlugin: Plugin = {
     if (ctx.command === 'rand') {
       const min = parseInt(ctx.args[0]) || 1;
       const max = parseInt(ctx.args[1]) || 100;
-      const value = Math.floor(Math.random() * (max - min + 1)) + min;
-      ctx.reply(`🔢 随机数 (${min}-${max}): ${value}`);
+      const low = Math.min(min, max);
+      const high = Math.max(min, max);
+      const value = Math.floor(Math.random() * (high - low + 1)) + low;
+      ctx.reply(`${styleLine()}\n${low}-${high} 随到 ${value}`);
       return true;
     }
 
@@ -86,12 +98,12 @@ export const funPlugin: Plugin = {
       const rp = Math.abs(seed) % 101;
 
       let comment: string;
-      if (rp >= 90) comment = '🎊 欧皇附体！今天是幸运日~';
-      else if (rp >= 70) comment = '😊 今天运气不错哦';
-      else if (rp >= 50) comment = '🙂 平平淡淡也是真';
-      else if (rp >= 30) comment = '😐 今天一般般吧...';
-      else if (rp >= 10) comment = '😢 今天要小心一点哦';
-      else comment = '💀 今天...还是躺平吧';
+      if (rp >= 90) comment = '今天真有点东西，打什么都像在架timing。';
+      else if (rp >= 70) comment = '运气不错，可以主动一点。';
+      else if (rp >= 50) comment = '中规中矩，默认控图等机会。';
+      else if (rp >= 30) comment = '一般，少嘴硬多补枪。';
+      else if (rp >= 10) comment = '有点危险，别第一时间白给。';
+      else comment = '不是哥们，今天先别硬起，保枪吧。';
 
       ctx.replyAt(`今日人品值: ${rp}/100\n${comment}`);
       return true;
