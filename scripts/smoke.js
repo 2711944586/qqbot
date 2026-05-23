@@ -2,6 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const assert = require('assert');
 const http = require('http');
+const { spawnSync } = require('child_process');
 
 const { hasUsableApiKey, normalizeConfig } = require('../dist/config');
 const kb = require('../dist/plugins/knowledge-base');
@@ -125,6 +126,16 @@ async function testConfig() {
   assert.ok(config.ai.trigger_keywords.includes('今日套餐'), 'example trigger keywords should include daily CS loadout');
   assert.strictEqual(hasUsableApiKey('在这里填入你的API密钥'), false, 'example placeholder key should not be treated as usable');
   assert.strictEqual(hasUsableApiKey('sk-live-test-key-1234567890'), true, 'real-looking key should be treated as usable');
+}
+
+async function testDoctorScript() {
+  const result = spawnSync(process.execPath, [path.resolve(__dirname, 'doctor.js')], {
+    cwd: path.resolve(__dirname, '..'),
+    encoding: 'utf-8',
+  });
+  assert.strictEqual(result.status, 0, `doctor should not fail without hard issues: ${result.stdout}\n${result.stderr}`);
+  assert.ok(result.stdout.includes('doctor report'), 'doctor should print report header');
+  assert.ok(result.stdout.includes('硬伤:'), 'doctor should print hard issue count');
 }
 
 async function testConfigEnvApiKeyOverride() {
@@ -1278,6 +1289,7 @@ async function testCrossGroupAiConcurrency() {
 async function main() {
   await testOutgoingSanitize();
   await testConfig();
+  await testDoctorScript();
   await testConfigEnvApiKeyOverride();
   await testKnowledge();
   await testKnowledgeSourceState();

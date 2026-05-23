@@ -6,6 +6,7 @@
   "scripts": {
     "build": "tsc",
     "smoke": "node scripts/smoke.js",
+    "doctor": "node scripts/doctor.js",
     "voice:test": "node scripts/voice-test.js",
     "stt:test": "node scripts/stt-test.js",
     "cache:clean": "node scripts/cache-clean.js",

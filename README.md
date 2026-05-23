@@ -1490,9 +1490,12 @@ knowledge/inbox/
 每次改代码后：
 
 ```bash
+npm run doctor
 npm run build
 npm run smoke
 ```
+
+`doctor` 是本机/VPS 预检，不需要 QQ 在线，也不需要连接 NapCat。它会检查 `config.json`、`config.example.json`、`dist/index.js`、知识库、缓存目录写入权限、API Key 是否仍是占位值、`src` 是否比 `dist` 新、2G1C 并发配置是否过高。默认只有“硬伤”会返回非 0；如果想让风险项也阻断部署，可以跑 `node scripts/doctor.js --strict`。
 
 `smoke` 覆盖：
 
@@ -1534,6 +1537,7 @@ npm run smoke
 可选本地维护命令：
 
 ```bash
+npm run doctor
 npm run cache:clean
 npm run stt:test -- <语音URL或本地文件>
 ```
@@ -1885,7 +1889,8 @@ cd /opt/wanjier-bot
 mkdir -p backups
 cp knowledge/wanjier.md backups/wanjier.vps.$(date +%F-%H%M%S).md
 git stash push -m "vps local knowledge before update" -- knowledge/wanjier.md || true
-git pull
+git pull --ff-only
+npm run doctor
 npm install
 npm run build
 npm run smoke
@@ -1919,6 +1924,7 @@ pm2 logs wanjier --lines 80
 还要把 `config.example.json` 里的 `ai.presets.wanjier.system_prompt` 复制到 VPS 的 `config.json` 对应字段。改完后执行：
 
 ```bash
+npm run doctor
 npm run build
 npm run smoke
 pm2 restart wanjier --update-env
@@ -1930,6 +1936,7 @@ pm2 logs wanjier --lines 80 --nostream
 ```bash
 cd /opt/wanjier-bot
 git log -1 --oneline
+npm run doctor
 npm run smoke
 pm2 restart wanjier
 pm2 logs wanjier --lines 80 --nostream
