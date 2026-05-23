@@ -1078,6 +1078,7 @@ apt install -y ffmpeg
 | `直接用语音念 / 发语音 / 念出来 / 读出来 / voice / tts / say` | 模糊触发语音；带明确内容时直接照读 |
 | `用语音回答 / 用语音分析 / 用语音说说怎么看` | 先走 AI 生成回答，再转语音 |
 | `/voice status` | 查看 TTS、克隆样本和缓存状态 |
+| `/voice last` | 查看最近一次语音直读/AI转语音的 trace |
 | `/voice test [内容]` | 生成测试语音 |
 | `/voice stt <语音URL>` | 测试语音听写链路，也可同一条消息带语音 |
 | `/voice clean` | 清理过期语音缓存 |
@@ -1085,6 +1086,7 @@ apt install -y ffmpeg
 | `/say <内容>` | 生成语音 |
 | `/vision status` | 查看识图模型、图片缓存和最近错误 |
 | `/vision test <图片URL>` | 下载图片并实际调用视觉模型测试 |
+| `/trace last` | 查看最近一次 AI/语音回复从触发到发送的排障 trace |
 | `/reset` 或 `/clear` | 清除当前群上下文 |
 | `/presets` | 查看预设 |
 | `/preset <名称>` | 切换预设 |
@@ -1130,6 +1132,17 @@ apt install -y ffmpeg
 | `/unban @人` | 管理员解禁 |
 | `/kick @人` | 管理员踢人 |
 | `/title @人 <头衔>` | 管理员设置群头衔 |
+
+## 自动校验
+
+仓库内置 GitHub Actions：每次推送 `main` 或提交 PR，会自动执行 `npm ci`、`npm run build`、`npm run smoke`。`smoke` 会覆盖配置解析、知识库、搜索 single-flight、队列并发、每日 CS、语音直读不走 AI、语音不带引用、`/trace last`、`/voice last` 等关键行为。
+
+本地提交前建议固定跑：
+
+```bash
+npm run build
+npm run smoke
+```
 
 私聊说明：
 
@@ -1791,7 +1804,8 @@ pm2 logs wanjier --lines 0
 3. 看 `/diag` 是否提示 AI 接口未配置。
 4. 确认 `api_key` 不是示例里的占位值；占位 key 会被诊断为未配置。
 5. 看 `/status` 队列是否长期堆积。
-6. 如果设置了 `enabled_groups`，确认群号在白名单。
+6. 跑 `/trace last`，看最近一次强触发是否进入队列、是否调用 AI、是否最终发送文本/语音兜底。
+7. 如果设置了 `enabled_groups`，确认群号在白名单；直接 @ 或回复 bot 理论上仍会放行，普通消息才受白名单影响。
 
 ### 回复错人
 
@@ -1825,9 +1839,10 @@ pm2 logs wanjier --lines 0
 3. 没有 `voice_sample.mp3` 时会走普通 TTS。
 4. 强触发默认优先文字引用，普通主动接话才可能随机语音。
 5. 跑 `/voice status` 看 `最近错误`、`听写最近错误`、样本状态和缓存命中。
-6. 跑 `/voice stt <语音URL>` 单独测听写；跑 `/voice test` 单独测 TTS。一个成功一个失败时，按失败那条链路排查。
-7. 也可以把 QQ 语音和 `/voice stt` 发在同一条消息里；这能直接测试 NapCat `get_record`、转码、STT payload 和缓存。
-8. Docker NapCat 优先保持 `tts_send_mode=base64`。只有确认容器能读宿主机 `voice_cache/` 时，才改成 `file`。
+6. 跑 `/voice last`，确认最近一次是 `direct-verbatim` 直读、`ai-voice` AI 转语音，还是 TTS 失败后文字兜底。
+7. 跑 `/voice stt <语音URL>` 单独测听写；跑 `/voice test` 单独测 TTS。一个成功一个失败时，按失败那条链路排查。
+8. 也可以把 QQ 语音和 `/voice stt` 发在同一条消息里；这能直接测试 NapCat `get_record`、转码、STT payload 和缓存。
+9. Docker NapCat 优先保持 `tts_send_mode=base64`。只有确认容器能读宿主机 `voice_cache/` 时，才改成 `file`。
 
 ### 每日 CS 不触发或不出图
 

@@ -8,6 +8,14 @@ import { cleanupCache as cleanImageCache, configureImageCache, getCacheStats as 
 import { configureGates, getGateStats, withGate } from './concurrency';
 import { sanitizeOutgoingText } from '../message-sanitize';
 import {
+  directTtsCommands,
+  extractVerbatimVoiceText,
+  isExplicitVoiceReplyRequest,
+  normalizePassiveText,
+  splitVoiceTextForTts,
+  stripVoiceReplyInstruction,
+} from './voice-intent';
+import {
   commitKnowledgeCandidate,
   dropKnowledgeCandidate,
   getKnowledgeCandidate,
@@ -81,6 +89,7 @@ interface ReplyJob {
   hasImages: boolean;
   hasRecords: boolean;
   forceVoice: boolean;
+  command: string | null;
   isAtBot: boolean;
   isReplyToBot: boolean;
   repliedMessageId?: number;
@@ -89,6 +98,56 @@ interface ReplyJob {
   createdAt: number;
   contextSummary: string;
   contextMessages: ChatMessage[];
+}
+
+interface ReplyTrace {
+  timestamp: number;
+  chatType: 'group' | 'private';
+  chatId: number;
+  groupId?: number;
+  userId: number;
+  messageId: number;
+  senderName: string;
+  triggerReason: string;
+  forced: boolean;
+  command?: string | null;
+  rawTextPreview: string;
+  effectiveTextPreview: string;
+  hasImages: boolean;
+  hasRecords: boolean;
+  recordTranscripts: number;
+  queueAgeMs: number;
+  searchUsed: boolean;
+  searchChars: number;
+  knowledgeInjected: boolean;
+  knowledgeChars: number;
+  knowledgeTopic: boolean;
+  visionPayload: boolean;
+  voiceRequested: boolean;
+  voiceMode: 'none' | 'direct-verbatim' | 'ai-voice' | 'passive-voice';
+  voiceParts: number;
+  sent: 'queued' | 'text' | 'voice' | 'voice+text-fallback' | 'fallback' | 'skipped';
+  cacheHit: boolean;
+  replyLength: number;
+  error?: string;
+}
+
+interface VoiceTrace {
+  timestamp: number;
+  mode: 'direct-verbatim' | 'ai-voice' | 'passive-voice';
+  chatType: 'group' | 'private';
+  chatId: number;
+  groupId?: number;
+  userId: number;
+  messageId: number;
+  requestedTextPreview: string;
+  spokenTextPreview: string;
+  parts: number;
+  sentParts: number;
+  provider: string;
+  sendMode: string;
+  lastTtsMode?: string;
+  error?: string;
 }
 
 // ============ 上下文管理器（内存+磁盘双层） ============
@@ -1224,8 +1283,9 @@ let completedCompressions = 0;
 let failedCompressions = 0;
 let replyCacheHits = 0;
 let replyCacheMisses = 0;
+let lastReplyTrace: ReplyTrace | null = null;
+let lastVoiceTrace: VoiceTrace | null = null;
 const directAiCommands = new Set(['ai', 'ask', 'chat']);
-const directTtsCommands = new Set(['voice', 'tts', 'say']);
 const directSearchCommands = new Set(['search', '搜', '搜索']);
 const directVisionCommands = new Set(['vision', 'image', 'img', '识图']);
 const defaultSearchPattern = /最新|最近|现在|今天|谁赢|比分|赛程|更新|版本|发布|新闻|热搜|多少钱|价格|天气/;
@@ -1268,6 +1328,115 @@ function formatTime(timestamp: number): string {
   return timestamp
     ? new Date(timestamp).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })
     : '无';
+}
+
+function previewText(text: string, maxChars: number = 90): string {
+  const cleaned = sanitizeOutgoingText(text || '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (cleaned.length <= maxChars) return cleaned;
+  return `${cleaned.slice(0, Math.max(0, maxChars - 1)).trim()}…`;
+}
+
+function formatTraceTime(timestamp: number): string {
+  return timestamp
+    ? new Date(timestamp).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })
+    : '无';
+}
+
+function formatReplyTrace(trace: ReplyTrace | null): string {
+  if (!trace) return '还没有回复 trace。先 @ 一句或跑 /voice test。';
+  return [
+    '最近回复 trace',
+    `时间: ${formatTraceTime(trace.timestamp)}`,
+    `会话: ${trace.chatType} ${trace.chatId}${trace.groupId ? ` / group ${trace.groupId}` : ''}`,
+    `消息: mid=${trace.messageId} uid=${trace.userId} ${trace.senderName}`,
+    `触发: ${trace.triggerReason} forced=${trace.forced}`,
+    trace.command ? `命令: /${trace.command}` : '',
+    `原文: ${trace.rawTextPreview || '[空/媒体消息]'}`,
+    trace.effectiveTextPreview && trace.effectiveTextPreview !== trace.rawTextPreview ? `有效文本: ${trace.effectiveTextPreview}` : '',
+    `媒体: 图片${trace.hasImages ? '有' : '无'} 语音${trace.hasRecords ? '有' : '无'} 听写${trace.recordTranscripts}`,
+    `队列: 等待${Math.round(trace.queueAgeMs / 1000)}s`,
+    `增强: 知识${trace.knowledgeInjected ? `${trace.knowledgeChars}字` : '未注入'}${trace.knowledgeTopic ? '/话题命中' : ''} 搜索${trace.searchUsed ? `${trace.searchChars}字` : '未用'} 识图${trace.visionPayload ? '已传图' : '未传图'}`,
+    `语音: ${trace.voiceMode} requested=${trace.voiceRequested} parts=${trace.voiceParts}`,
+    `发送: ${trace.sent} cacheHit=${trace.cacheHit} replyLen=${trace.replyLength}`,
+    trace.error ? `错误: ${trace.error}` : '',
+  ].filter(Boolean).join('\n');
+}
+
+function formatVoiceTrace(trace: VoiceTrace | null, config?: AIConfig): string {
+  const stats = getVoiceStats(config);
+  if (!trace) {
+    return [
+      '最近语音 trace',
+      '还没有语音发送记录。',
+      `当前TTS: ${stats.provider}${stats.localReady ? '/local' : ''} send=${stats.sendMode} 克隆${stats.cloneEnabled ? (stats.cloneReady ? 'ready' : 'missing') : 'off'}`,
+      ...(stats.lastMode ? [`最近TTS模式: ${stats.lastMode}`] : []),
+      ...(stats.lastError ? [`最近错误: ${stats.lastError}`] : []),
+    ].join('\n');
+  }
+  return [
+    '最近语音 trace',
+    `时间: ${formatTraceTime(trace.timestamp)}`,
+    `会话: ${trace.chatType} ${trace.chatId}${trace.groupId ? ` / group ${trace.groupId}` : ''}`,
+    `消息: mid=${trace.messageId} uid=${trace.userId}`,
+    `模式: ${trace.mode}`,
+    `请求文本: ${trace.requestedTextPreview || '[空]'}`,
+    `实际念出: ${trace.spokenTextPreview || '[空]'}`,
+    `分段: ${trace.sentParts}/${trace.parts}`,
+    `TTS: ${trace.provider} send=${trace.sendMode}${trace.lastTtsMode ? ` mode=${trace.lastTtsMode}` : ''}`,
+    trace.error ? `错误: ${trace.error}` : '',
+    ...(stats.lastError && stats.lastError !== trace.error ? [`当前最近错误: ${stats.lastError}`] : []),
+  ].filter(Boolean).join('\n');
+}
+
+function setReplyTrace(trace: ReplyTrace): void {
+  lastReplyTrace = trace;
+}
+
+function patchReplyTrace(messageId: number, patch: Partial<ReplyTrace>): void {
+  if (!lastReplyTrace || lastReplyTrace.messageId !== messageId) return;
+  lastReplyTrace = { ...lastReplyTrace, ...patch, timestamp: Date.now() };
+}
+
+function makeDirectVoiceReplyTrace(
+  ctx: PluginContext,
+  text: string,
+  parts: number,
+  sent: ReplyTrace['sent'] = 'queued',
+  error?: string,
+): ReplyTrace {
+  return {
+    timestamp: Date.now(),
+    chatType: ctx.chatType,
+    chatId: ctx.chatId,
+    groupId: ctx.groupId,
+    userId: ctx.event.user_id,
+    messageId: ctx.event.message_id,
+    senderName: ctx.event.sender.card || ctx.event.sender.nickname,
+    triggerReason: '直接语音照读',
+    forced: true,
+    command: ctx.command,
+    rawTextPreview: previewText(ctx.rawText),
+    effectiveTextPreview: previewText(text),
+    hasImages: ctx.event.message.some((seg) => seg.type === 'image'),
+    hasRecords: ctx.event.message.some((seg) => seg.type === 'record'),
+    recordTranscripts: 0,
+    queueAgeMs: 0,
+    searchUsed: false,
+    searchChars: 0,
+    knowledgeInjected: false,
+    knowledgeChars: 0,
+    knowledgeTopic: false,
+    visionPayload: false,
+    voiceRequested: true,
+    voiceMode: 'direct-verbatim',
+    voiceParts: parts,
+    sent,
+    cacheHit: false,
+    replyLength: text.length,
+    error,
+  };
 }
 
 function chooseRefreshSources(config: AIConfig, queryOverride: string, autoRun: boolean): KnowledgeSource[] {
@@ -1462,10 +1631,6 @@ function includesAnyKeyword(text: string, keywords: string[] = []): boolean {
   return keywords.some((keyword) => keyword && lowerText.includes(keyword.toLowerCase()));
 }
 
-function normalizePassiveText(text: string): string {
-  return text.replace(/\s+/g, '').trim();
-}
-
 function isLowInformationPassiveText(text: string, config: AIConfig): boolean {
   const normalized = normalizePassiveText(text);
   if (!normalized) return true;
@@ -1513,90 +1678,34 @@ function shouldSearch(config: AIConfig, text: string): boolean {
   return defaultSearchPattern.test(text);
 }
 
-function isExplicitVoiceReplyRequest(text: string, command: string | null): boolean {
-  if (command && directTtsCommands.has(command)) return true;
-  const normalized = normalizePassiveText(text).toLowerCase();
-  if (!normalized) return false;
-  return /(?:用|发|来|整|给|回|回复|说|念|读|语音|voice|tts|say).{0,8}(?:语音|voice|tts|say|音频|声音|念出来|读出来)|(?:语音|voice|tts|say).{0,8}(?:回|回复|说|念|读|来|发|整|一下)/i.test(normalized);
-}
-
-function extractVerbatimVoiceText(text: string, command: string | null): string {
-  const raw = text.trim();
-  if (!raw) return '';
-  if (command && directTtsCommands.has(command)) return raw;
-  if (/(?:语音|voice|tts|say)\s*(?:回答|分析|评价|解释|总结|查|搜|说说|聊聊|怎么看|怎么说)|(?:回答|分析|评价|解释|总结|说说|聊聊|怎么看|怎么说)\s*(?:.*?)(?:语音|voice|tts|say)/i.test(raw)) {
-    return '';
-  }
-
-  const lead = String.raw`(?:(?:请|麻烦|帮我|给我|你(?:给我)?|可以|能不能|能否|直接|现在|马上|立刻|就|老哥|哥们儿?|哥们)\s*)*`;
-  const patterns = [
-    new RegExp(`^${lead}(?:用|发|来|整|给我)?\\s*(?:语音|voice|tts|say)\\s*(?:回复|回|说|念|读|念出来|读出来)?\\s*(?:一下|下)?[：:,，、\\s]+([\\s\\S]+)$`, 'i'),
-    new RegExp(`^${lead}(?:用|发|来|整|给我)?\\s*(?:语音|voice|tts|say)\\s*(?:回复|回|说|念|读|念出来|读出来)?\\s*(?:一下|下)?([\\s\\S]+)$`, 'i'),
-    new RegExp(`^${lead}(?:回复|回|说|念|读)\\s*(?:语音|voice|tts|say)\\s*(?:一下|下)?[：:,，、\\s]+([\\s\\S]+)$`, 'i'),
-    new RegExp(`^${lead}(?:回复|回|说|念|读)\\s*(?:语音|voice|tts|say)\\s*(?:一下|下)?([\\s\\S]+)$`, 'i'),
-    new RegExp(`^${lead}(?:念出来|读出来|念|读)\\s*(?:一下|下)?[：:,，、\\s]+([\\s\\S]+)$`, 'i'),
-    new RegExp(`^${lead}(?:念出来|读出来)\\s*(?:一下|下)?([\\s\\S]+)$`, 'i'),
-  ];
-
-  for (const pattern of patterns) {
-    const match = raw.match(pattern);
-    if (!match) continue;
-    const candidate = (match[1] || '')
-      .replace(/^(?:回复|回答)\s*(?:一下|下)?[：:,，、\s]*/i, '')
-      .trim();
-    if (!candidate) continue;
-    if (/^(?:回答|分析|评价|怎么看|怎么说|帮我|告诉我|解释|查一下|搜一下|总结|评价一下)\b/i.test(candidate)) {
-      return '';
-    }
-    return candidate;
-  }
-  return '';
-}
-
-function splitVoiceTextForTts(text: string, maxChars: number, maxParts: number = 4): string[] {
-  const cleaned = sanitizeOutgoingText(text)
-    .replace(/\s+/g, ' ')
-    .replace(/[#*_`>]/g, '')
-    .trim();
-  if (!cleaned) return [];
-  const limit = Math.max(10, maxChars);
-  const result: string[] = [];
-  let rest = cleaned;
-  while (rest.length > 0 && result.length < maxParts) {
-    if (rest.length <= limit) {
-      result.push(rest);
-      break;
-    }
-    const window = rest.slice(0, limit + 1);
-    let cut = -1;
-    for (const match of window.matchAll(/[。！？!?；;，,、\s]/g)) {
-      if (typeof match.index === 'number' && match.index >= Math.floor(limit * 0.45) && match.index <= limit) {
-        cut = match.index + match[0].length;
-      }
-    }
-    if (cut <= 1) cut = limit;
-    const chunk = rest.slice(0, cut).trim();
-    if (chunk.length >= 2) result.push(chunk);
-    rest = rest.slice(cut).replace(/^[\s,，。！？!?.、；;]+/, '').trim();
-  }
-  return result.filter((item) => item.length >= 2);
-}
-
-function stripVoiceReplyInstruction(text: string): string {
-  return text
-    .replace(/请?(?:用|发|来|整|给我)?\s*(?:语音|voice|tts|say)\s*(?:回(?:复)?|说|念|读|回答)?\s*(?:一下|下)?[：:,，、]?\s*/ig, '')
-    .replace(/(?:用|发|来|整|给我)?\s*(?:语音|voice|tts|say)\s*(?:回复|回答|说|念|读|回我)?\s*/ig, '')
-    .replace(/(?:回(?:复)?|回答)\s*(?:用)?\s*(?:语音|voice|tts|say)\s*/ig, '')
-    .trim();
-}
-
 async function sendVerbatimVoice(ctx: PluginContext, config: AIConfig, text: string, fallbackMessageId?: number, fallbackUserId?: number): Promise<boolean> {
   const voiceTexts = splitVoiceTextForTts(text, config.tts_max_chars || 120);
   if (voiceTexts.length === 0) return false;
+  setReplyTrace(makeDirectVoiceReplyTrace(ctx, text, voiceTexts.length));
+  const voiceStatsBefore = getVoiceStats(config);
+  lastVoiceTrace = {
+    timestamp: Date.now(),
+    mode: 'direct-verbatim',
+    chatType: ctx.chatType,
+    chatId: ctx.chatId,
+    groupId: ctx.groupId,
+    userId: ctx.event.user_id,
+    messageId: ctx.event.message_id,
+    requestedTextPreview: previewText(text),
+    spokenTextPreview: previewText(voiceTexts.join(' / ')),
+    parts: voiceTexts.length,
+    sentParts: 0,
+    provider: voiceStatsBefore.provider,
+    sendMode: voiceStatsBefore.sendMode,
+    lastTtsMode: voiceStatsBefore.lastMode,
+  };
   if (!config.enable_tts) {
     const message = '语音没开，这句没法念';
     if (fallbackMessageId && fallbackUserId) ctx.replyQuoteTo(fallbackMessageId, fallbackUserId, message);
     else ctx.reply(message);
+    const error = 'enable_tts=false';
+    patchReplyTrace(ctx.event.message_id, { sent: 'fallback', error });
+    lastVoiceTrace = { ...lastVoiceTrace, timestamp: Date.now(), error };
     return true;
   }
   const ttsNeedsApi = (config.tts_provider || 'api') === 'api' || ((config.tts_provider || 'api') === 'auto' && !(config.tts_local_command || '').trim());
@@ -1604,22 +1713,44 @@ async function sendVerbatimVoice(ctx: PluginContext, config: AIConfig, text: str
     const message = 'AI接口没配，语音也就别想了';
     if (fallbackMessageId && fallbackUserId) ctx.replyQuoteTo(fallbackMessageId, fallbackUserId, message);
     else ctx.reply(message);
+    const error = 'api key missing';
+    patchReplyTrace(ctx.event.message_id, { sent: 'fallback', error });
+    lastVoiceTrace = { ...lastVoiceTrace, timestamp: Date.now(), error };
     return true;
   }
   let sentAny = false;
+  let sentParts = 0;
+  let caughtError = '';
   try {
     for (const voiceText of voiceTexts) {
       const voicePath = await withGate('tts', () => generateVoice(config, voiceText), true);
       if (voicePath) {
         ctx.reply([voiceRecordSegment(config, voicePath)]);
         sentAny = true;
+        sentParts++;
       }
     }
-  } catch { /* */ }
-  if (sentAny) return true;
+  } catch (err) {
+    caughtError = err instanceof Error ? err.message : String(err);
+  }
+  const voiceStatsAfter = getVoiceStats(config);
+  lastVoiceTrace = {
+    ...lastVoiceTrace,
+    timestamp: Date.now(),
+    sentParts,
+    provider: voiceStatsAfter.provider,
+    sendMode: voiceStatsAfter.sendMode,
+    lastTtsMode: voiceStatsAfter.lastMode,
+    error: caughtError || voiceStatsAfter.lastError || undefined,
+  };
+  if (sentAny) {
+    patchReplyTrace(ctx.event.message_id, { sent: 'voice', voiceParts: sentParts, error: caughtError || undefined });
+    return true;
+  }
   const message = `语音生成失败 ${voiceTexts[0]}`;
   if (fallbackMessageId && fallbackUserId) ctx.replyQuoteTo(fallbackMessageId, fallbackUserId, message);
   else ctx.reply(message);
+  patchReplyTrace(ctx.event.message_id, { sent: 'voice+text-fallback', error: caughtError || voiceStatsAfter.lastError || 'tts failed' });
   return true;
 }
 
@@ -1858,6 +1989,15 @@ export const aiChatPlugin: Plugin = {
     if (await handleLocalKnowledgeCommand(ctx, config)) {
       return true;
     }
+    if (ctx.command === 'trace') {
+      const action = (ctx.args[0] || 'last').toLowerCase();
+      if (action === 'last' || action === 'status') {
+        ctx.reply(formatReplyTrace(lastReplyTrace));
+        return true;
+      }
+      ctx.reply('/trace last');
+      return true;
+    }
 
     // ===== 识图/图片缓存诊断 =====
     if (ctx.command && directVisionCommands.has(ctx.command)) {
@@ -1923,6 +2063,10 @@ export const aiChatPlugin: Plugin = {
     // ===== 直接语音命令 =====
     if (ctx.command && directTtsCommands.has(ctx.command)) {
       const subCommand = (ctx.args[0] || '').toLowerCase();
+      if (subCommand === 'last') {
+        ctx.reply(formatVoiceTrace(lastVoiceTrace, config));
+        return true;
+      }
       if (subCommand === 'status') {
         const stats = getVoiceStats(config);
         const sttStats = getSttStats(config);
@@ -1988,7 +2132,7 @@ export const aiChatPlugin: Plugin = {
         ? (ctx.args.slice(1).join(' ').trim() || '不是哥们，这波语音测试有点东西。')
         : ctx.args.join(' ').trim();
       if (!text) {
-        ctx.reply('/voice <内容>\n/voice status\n/voice test [内容]\n/voice stt <语音URL>\n/voice clean');
+        ctx.reply('/voice <内容>\n/voice status\n/voice last\n/voice test [内容]\n/voice stt <语音URL>\n/voice clean');
         return true;
       }
       return sendVerbatimVoice(ctx, config, text);
@@ -2123,6 +2267,7 @@ export const aiChatPlugin: Plugin = {
       hasImages,
       hasRecords,
       forceVoice,
+      command: ctx.command,
       isAtBot: atBot,
       isReplyToBot: ctx.isReplyToBot,
       repliedMessageId: Number.isFinite(repliedMessageId) ? repliedMessageId : undefined,
@@ -2132,6 +2277,36 @@ export const aiChatPlugin: Plugin = {
       contextSummary: snapshotSummary,
       contextMessages: [...snapshotMessages],
     };
+    setReplyTrace({
+      timestamp: Date.now(),
+      chatType: job.chatType,
+      chatId: job.chatId,
+      groupId: job.groupId,
+      userId: job.userId,
+      messageId: job.messageId,
+      senderName: job.senderName,
+      triggerReason: job.triggerReason,
+      forced: job.forced,
+      command: job.command,
+      rawTextPreview: previewText(job.rawText),
+      effectiveTextPreview: previewText(job.effectiveText),
+      hasImages: job.hasImages,
+      hasRecords: job.hasRecords,
+      recordTranscripts: 0,
+      queueAgeMs: 0,
+      searchUsed: false,
+      searchChars: 0,
+      knowledgeInjected: false,
+      knowledgeChars: 0,
+      knowledgeTopic: false,
+      visionPayload: false,
+      voiceRequested: job.forceVoice,
+      voiceMode: job.forceVoice ? 'ai-voice' : 'none',
+      voiceParts: 0,
+      sent: 'queued',
+      cacheHit: false,
+      replyLength: 0,
+    });
 
     void enqueueGroupTask(job, async () => {
       // 构建当前消息（双版本：API版含图，存储版纯文字）
@@ -2148,6 +2323,10 @@ export const aiChatPlugin: Plugin = {
             recordTranscripts = await withGate('stt', () => transcribeRecords(config, job.recordUrls), job.forced);
           } catch { /* */ }
         }
+        patchReplyTrace(job.messageId, {
+          queueAgeMs,
+          recordTranscripts: recordTranscripts.length,
+        });
 
         const recordTranscriptText = recordTranscripts.join('\n');
         let targetText = buildTargetText(job, recordTranscripts);
@@ -2174,6 +2353,7 @@ export const aiChatPlugin: Plugin = {
             }
             apiCurrentMessage = { role: 'user', content: parts };
             usesVisionPayload = true;
+            patchReplyTrace(job.messageId, { visionPayload: true });
           } else {
             targetText += '\n注意：当前消息含图片，但图片下载或缓存失败，模型实际上看不到图。不要编造图片细节，可以让对方重发或补充文字。';
             apiCurrentMessage = { role: 'user', content: targetText };
@@ -2232,6 +2412,10 @@ export const aiChatPlugin: Plugin = {
             if (result) searchInfo = result.slice(0, 350);
           } catch { /* */ }
         }
+        patchReplyTrace(job.messageId, {
+          searchUsed: !!searchInfo,
+          searchChars: searchInfo.length,
+        });
 
         const knowledgeQuery = [
           job.effectiveText,
@@ -2258,6 +2442,11 @@ export const aiChatPlugin: Plugin = {
           const topicKnowledge = hasKnowledgeTopic ? selectKnowledge(knowledgeQuery, topicBudget) : '';
           knowledgeInfo = buildRuntimeKnowledgeInfo(styleKnowledge, topicKnowledge, job, hasKnowledgeTopic, budget);
         }
+        patchReplyTrace(job.messageId, {
+          knowledgeInjected: !!knowledgeInfo,
+          knowledgeChars: knowledgeInfo.length,
+          knowledgeTopic: hasKnowledgeTopic,
+        });
 
         // ===== 构建发给API的消息 =====
         // 注意：history是除当前消息外的历史（当前已经append了，需要排除最后一条）
@@ -2271,6 +2460,7 @@ export const aiChatPlugin: Plugin = {
         const canUseReplyCache = !job.forced && !job.hasImages && !job.hasRecords && !searchInfo && !!job.effectiveText && (config.ai_reply_cache_seconds ?? 180) > 0;
         const replyCacheKey = canUseReplyCache ? makeReplyCacheKey(config, job.effectiveText, knowledgeInfo) : '';
         let cleaned = replyCacheKey ? getCachedReply(replyCacheKey) : null;
+        const cacheHit = !!cleaned;
         if (!cleaned) {
           if (replyCacheKey) replyCacheMisses++;
           const maxAttempts = job.forced ? 3 : 2;
@@ -2288,6 +2478,10 @@ export const aiChatPlugin: Plugin = {
             return;
           }
         }
+        patchReplyTrace(job.messageId, {
+          cacheHit,
+          replyLength: cleaned.length,
+        });
 
         // 追加AI回复
         cm.appendMessage(job.sessionId, { role: 'assistant', content: cleaned });
@@ -2303,7 +2497,25 @@ export const aiChatPlugin: Plugin = {
         const finalText = job.forceVoice ? clampVoiceText(cleaned, maxVoiceChars) : cleaned;
         const voiceAllowed = !skipVoice && config.enable_tts && finalText.length >= 2 && finalText.length <= maxVoiceChars;
         const shouldSendVoice = voiceAllowed && (job.forceVoice || (!job.forced && Math.random() < (config.tts_probability || 0.15)));
+        let voiceError = '';
         if (shouldSendVoice) {
+          const voiceStatsBefore = getVoiceStats(config);
+          lastVoiceTrace = {
+            timestamp: Date.now(),
+            mode: job.forceVoice ? 'ai-voice' : 'passive-voice',
+            chatType: job.chatType,
+            chatId: job.chatId,
+            groupId: job.groupId,
+            userId: job.userId,
+            messageId: job.messageId,
+            requestedTextPreview: previewText(job.rawText || job.effectiveText),
+            spokenTextPreview: previewText(finalText),
+            parts: 1,
+            sentParts: 0,
+            provider: voiceStatsBefore.provider,
+            sendMode: voiceStatsBefore.sendMode,
+            lastTtsMode: voiceStatsBefore.lastMode,
+          };
           try {
             const voicePath = await withGate('tts', () => generateVoice(config, finalText), job.forced || job.forceVoice);
             if (voicePath) {
@@ -2312,7 +2524,20 @@ export const aiChatPlugin: Plugin = {
               ctx.reply([voiceRecordSegment(config, voicePath)]);
               sentVoice = true;
             }
-          } catch { /* */ }
+          } catch (err) {
+            voiceError = err instanceof Error ? err.message : String(err);
+          } finally {
+            const voiceStatsAfter = getVoiceStats(config);
+            lastVoiceTrace = {
+              ...lastVoiceTrace,
+              timestamp: Date.now(),
+              sentParts: sentVoice ? 1 : 0,
+              provider: voiceStatsAfter.provider,
+              sendMode: voiceStatsAfter.sendMode,
+              lastTtsMode: voiceStatsAfter.lastMode,
+              error: voiceError || (!sentVoice ? voiceStatsAfter.lastError || 'tts failed' : undefined),
+            };
+          }
         }
 
         if (!sentVoice) {
@@ -2325,10 +2550,22 @@ export const aiChatPlugin: Plugin = {
             ctx.reply(cleaned);
           }
         }
+        patchReplyTrace(job.messageId, {
+          voiceRequested: job.forceVoice || shouldSendVoice,
+          voiceMode: shouldSendVoice ? (job.forceVoice ? 'ai-voice' : 'passive-voice') : 'none',
+          voiceParts: sentVoice ? 1 : 0,
+          sent: sentVoice ? 'voice' : (job.forceVoice ? 'voice+text-fallback' : 'text'),
+          replyLength: cleaned.length,
+          error: voiceError || undefined,
+        });
         lastReplyAt.set(job.sessionId, Date.now());
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err);
         console.error(`[AI][${job.chatType}${job.chatId}] 失败:`, errMsg);
+        patchReplyTrace(job.messageId, {
+          sent: job.forced ? 'fallback' : 'skipped',
+          error: errMsg.slice(0, 160),
+        });
         if (job.forced) {
           ctx.replyQuoteTo(job.messageId, job.userId, '接口有点卡 你等会再说');
         }

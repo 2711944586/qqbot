@@ -753,10 +753,17 @@ async function testExplicitVoiceReply() {
     assert.ok(sent[1].message.some((seg) => seg.type === 'record'), 'direct voice read should send record segment');
     assert.strictEqual(fs.readFileSync(capturePath, 'utf-8'), directText2, 'direct voice read should speak the exact text after the instruction');
 
+    handler.handleEvent(makePlainEvent(907, 97, '/voice last'));
+    await waitFor(() => sent.length === 3, 'voice last after direct voice');
+    const voiceLastText = firstText(sent[2].message);
+    assert.ok(voiceLastText.includes('最近语音 trace'), 'voice last should render trace header');
+    assert.ok(voiceLastText.includes('direct-verbatim'), 'voice last should show direct verbatim mode');
+    assert.ok(voiceLastText.includes(directText2.slice(0, 12)), 'voice last should include spoken text preview');
+
     handler.handleEvent(makePlainEvent(905, 95, '用语音回答 今天NAVI咋样'));
-    await waitFor(() => sent.length === 3, 'ai voice answer');
+    await waitFor(() => sent.length === 4, 'ai voice answer');
     assert.strictEqual(llmCalls, 1, 'voice answer should call LLM when user asks for an answer');
-    assert.ok(sent[2].message.some((seg) => seg.type === 'record'), 'voice answer should send record segment');
+    assert.ok(sent[3].message.some((seg) => seg.type === 'record'), 'voice answer should send record segment');
     assert.strictEqual(fs.readFileSync(capturePath, 'utf-8'), aiVoiceText, 'voice answer should speak the LLM response');
   } finally {
     delete process.env.SMOKE_TTS_CAPTURE;
@@ -899,6 +906,14 @@ async function testKnowledgeInjectionAndHumanizedPostprocess() {
     const text = firstText(sent[0].message);
     assert.ok(text.includes('不是哥们 这个回答太规整了'), 'reply should keep the useful humanized content');
     assert.ok(!/结论：|根据知识库|根据临场笔记|作为AI|我将用|玩机器风格回复/.test(text), 'postprocess should strip assistant/template boilerplate');
+
+    handler.handleEvent(makePlainEvent(908, 98, '/trace last'));
+    await waitFor(() => sent.length === 2, 'trace last after AI reply');
+    const traceText = firstText(sent[1].message);
+    assert.ok(traceText.includes('最近回复 trace'), 'trace last should render trace header');
+    assert.ok(traceText.includes('mid=904'), 'trace last should keep original message id');
+    assert.ok(traceText.includes('@bot'), 'trace last should show trigger reason');
+    assert.ok(/知识\d+字/.test(traceText), 'trace last should show injected knowledge chars');
   } finally {
     aiChat.__setLLMCallerForTests();
     aiChat.shutdownAiChat();
