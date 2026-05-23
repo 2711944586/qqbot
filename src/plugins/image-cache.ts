@@ -293,6 +293,7 @@ export async function getImageDataUrl(url: string): Promise<string | null> {
         const buffer = fs.readFileSync(cached.filepath);
         cached.lastUsed = Date.now();
         cacheHits++;
+        lastImageError = '';
         return `data:${cached.mime};base64,${buffer.toString('base64')}`;
       } catch {
         memIndex.delete(hash);
@@ -303,17 +304,20 @@ export async function getImageDataUrl(url: string): Promise<string | null> {
   }
 
   // 下载新图
-  cacheMisses++;
   let download = downloadInFlight.get(hash);
   if (!download) {
+    cacheMisses++;
     download = downloadAndCache(url).finally(() => downloadInFlight.delete(hash));
     downloadInFlight.set(hash, download);
+  } else {
+    cacheHits++;
   }
   const entry = await download;
   if (!entry) return null;
 
   try {
     const buffer = fs.readFileSync(entry.filepath);
+    lastImageError = '';
     return `data:${entry.mime};base64,${buffer.toString('base64')}`;
   } catch (err) {
     setImageError(`read failed: ${err instanceof Error ? err.message : String(err)}`);

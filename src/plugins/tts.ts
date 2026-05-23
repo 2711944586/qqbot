@@ -453,6 +453,7 @@ function generateLocalVoice(config: AIConfig, text: string): Promise<string | nu
     const cachedPath = findCachedVoice(cacheBase, config);
     if (cachedPath) {
       cacheHits++;
+      lastVoiceError = '';
       resolve(cachedPath);
       return;
     }
@@ -572,6 +573,7 @@ async function generateApiVoice(config: AIConfig, text: string): Promise<string 
   const cachedPath = findCachedVoice(cacheBase, config);
   if (cachedPath) {
     cacheHits++;
+    lastVoiceError = '';
     return cachedPath;
   }
   cacheMisses++;

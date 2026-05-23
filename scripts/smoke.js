@@ -317,6 +317,7 @@ async function testApiTtsProvider() {
     const stats = tts.getVoiceStats(config.ai);
     assert.strictEqual(stats.provider, 'api');
     assert.strictEqual(stats.lastMode, 'mimo-tts-chat-v25');
+    assert.strictEqual(stats.lastError, '', 'successful api tts should clear stale TTS error');
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }
@@ -357,11 +358,16 @@ async function testImageRedirectAndCleanup() {
     });
     const imageUrl = `http://127.0.0.1:${address.port}/redirect?t=${Date.now()}`;
     const beforeRequests = requestCount;
+    const beforeStats = imageCache.getCacheStats();
     const dataUrls = await Promise.all(Array.from({ length: 10 }, () => imageCache.getImageDataUrl(imageUrl)));
     const dataUrl = dataUrls[0];
     assert.ok(dataUrl && dataUrl.startsWith('data:image/jpeg;base64,'), 'image cache should follow redirects and return data URL');
     assert.ok(dataUrls.every((item) => item === dataUrl), 'concurrent image requests should share the same cached result');
     assert.strictEqual(requestCount - beforeRequests, 2, 'single-flight should only hit redirect + final image once');
+    const afterStats = imageCache.getCacheStats();
+    assert.strictEqual(afterStats.misses - beforeStats.misses, 1, 'only the first concurrent image request should count as miss');
+    assert.ok(afterStats.hits - beforeStats.hits >= 9, 'concurrent image waiters should count as hits');
+    assert.strictEqual(afterStats.lastError, '', 'successful image download should clear stale image error');
     imageCache.cleanupCache();
     const stats = imageCache.getCacheStats();
     assert.strictEqual(stats.maxRedirects, 3);
@@ -494,6 +500,7 @@ async function testSttPayloadModesAndRedirect() {
     const stats = stt.getSttStats(config.ai);
     assert.strictEqual(stats.payloadMode, 'auto');
     assert.ok(['input_audio', 'audio_url'].includes(stats.lastPayloadMode), 'STT stats should expose last payload mode');
+    assert.strictEqual(stats.lastError, '', 'successful STT should clear stale STT error');
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }

@@ -55,6 +55,7 @@ function getCachedTranscript(key: string, config: AIConfig): string | null {
     const text = fs.readFileSync(filepath, 'utf-8').trim();
     if (!text) return null;
     cacheHits++;
+    lastSttError = '';
     return text;
   } catch {
     return null;
