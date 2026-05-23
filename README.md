@@ -11,7 +11,7 @@
 - 每条 AI 回复绑定消息级快照：群号、用户、消息 ID、原文、图片、上下文、触发原因。
 - 同群 FIFO 排队，跨群并发；2G1C 推荐全局 AI/搜索/识图/听写/TTS 闸门 `3/3/1/1/1`。
 - 队列积压时自动降级：强触发超过 60 秒跳过 TTS，超过 120 秒跳过搜索/识图/听写，只保底文本回复。
-- 普通消息分层触发：关键词/知识话题直接接话，其他消息按概率接话，纯数字、单个“6”、纯表情和低信息短句不会主动刷屏。
+- 普通消息分层触发：关键词/知识话题直接接话；CS 软讨论更高概率接话；其他消息按概率接话，纯数字、单个“6”、纯表情和低信息短句不会主动刷屏。
 - 戳一戳会按配置概率回应，优先从知识库经典短句/口癖池抽取；复读机保留群聊感，但不会抢 @/回复/关键词 AI 触发。
 - 趣味命令已玩机器化，新增每日 CS 系列：选手、队伍、地图、武器、定位、道具、战术、残局、套餐，输出本地完成，带公开图片链接和直播味短评。
 - Markdown 知识库：`knowledge/wanjier.md` 提供直播语态、口癖、CS2 解说、选手/队伍倾向、礼物拟态、拒绝边界。
@@ -159,7 +159,7 @@ pm2 restart wanjier --update-env
     "max_tokens": 400,
     "temperature": 0.92,
     "trigger_mode": "smart",
-    "trigger_probability": 0.12,
+    "trigger_probability": 0.18,
     "passive_random_min_chars": 4,
     "passive_random_allow_numeric": false,
     "poke_reply_probability": 1,
@@ -633,10 +633,10 @@ AI 核心字段：
 |---|---:|---|
 | `trigger_mode` | `smart` | @/回复/命令必回，普通消息智能触发 |
 | `trigger_keywords` | 见示例 | smart 模式关键词 |
-| `trigger_probability` | `0.08-0.12` | 非关键词、非低信息普通消息随机接话概率，示例默认 `0.12` |
+| `trigger_probability` | `0.18` | 非关键词、非低信息普通消息随机接话概率；想更安静可降到 `0.10-0.12` |
 | `passive_random_min_chars` | `4` | 普通随机接话最短文本长度，过滤“6”等短消息 |
 | `passive_random_allow_numeric` | `false` | 普通随机接话是否允许纯数字消息 |
-| `related_reply_probability` | `0.75` | 兼容字段；当前关键词/知识话题默认直接触发 |
+| `related_reply_probability` | `0.9` | CS 软讨论触发概率；关键词/知识话题仍默认直接触发 |
 | `poke_reply_probability` | `1` | 戳一戳回应概率 |
 | `cooldown_seconds` | `0-5` | 普通主动接话冷却，@/回复/命令不受限 |
 | `max_context_messages` | `50` | 2G1C 推荐每群上下文保存条数 |
@@ -1349,7 +1349,7 @@ knowledge/inbox/
 - @/回复/命令强触发永远入队，不受每分钟次数上限、普通冷却和普通队列上限影响。
 - 强触发在全局 AI 闸门中优先于普通主动接话；多个强触发之间保持到达顺序。
 - 普通主动接话在同群队列满时跳过，避免长期运行刷屏和堆积。
-- 关键词/知识话题普通消息会确定性触发；剩余普通消息才按 `trigger_probability` 抽样。
+- 关键词/知识话题普通消息会确定性触发；“这把/这局/经济/道具/补枪/残局/回防”等 CS 软讨论会按 `related_reply_probability` 抽样；剩余普通消息才按 `trigger_probability` 抽样。
 - 低信息普通消息不会主动接话：纯数字、单个“6”、短“666/哈哈/草”、纯标点/表情会被过滤。
 - 强触发排队超过 60 秒跳过 TTS。
 - 强触发排队超过 120 秒跳过搜索/识图。
@@ -1397,7 +1397,8 @@ knowledge/inbox/
     "tts_probability": 0.10,
     "tts_max_chars": 120,
     "tts_cache_hours": 24,
-    "trigger_probability": 0.12,
+    "trigger_probability": 0.18,
+    "related_reply_probability": 0.9,
     "aggression_level": "low",
     "passive_random_min_chars": 4,
     "passive_random_allow_numeric": false,

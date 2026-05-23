@@ -55,11 +55,12 @@ async function withPreservedFile(filepath, fn) {
 
 async function testConfig() {
   const config = readConfig();
-  assert.strictEqual(config.ai.trigger_probability, 0.12);
+  assert.strictEqual(config.ai.trigger_probability, 0.18);
   assert.strictEqual(config.ai.passive_random_min_chars, 4);
   assert.strictEqual(config.ai.passive_random_allow_numeric, false);
   assert.strictEqual(config.ai.knowledge_max_chars, 2600);
   assert.strictEqual(config.ai.knowledge_force_style, true);
+  assert.strictEqual(config.ai.related_reply_probability, 0.9);
   assert.strictEqual(config.ai.aggression_level, 'low');
   assert.strictEqual(config.ai.poke_reply_probability, 1);
   assert.strictEqual(config.ai.ai_global_concurrency, 3);
@@ -920,6 +921,15 @@ async function testPassiveTriggerFiltering() {
       firstText(sent[0].message),
       'passive-402',
       'keyword ordinary messages should trigger AI without @',
+    );
+
+    config.ai.related_reply_probability = 1;
+    handler.handleEvent(makePlainEvent(403, 43, '这把经济怎么又崩了，回防一点道具没有'));
+    await waitFor(() => sent.length === 2, 'soft CS discussion passive reply');
+    assert.strictEqual(
+      firstText(sent[1].message),
+      'passive-403',
+      'soft CS discussion should trigger at related reply probability even without explicit CS2 keyword',
     );
   } finally {
     aiChat.__setLLMCallerForTests();

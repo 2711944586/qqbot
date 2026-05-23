@@ -1437,6 +1437,33 @@ function isLowInformationPassiveText(text: string, config: AIConfig): boolean {
   return false;
 }
 
+function isCsDiscussionHint(text: string): boolean {
+  const normalized = normalizePassiveText(text).toLowerCase();
+  if (normalized.length < 4) return false;
+  const hard = [
+    'cs', 'cs2', 'csgo', 'major', 'blast', 'iem', 'esl', 'hltv',
+    'navi', 'g2', 'faze', 'vitality', 'spirit', 'mouz', 'falcons', 'astralis',
+    'niko', 'monesy', 'm0nesy', 'zywoo', 's1mple', 'donk', 'ropz', 'device',
+  ];
+  if (hard.some((item) => normalized.includes(item))) return true;
+  const soft = [
+    '这把', '这局', '回合', '残局', '手枪局', '长枪局', '强起', '半起', 'eco',
+    '经济', '道具', '补枪', '默认', '控图', '转点', '回防', '保枪', '下包',
+    '拆包', '钳子', 'timing', '首杀', '突破', '架枪', '狙', '步枪', '地图池',
+    '香蕉道', '中路', '外场', '包点', 'a大', 'b点', 'ct', 't方',
+    'mirage', 'inferno', 'nuke', 'ancient', 'anubis', 'dust2', 'overpass', 'train',
+  ];
+  let hits = 0;
+  for (const item of soft) {
+    if (normalized.includes(item.toLowerCase())) hits++;
+    if (hits >= 1 && /(?:怎么打|打成|能赢|赢不了|输了|翻了|白给|犯病|抽象|残局|回防|经济|道具|补枪)/.test(normalized)) {
+      return true;
+    }
+    if (hits >= 2) return true;
+  }
+  return false;
+}
+
 function shouldSearch(config: AIConfig, text: string): boolean {
   if (!config.enable_search || text.length <= 3) return false;
   if (config.search_keywords && config.search_keywords.length > 0) {
@@ -1480,6 +1507,9 @@ function shouldReply(
   const keywordHit = includesAnyKeyword(text, [config.active_preset, ...config.trigger_keywords]);
   if (keywordHit || isKnowledgeTopic(text)) {
     return { reply: true, forced: false };
+  }
+  if (isCsDiscussionHint(text) && !isLowInformationPassiveText(text, config)) {
+    return { reply: Math.random() < (config.related_reply_probability ?? 0.9), forced: false };
   }
 
   switch (config.trigger_mode) {
