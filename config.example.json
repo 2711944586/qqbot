@@ -83,6 +83,8 @@
     "stt_max_file_mb": 4,
     "stt_timeout_ms": 20000,
     "stt_cache_hours": 24,
+    "stt_cache_max_mb": 128,
+    "stt_cache_max_files": 3000,
     "context_compression_defer_when_busy": true,
     "tts_model": "mimo-v2.5-tts",
     "tts_provider": "auto",
@@ -97,6 +99,8 @@
     "tts_send_mode": "base64",
     "tts_timeout_ms": 20000,
     "tts_cache_hours": 24,
+    "tts_cache_max_mb": 512,
+    "tts_cache_max_files": 3000,
     "tts_sample_max_mb": 8,
     "tts_probability": 0.1,
 

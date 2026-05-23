@@ -33,6 +33,9 @@ async function testOutgoingSanitize() {
   const softenedGeneric = sanitize.sanitizeOutgoingText('讲道理 这个开头也太像模板了');
   assert.ok(!softenedGeneric.startsWith('讲道理'), 'generic formulaic opener should be softened at send boundary');
   assert.ok(softenedGeneric.includes('这个开头也太像模板了'), 'generic opener softening should keep useful content');
+  const softenedCatchphrase = sanitize.sanitizeOutgoingText('有点东西 这句又像模板了');
+  assert.ok(!softenedCatchphrase.startsWith('有点东西'), 'catchphrase opener should be softened at send boundary');
+  assert.ok(softenedCatchphrase.includes('这句又像模板了'), 'catchphrase opener softening should keep useful content');
   const message = sanitize.sanitizeOutgoingMessage([
     { type: 'text', data: { text: '别发😂笑哭' } },
     { type: 'image', data: { file: 'https://example.com/a.jpg' } },
@@ -94,6 +97,8 @@ async function testConfig() {
   assert.strictEqual(config.ai.tts_send_mode, 'base64');
   assert.strictEqual(config.ai.tts_timeout_ms, 20000);
   assert.strictEqual(config.ai.tts_cache_hours, 24);
+  assert.strictEqual(config.ai.tts_cache_max_mb, 512);
+  assert.strictEqual(config.ai.tts_cache_max_files, 3000);
   assert.strictEqual(config.ai.tts_sample_max_mb, 8);
   assert.strictEqual(config.ai.enable_stt, true);
   assert.strictEqual(config.ai.stt_model, 'mimo-v2.5-pro');
@@ -106,6 +111,8 @@ async function testConfig() {
   assert.strictEqual(config.ai.stt_max_file_mb, 4);
   assert.strictEqual(config.ai.stt_timeout_ms, 20000);
   assert.strictEqual(config.ai.stt_cache_hours, 24);
+  assert.strictEqual(config.ai.stt_cache_max_mb, 128);
+  assert.strictEqual(config.ai.stt_cache_max_files, 3000);
   assert.strictEqual(config.ai.search_negative_cache_seconds, 60);
   assert.strictEqual(config.ai.knowledge_aggressive_auto_commit, true);
   assert.strictEqual(config.ai.knowledge_quarantine_long_quotes, false);
@@ -210,6 +217,11 @@ async function testVoiceStats() {
   assert.strictEqual(stats.cloneModel, 'mimo-v2.5-tts-voiceclone');
   assert.strictEqual(stats.cloneEnabled, true);
   assert.strictEqual(stats.maxChars, 120);
+  assert.strictEqual(stats.maxCacheMB, 512);
+  assert.strictEqual(stats.maxCacheFiles, 3000);
+  const sttStats = stt.getSttStats(config.ai);
+  assert.strictEqual(sttStats.maxCacheMB, 128);
+  assert.strictEqual(sttStats.maxCacheFiles, 3000);
   assert.ok(stats.samplePath.endsWith('voice_sample.mp3'), 'sample path should default to voice_sample.mp3');
 }
 
@@ -316,11 +328,14 @@ async function testImageStats() {
   assert.ok(Object.prototype.hasOwnProperty.call(stats, 'lastError'), 'image stats should expose last error');
   assert.ok(Object.prototype.hasOwnProperty.call(stats, 'maxRedirects'), 'image stats should expose max redirects');
   assert.ok(Object.prototype.hasOwnProperty.call(stats, 'cleanupIntervalMinutes'), 'image stats should expose cleanup interval');
+  assert.ok(Object.prototype.hasOwnProperty.call(stats, 'inFlight'), 'image stats should expose single-flight count');
 }
 
 async function testImageRedirectAndCleanup() {
   const jpeg = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xdb]), Buffer.alloc(220), Buffer.from([0xff, 0xd9])]);
+  let requestCount = 0;
   const server = http.createServer((req, res) => {
+    requestCount++;
     if (req.url.startsWith('/redirect')) {
       res.writeHead(302, { Location: '/image.jpg' });
       res.end();
@@ -340,8 +355,13 @@ async function testImageRedirectAndCleanup() {
       image_cache_cleanup_interval_minutes: 5,
       image_cache_max_files: 50,
     });
-    const dataUrl = await imageCache.getImageDataUrl(`http://127.0.0.1:${address.port}/redirect?t=${Date.now()}`);
+    const imageUrl = `http://127.0.0.1:${address.port}/redirect?t=${Date.now()}`;
+    const beforeRequests = requestCount;
+    const dataUrls = await Promise.all(Array.from({ length: 10 }, () => imageCache.getImageDataUrl(imageUrl)));
+    const dataUrl = dataUrls[0];
     assert.ok(dataUrl && dataUrl.startsWith('data:image/jpeg;base64,'), 'image cache should follow redirects and return data URL');
+    assert.ok(dataUrls.every((item) => item === dataUrl), 'concurrent image requests should share the same cached result');
+    assert.strictEqual(requestCount - beforeRequests, 2, 'single-flight should only hit redirect + final image once');
     imageCache.cleanupCache();
     const stats = imageCache.getCacheStats();
     assert.strictEqual(stats.maxRedirects, 3);
@@ -921,6 +941,8 @@ async function testKnowledgeInjectionAndHumanizedPostprocess() {
     assert.ok(traceText.includes('mid=904'), 'trace last should keep original message id');
     assert.ok(traceText.includes('@bot'), 'trace last should show trigger reason');
     assert.ok(/知识\d+字/.test(traceText), 'trace last should show injected knowledge chars');
+    assert.ok(traceText.includes('知识分区:'), 'trace last should show injected knowledge section titles');
+    assert.ok(traceText.includes('开头:'), 'trace last should show opener dedupe info');
   } finally {
     aiChat.__setLLMCallerForTests();
     aiChat.shutdownAiChat();
@@ -1005,6 +1027,7 @@ async function testPrivateMessages() {
   handler.use(pingPlugin);
   handler.use(funPlugin);
   handler.use(aiChat.aiChatPlugin);
+  funTest.__setImageResolverForTests(async () => 'data:image/jpeg;base64,/9j/2w==');
   const prompts = [];
 
   aiChat.__setLLMCallerForTests(async (_config, messages) => {
@@ -1036,6 +1059,7 @@ async function testPrivateMessages() {
     assert.ok(sentPrivate[2].message.some((seg) => seg.type === 'image'), 'private csplayer should send player image');
     assert.ok(!sentPrivate[2].message.some((seg) => seg.type === 'at'), 'private csplayer should not include @ segment');
   } finally {
+    funTest.__setImageResolverForTests();
     aiChat.__setLLMCallerForTests();
     aiChat.shutdownAiChat();
   }
@@ -1108,79 +1132,92 @@ async function testFunCsPlayer() {
   };
   const handler = new MessageHandler(bot);
   handler.use(funPlugin);
+  funTest.__setImageResolverForTests(async () => 'data:image/jpeg;base64,/9j/2w==');
 
-  const player = funTest.dailyPlayerFor(61, 6657);
-  assert.ok(funTest.csPlayers.every((item) => item.image), 'all daily CS players should have image URLs');
-  assert.ok(funTest.csPlayers.every((item) => item.imageSource), 'all daily CS players should have image source labels');
-  const directMessage = funTest.buildCsPlayerMessage(61, player, funTest.dailyPlayerScore(61, 6657));
-  assert.ok(directMessage.some((seg) => seg.type === 'at'), 'daily player direct builder should at the user');
-  assert.ok(directMessage.some((seg) => seg.type === 'text' && seg.data.text.includes(player.nick)), 'daily player text should include nick');
-  assert.ok(directMessage.some((seg) => seg.type === 'image'), 'daily player should include an image segment');
-  assert.strictEqual(funTest.dailyPlayerFor(61, 6657).nick, funTest.dailyPlayerFor(61, 6657).nick, 'daily player should be stable per group and day');
-  assert.strictEqual(funTest.isCsPlayerDrawRequest(null, '今天抽个CS选手'), true, 'fuzzy draw text should trigger');
-  assert.strictEqual(funTest.isCsPlayerDrawRequest(null, 'NiKo 现在在哪队'), false, 'normal player lookup should not be hijacked by draw');
-  assert.strictEqual(funTest.isDailyCardRequest(null, '今天抽个CS队伍', 'team'), true, 'fuzzy daily team should trigger');
-  assert.strictEqual(funTest.isDailyCardRequest(null, '今天抽个CS地图', 'map'), true, 'fuzzy daily map should trigger');
-  assert.strictEqual(funTest.isDailyCardRequest(null, '今天用什么枪', 'weapon'), true, 'fuzzy daily weapon should trigger');
-  assert.strictEqual(funTest.isDailyCardRequest(null, '今天打什么位', 'role'), true, 'fuzzy daily role should trigger');
-  assert.strictEqual(funTest.isDailyCardRequest(null, '今天丢什么道具', 'utility'), true, 'fuzzy daily utility should trigger');
-  assert.strictEqual(funTest.isDailyCardRequest(null, '今天打什么战术', 'tactic'), true, 'fuzzy daily tactic should trigger');
-  assert.strictEqual(funTest.isDailyCardRequest(null, '今天残局怎么打', 'clutch'), true, 'fuzzy daily clutch should trigger');
-  assert.strictEqual(funTest.isDailyCardRequest(null, '今日cs', 'loadout'), true, 'short daily CS text should trigger loadout');
+  try {
+    const player = funTest.dailyPlayerFor(61, 6657);
+    assert.ok(funTest.csPlayers.every((item) => item.image), 'all daily CS players should have image URLs');
+    assert.ok(funTest.csPlayers.every((item) => item.imageSource), 'all daily CS players should have image source labels');
+    const directMessage = await funTest.buildCsPlayerMessage(61, player, funTest.dailyPlayerScore(61, 6657));
+    assert.ok(directMessage.some((seg) => seg.type === 'at'), 'daily player direct builder should at the user');
+    assert.ok(directMessage.some((seg) => seg.type === 'text' && seg.data.text.includes(player.nick)), 'daily player text should include nick');
+    const imageSeg = directMessage.find((seg) => seg.type === 'image');
+    assert.ok(imageSeg, 'daily player should include an image segment');
+    assert.ok(imageSeg.data.file.startsWith('base64://'), 'daily player image should be sent as base64');
+    assert.strictEqual(funTest.dailyPlayerFor(61, 6657).nick, funTest.dailyPlayerFor(61, 6657).nick, 'daily player should be stable per group and day');
+    assert.strictEqual(funTest.isCsPlayerDrawRequest(null, '今天抽个CS选手'), true, 'fuzzy draw text should trigger');
+    assert.strictEqual(funTest.isCsPlayerDrawRequest(null, 'NiKo 现在在哪队'), false, 'normal player lookup should not be hijacked by draw');
+    assert.strictEqual(funTest.isCsPlayerStatusRequest('csplayer', ['status'], '/csplayer status'), true, 'csplayer status should be recognized');
+    assert.strictEqual(funTest.isDailyCardRequest(null, '今天抽个CS队伍', 'team'), true, 'fuzzy daily team should trigger');
+    assert.strictEqual(funTest.isDailyCardRequest(null, '今天抽个CS地图', 'map'), true, 'fuzzy daily map should trigger');
+    assert.strictEqual(funTest.isDailyCardRequest(null, '今天用什么枪', 'weapon'), true, 'fuzzy daily weapon should trigger');
+    assert.strictEqual(funTest.isDailyCardRequest(null, '今天打什么位', 'role'), true, 'fuzzy daily role should trigger');
+    assert.strictEqual(funTest.isDailyCardRequest(null, '今天丢什么道具', 'utility'), true, 'fuzzy daily utility should trigger');
+    assert.strictEqual(funTest.isDailyCardRequest(null, '今天打什么战术', 'tactic'), true, 'fuzzy daily tactic should trigger');
+    assert.strictEqual(funTest.isDailyCardRequest(null, '今天残局怎么打', 'clutch'), true, 'fuzzy daily clutch should trigger');
+    assert.strictEqual(funTest.isDailyCardRequest(null, '今日cs', 'loadout'), true, 'short daily CS text should trigger loadout');
 
-  handler.handleEvent(makePlainEvent(601, 61, '/csplayer'));
-  await waitFor(() => sent.length === 1, 'csplayer command');
-  assert.strictEqual(sent[0].message[0]?.type, 'at', 'csplayer should at the drawer');
-  const text = sent[0].message.find((seg) => seg.type === 'text')?.data.text || '';
-  assert.ok(text.includes('今日CS选手'), 'csplayer reply should include title');
-  assert.ok(text.includes('今天打法：'), 'csplayer reply should include playstyle line');
-  assert.ok(text.includes('别急点：'), 'csplayer reply should include avoid line');
-  assert.ok(text.includes('签位：'), 'csplayer reply should include score label');
+    handler.handleEvent(makePlainEvent(601, 61, '/csplayer'));
+    await waitFor(() => sent.length === 1, 'csplayer command');
+    assert.strictEqual(sent[0].message[0]?.type, 'at', 'csplayer should at the drawer');
+    const text = sent[0].message.find((seg) => seg.type === 'text')?.data.text || '';
+    assert.ok(text.includes('今日CS选手'), 'csplayer reply should include title');
+    assert.ok(text.includes('今天打法：'), 'csplayer reply should include playstyle line');
+    assert.ok(text.includes('别急点：'), 'csplayer reply should include avoid line');
+    assert.ok(text.includes('签位：'), 'csplayer reply should include score label');
+    assert.ok(sent[0].message.some((seg) => seg.type === 'image' && seg.data.file.startsWith('base64://')), 'csplayer should include base64 image');
+
+    handler.handleEvent(makePlainEvent(613, 73, '/csplayer status'));
+    await waitFor(() => sent.length === 2, 'csplayer status command');
+    assert.ok(firstText(sent[1].message).includes('每日CS选手状态'), 'csplayer status should render status header');
 
   handler.handleEvent(makePlainEvent(602, 62, '今天抽个CS选手'));
-  await waitFor(() => sent.length === 2, 'fuzzy csplayer command');
-  assert.ok(sent[1].message.some((seg) => seg.type === 'image'), 'fuzzy csplayer should also include image');
+  await waitFor(() => sent.length === 3, 'fuzzy csplayer command');
+  assert.ok(sent[2].message.some((seg) => seg.type === 'image'), 'fuzzy csplayer should also include image');
 
   handler.handleEvent(makeEvent(603, 63, ' 今天抽个CS选手'));
-  await waitFor(() => sent.length === 3, 'at fuzzy csplayer command');
-  assert.ok(sent[2].message.some((seg) => seg.type === 'image'), 'at fuzzy csplayer should be handled by fun plugin');
+  await waitFor(() => sent.length === 4, 'at fuzzy csplayer command');
+  assert.ok(sent[3].message.some((seg) => seg.type === 'image'), 'at fuzzy csplayer should be handled by fun plugin');
 
   handler.handleEvent(makePlainEvent(604, 64, '/csteam'));
-  await waitFor(() => sent.length === 4, 'daily team command');
-  assert.ok(firstText(sent[3].message).includes('今日CS队伍'), 'daily team should include title');
-  assert.ok(sent[3].message.some((seg) => seg.type === 'image'), 'daily team should include team image');
+  await waitFor(() => sent.length === 5, 'daily team command');
+  assert.ok(firstText(sent[4].message).includes('今日CS队伍'), 'daily team should include title');
+  assert.ok(sent[4].message.some((seg) => seg.type === 'image'), 'daily team should include team image');
 
   handler.handleEvent(makePlainEvent(605, 65, '今天抽个CS地图'));
-  await waitFor(() => sent.length === 5, 'daily map fuzzy');
-  assert.ok(firstText(sent[4].message).includes('今日CS地图'), 'daily map should include title');
+  await waitFor(() => sent.length === 6, 'daily map fuzzy');
+  assert.ok(firstText(sent[5].message).includes('今日CS地图'), 'daily map should include title');
 
   handler.handleEvent(makePlainEvent(606, 66, '/csweapon'));
-  await waitFor(() => sent.length === 6, 'daily weapon command');
-  assert.ok(firstText(sent[5].message).includes('今日CS武器'), 'daily weapon should include title');
+  await waitFor(() => sent.length === 7, 'daily weapon command');
+  assert.ok(firstText(sent[6].message).includes('今日CS武器'), 'daily weapon should include title');
 
   handler.handleEvent(makePlainEvent(607, 67, '今日定位'));
-  await waitFor(() => sent.length === 7, 'daily role fuzzy');
-  assert.ok(firstText(sent[6].message).includes('今日CS定位'), 'daily role should include title');
+  await waitFor(() => sent.length === 8, 'daily role fuzzy');
+  assert.ok(firstText(sent[7].message).includes('今日CS定位'), 'daily role should include title');
 
   handler.handleEvent(makePlainEvent(608, 68, '/csutility'));
-  await waitFor(() => sent.length === 8, 'daily utility command');
-  assert.ok(firstText(sent[7].message).includes('今日CS道具'), 'daily utility should include title');
+  await waitFor(() => sent.length === 9, 'daily utility command');
+  assert.ok(firstText(sent[8].message).includes('今日CS道具'), 'daily utility should include title');
 
   handler.handleEvent(makePlainEvent(609, 69, '今天打什么战术'));
-  await waitFor(() => sent.length === 9, 'daily tactic fuzzy');
-  assert.ok(firstText(sent[8].message).includes('今日CS战术'), 'daily tactic should include title');
+  await waitFor(() => sent.length === 10, 'daily tactic fuzzy');
+  assert.ok(firstText(sent[9].message).includes('今日CS战术'), 'daily tactic should include title');
 
   handler.handleEvent(makePlainEvent(610, 70, '今天残局怎么打'));
-  await waitFor(() => sent.length === 10, 'daily clutch fuzzy');
-  assert.ok(firstText(sent[9].message).includes('今日CS残局'), 'daily clutch should include title');
+  await waitFor(() => sent.length === 11, 'daily clutch fuzzy');
+  assert.ok(firstText(sent[10].message).includes('今日CS残局'), 'daily clutch should include title');
 
   handler.handleEvent(makePlainEvent(611, 71, '/csloadout'));
-  await waitFor(() => sent.length === 11, 'daily loadout command');
-  assert.ok(firstText(sent[10].message).includes('今日CS套餐'), 'daily loadout should include title');
+  await waitFor(() => sent.length === 12, 'daily loadout command');
+  assert.ok(firstText(sent[11].message).includes('今日CS套餐'), 'daily loadout should include title');
 
   handler.handleEvent(makePlainEvent(612, 72, '今日cs'));
-  await waitFor(() => sent.length === 12, 'short daily cs fuzzy');
-  assert.ok(firstText(sent[11].message).includes('今日CS套餐'), 'short daily CS should trigger loadout');
+  await waitFor(() => sent.length === 13, 'short daily cs fuzzy');
+  assert.ok(firstText(sent[12].message).includes('今日CS套餐'), 'short daily CS should trigger loadout');
+  } finally {
+    funTest.__setImageResolverForTests();
+  }
 }
 
 async function testCrossGroupAiConcurrency() {

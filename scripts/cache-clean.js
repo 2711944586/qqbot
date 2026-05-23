@@ -31,10 +31,10 @@ function main() {
   const stt = getSttStats(config.ai);
 
   console.log('cache clean done');
-  console.log(`image: ${image.count}/${image.maxFiles} files ${image.sizeMB}/${image.maxSizeMB}MB lastDeleted=${image.lastCleanupDeleted} totalDeleted=${image.cleanupDeletedTotal}`);
+  console.log(`image: ${image.count}/${image.maxFiles} files ${image.sizeMB}/${image.maxSizeMB}MB inFlight=${image.inFlight} lastDeleted=${image.lastCleanupDeleted} totalDeleted=${image.cleanupDeletedTotal}`);
   console.log(`search: ${search.cacheEntries}/${search.maxEntries} entries negative=${search.negativeEntries}`);
-  console.log(`tts: ${voice.cacheFiles} files ${voice.sizeMB}MB`);
-  console.log(`stt: ${stt.cacheFiles} files ${stt.sizeMB}MB`);
+  console.log(`tts: ${voice.cacheFiles}/${voice.maxCacheFiles} files ${voice.sizeMB}/${voice.maxCacheMB}MB lastDeleted=${voice.lastCleanupDeleted} totalDeleted=${voice.cleanupDeletedTotal}`);
+  console.log(`stt: ${stt.cacheFiles}/${stt.maxCacheFiles} files ${stt.sizeMB}/${stt.maxCacheMB}MB lastDeleted=${stt.lastCleanupDeleted} totalDeleted=${stt.cleanupDeletedTotal}`);
 }
 
 main();

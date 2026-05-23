@@ -21,6 +21,7 @@ import {
   getKnowledgeCandidate,
   getKnowledgeKeywords,
   getKnowledgeStats,
+  extractKnowledgeTitles,
   KnowledgeCandidate,
   KnowledgeSource,
   auditKnowledge,
@@ -122,6 +123,13 @@ interface ReplyTrace {
   knowledgeInjected: boolean;
   knowledgeChars: number;
   knowledgeTopic: boolean;
+  knowledgeTitles: string[];
+  openerBefore?: string;
+  openerAfter?: string;
+  openerDeduped?: boolean;
+  sttError?: string;
+  visionError?: string;
+  searchError?: string;
   visionPayload: boolean;
   voiceRequested: boolean;
   voiceMode: 'none' | 'direct-verbatim' | 'ai-voice' | 'passive-voice';
@@ -926,7 +934,7 @@ function postProcessReply(text: string): string {
 
 function deFormulaicOpening(text: string): string {
   const trimmed = text.trimStart();
-  const match = trimmed.match(/^(?:不是哥们|不是，哥们|不是 哥们|哥们|兄弟们?|家人们|可以的|讲道理|说实话|先说结论|我的判断是|我只能说)[，,。!！?\s]+(.+)/s);
+  const match = trimmed.match(/^(?:不是哥们|不是，哥们|不是 哥们|哥们|兄弟们?|家人们|可以(?:的)?|有点东西|这波(?:有说法)?|有一说一|讲道理|说实话|看了一眼|简单说两句|先说结论|我的判断是|我只能说)[，,。!！?\s]+(.+)/s);
   if (!match) return text;
   const rest = match[1].trimStart();
   if (!rest) return text;
@@ -1304,6 +1312,7 @@ const groupQueues: Map<string, Promise<void>> = new Map();
 const groupQueueStats: Map<string, { pending: number; forced: number; oldestCreatedAt: number }> = new Map();
 const groupQueueAges: Map<string, number[]> = new Map();
 const lastReplyAt: Map<string, number> = new Map();
+const sessionRecentOpeners: Map<string, string[]> = new Map();
 const replyCache: Map<string, { value: string; expiresAt: number }> = new Map();
 let skippedPassiveReplies = 0;
 let deferredCompressions = 0;
@@ -1386,6 +1395,11 @@ function formatReplyTrace(trace: ReplyTrace | null): string {
     `媒体: 图片${trace.hasImages ? '有' : '无'} 语音${trace.hasRecords ? '有' : '无'} 听写${trace.recordTranscripts}`,
     `队列: 等待${Math.round(trace.queueAgeMs / 1000)}s`,
     `增强: 知识${trace.knowledgeInjected ? `${trace.knowledgeChars}字` : '未注入'}${trace.knowledgeTopic ? '/话题命中' : ''} 搜索${trace.searchUsed ? `${trace.searchChars}字` : '未用'} 识图${trace.visionPayload ? '已传图' : '未传图'}`,
+    trace.knowledgeTitles.length > 0 ? `知识分区: ${trace.knowledgeTitles.join(' / ')}` : (trace.forced ? '知识分区: 无命中，建议 /kb stats' : ''),
+    trace.openerBefore ? `开头: ${trace.openerBefore} -> ${trace.openerAfter || '[空]'}${trace.openerDeduped ? ' 已去重' : ''}` : '',
+    trace.sttError ? `听写错误: ${trace.sttError}` : '',
+    trace.visionError ? `识图错误: ${trace.visionError}` : '',
+    trace.searchError ? `搜索错误: ${trace.searchError}` : '',
     `语音: ${trace.voiceMode} requested=${trace.voiceRequested} parts=${trace.voiceParts}`,
     `发送: ${trace.sent} cacheHit=${trace.cacheHit} replyLen=${trace.replyLength}`,
     trace.error ? `错误: ${trace.error}` : '',
@@ -1427,6 +1441,40 @@ function patchReplyTrace(messageId: number, patch: Partial<ReplyTrace>): void {
   lastReplyTrace = { ...lastReplyTrace, ...patch, timestamp: Date.now() };
 }
 
+function extractReplyOpener(text: string): string {
+  const normalized = sanitizeOutgoingText(text)
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!normalized) return '';
+  const first = normalized.split(/[，,。！？!?；;\s]/).find(Boolean) || normalized;
+  return first.slice(0, 12);
+}
+
+function dedupeSessionOpener(sessionId: string, text: string): {
+  text: string;
+  before: string;
+  after: string;
+  deduped: boolean;
+  recent: string[];
+} {
+  const recent = sessionRecentOpeners.get(sessionId) || [];
+  const before = extractReplyOpener(text);
+  let next = text;
+  let deduped = false;
+  if (before && recent.includes(before) && /^(?:可以(?:的)?|这波(?:有说法)?|有点东西|有一说一|先别急|等一下|讲道理|说实话|确实|啊|我看|看了一眼|简单说两句|有点抽象|不是哥们|哥们)$/.test(before)) {
+    const pattern = new RegExp(`^\\s*${before.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[，,。!！?？\\s]*`);
+    const stripped = next.replace(pattern, '').trimStart();
+    if (stripped.length >= 2) {
+      next = stripped;
+      deduped = true;
+    }
+  }
+  const after = extractReplyOpener(next);
+  const updated = after ? [after, ...recent.filter((item) => item !== after)].slice(0, 3) : recent.slice(0, 3);
+  sessionRecentOpeners.set(sessionId, updated);
+  return { text: next, before, after, deduped, recent: updated };
+}
+
 function makeDirectVoiceReplyTrace(
   ctx: PluginContext,
   text: string,
@@ -1456,6 +1504,7 @@ function makeDirectVoiceReplyTrace(
     knowledgeInjected: false,
     knowledgeChars: 0,
     knowledgeTopic: false,
+    knowledgeTitles: [],
     visionPayload: false,
     voiceRequested: true,
     voiceMode: 'direct-verbatim',
@@ -1965,6 +2014,8 @@ export function getAiChatStats(): {
   deferredCompressions: number;
   completedCompressions: number;
   failedCompressions: number;
+  lastKnowledgeTitles: string[];
+  lastOpenerDeduped: boolean;
 } {
   let pendingJobs = 0;
   let forcedJobs = 0;
@@ -1988,6 +2039,8 @@ export function getAiChatStats(): {
     deferredCompressions,
     completedCompressions,
     failedCompressions,
+    lastKnowledgeTitles: lastReplyTrace?.knowledgeTitles || [],
+    lastOpenerDeduped: lastReplyTrace?.openerDeduped === true,
   };
 }
 
@@ -2339,6 +2392,7 @@ export const aiChatPlugin: Plugin = {
       knowledgeInjected: false,
       knowledgeChars: 0,
       knowledgeTopic: false,
+      knowledgeTitles: [],
       visionPayload: false,
       voiceRequested: job.forceVoice,
       voiceMode: job.forceVoice ? 'ai-voice' : 'none',
@@ -2361,7 +2415,15 @@ export const aiChatPlugin: Plugin = {
         if (job.hasRecords && config.enable_stt && !skipHeavyEnhancements) {
           try {
             recordTranscripts = await withGate('stt', () => transcribeRecords(config, job.recordUrls), job.forced);
-          } catch { /* */ }
+          } catch (err) {
+            patchReplyTrace(job.messageId, {
+              sttError: err instanceof Error ? err.message.slice(0, 120) : String(err).slice(0, 120),
+            });
+          }
+        }
+        if (job.hasRecords && config.enable_stt && recordTranscripts.length === 0) {
+          const sttStats = getSttStats(config);
+          if (sttStats.lastError) patchReplyTrace(job.messageId, { sttError: sttStats.lastError });
         }
         patchReplyTrace(job.messageId, {
           queueAgeMs,
@@ -2382,8 +2444,14 @@ export const aiChatPlugin: Plugin = {
           const limitedUrls = job.imageUrls.slice(0, limit);
           const dataUrls: string[] = [];
           for (const url of limitedUrls) {
-            const d = await withGate('vision', () => getImageDataUrl(url), job.forced);
-            if (d) dataUrls.push(d);
+            try {
+              const d = await withGate('vision', () => getImageDataUrl(url), job.forced);
+              if (d) dataUrls.push(d);
+            } catch (err) {
+              patchReplyTrace(job.messageId, {
+                visionError: err instanceof Error ? err.message.slice(0, 120) : String(err).slice(0, 120),
+              });
+            }
           }
 
           if (dataUrls.length > 0) {
@@ -2395,6 +2463,8 @@ export const aiChatPlugin: Plugin = {
             usesVisionPayload = true;
             patchReplyTrace(job.messageId, { visionPayload: true });
           } else {
+            const imageStats = getImageCacheStats();
+            if (imageStats.lastError) patchReplyTrace(job.messageId, { visionError: imageStats.lastError });
             targetText += '\n注意：当前消息含图片，但图片下载或缓存失败，模型实际上看不到图。不要编造图片细节，可以让对方重发或补充文字。';
             apiCurrentMessage = { role: 'user', content: targetText };
           }
@@ -2450,7 +2520,11 @@ export const aiChatPlugin: Plugin = {
             });
             const result = await Promise.race([searchPromise, timeoutPromise]);
             if (result) searchInfo = result.slice(0, 350);
-          } catch { /* */ }
+          } catch (err) {
+            patchReplyTrace(job.messageId, {
+              searchError: err instanceof Error ? err.message.slice(0, 120) : String(err).slice(0, 120),
+            });
+          }
         }
         patchReplyTrace(job.messageId, {
           searchUsed: !!searchInfo,
@@ -2481,6 +2555,11 @@ export const aiChatPlugin: Plugin = {
             : (selectKnowledge(styleQuery, styleBudget) || selectStyleKnowledge(styleBudget));
           const topicKnowledge = hasKnowledgeTopic ? selectKnowledge(knowledgeQuery, topicBudget) : '';
           knowledgeInfo = buildRuntimeKnowledgeInfo(styleKnowledge, topicKnowledge, job, hasKnowledgeTopic, budget);
+          const knowledgeTitles = [
+            ...extractKnowledgeTitles(styleKnowledge, 4),
+            ...extractKnowledgeTitles(topicKnowledge, 4),
+          ].filter((title, index, all) => all.indexOf(title) === index).slice(0, 6);
+          patchReplyTrace(job.messageId, { knowledgeTitles });
         }
         patchReplyTrace(job.messageId, {
           knowledgeInjected: !!knowledgeInfo,
@@ -2518,9 +2597,14 @@ export const aiChatPlugin: Plugin = {
             return;
           }
         }
+        const openerResult = dedupeSessionOpener(job.sessionId, cleaned);
+        cleaned = openerResult.text;
         patchReplyTrace(job.messageId, {
           cacheHit,
           replyLength: cleaned.length,
+          openerBefore: openerResult.before,
+          openerAfter: openerResult.after,
+          openerDeduped: openerResult.deduped,
         });
 
         // 追加AI回复

@@ -19,6 +19,9 @@ let lastVoiceError = '';
 let lastVoiceMode = '';
 let localTtsRuns = 0;
 let apiTtsRuns = 0;
+let lastCleanupAt = 0;
+let lastCleanupDeleted = 0;
+let cleanupDeletedTotal = 0;
 
 class TtsRequestError extends Error {
   statusCode?: number;
@@ -647,10 +650,35 @@ export function cleanVoiceCache(config?: AIConfig): void {
     if (!fs.existsSync(CACHE_DIR)) return;
     const now = Date.now();
     const maxAge = config ? maxCacheAgeMs(config) : 24 * 60 * 60 * 1000;
+    let deleted = 0;
+    let totalSize = 0;
+    const alive: Array<{ filepath: string; size: number; mtimeMs: number }> = [];
     for (const filepath of listVoiceFiles(CACHE_DIR)) {
       const stat = fs.statSync(filepath);
-      if (now - stat.mtimeMs > maxAge) fs.unlinkSync(filepath);
+      if (now - stat.mtimeMs > maxAge) {
+        fs.unlinkSync(filepath);
+        deleted++;
+        continue;
+      }
+      totalSize += stat.size;
+      alive.push({ filepath, size: stat.size, mtimeMs: stat.mtimeMs });
     }
+    const maxSize = Math.max(8, config?.tts_cache_max_mb || 512) * 1024 * 1024;
+    const maxFiles = Math.max(50, config?.tts_cache_max_files || 3000);
+    const sorted = alive.sort((a, b) => a.mtimeMs - b.mtimeMs);
+    let remainingFiles = alive.length;
+    for (const entry of sorted) {
+      if (totalSize <= maxSize && remainingFiles <= maxFiles) break;
+      try {
+        fs.unlinkSync(entry.filepath);
+        totalSize -= entry.size;
+        remainingFiles--;
+        deleted++;
+      } catch { /* */ }
+    }
+    lastCleanupAt = now;
+    lastCleanupDeleted = deleted;
+    cleanupDeletedTotal += deleted;
   } catch { /* */ }
 }
 
@@ -696,6 +724,11 @@ export function getVoiceStats(config?: AIConfig): {
   sendMode: string;
   lastMode: string;
   lastError: string;
+  maxCacheMB: number;
+  maxCacheFiles: number;
+  lastCleanupAt: number;
+  lastCleanupDeleted: number;
+  cleanupDeletedTotal: number;
 } {
   const sample = getVoiceSample(config);
   const provider = config?.tts_provider || 'api';
@@ -722,6 +755,11 @@ export function getVoiceStats(config?: AIConfig): {
     sendMode: config?.tts_send_mode || 'base64',
     lastMode: lastVoiceMode,
     lastError: lastVoiceError,
+    maxCacheMB: config?.tts_cache_max_mb || 512,
+    maxCacheFiles: config?.tts_cache_max_files || 3000,
+    lastCleanupAt,
+    lastCleanupDeleted,
+    cleanupDeletedTotal,
   };
   try {
     if (!fs.existsSync(CACHE_DIR)) {

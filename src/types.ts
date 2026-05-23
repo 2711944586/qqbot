@@ -164,6 +164,10 @@ export interface AIConfig {
   stt_timeout_ms?: number;
   /** 语音听写缓存小时数 */
   stt_cache_hours?: number;
+  /** 语音听写缓存最大MB */
+  stt_cache_max_mb?: number;
+  /** 语音听写缓存最大文件数 */
+  stt_cache_max_files?: number;
   /** 队列繁忙时是否延后上下文压缩 */
   context_compression_defer_when_busy?: boolean;
   /** 普通TTS模型 */
@@ -192,6 +196,10 @@ export interface AIConfig {
   tts_timeout_ms?: number;
   /** TTS缓存小时数 */
   tts_cache_hours?: number;
+  /** TTS缓存最大MB */
+  tts_cache_max_mb?: number;
+  /** TTS缓存最大文件数 */
+  tts_cache_max_files?: number;
   /** TTS样本最大MB */
   tts_sample_max_mb?: number;
   /** TTS触发概率 (0-1) */

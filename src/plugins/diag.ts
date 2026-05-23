@@ -102,6 +102,9 @@ export const diagPlugin: Plugin = {
       } catch {
         hard.push('knowledge目录不可写，自动审计/主库写入/日志会失败');
       }
+      liveLines.push(`live图片缓存: ${image.count}/${image.maxFiles}张 ${image.sizeMB}/${image.maxSizeMB}MB inFlight=${image.inFlight}${image.lastError ? ` 最近错误=${image.lastError}` : ''}`);
+      liveLines.push(`liveTTS: ${voice.provider}${voice.localReady ? '/local-ready' : ''} clone=${voice.cloneEnabled ? (voice.cloneReady ? 'ready' : 'missing') : 'off'} cache=${voice.cacheFiles}/${voice.maxCacheFiles} ${voice.sizeMB}/${voice.maxCacheMB}MB`);
+      liveLines.push(`liveSTT: ${stt.provider}${stt.localReady ? '/local-ready' : ''} payload=${stt.payloadMode}/${stt.lastPayloadMode || '-'} cache=${stt.cacheFiles}/${stt.maxCacheFiles} ${stt.sizeMB}/${stt.maxCacheMB}MB`);
     }
 
     ctx.reply([
@@ -121,11 +124,11 @@ export const diagPlugin: Plugin = {
       `Gate背压: 普通拒绝AI${aiStats.gates.ai.rejectedPassive} 搜索${aiStats.gates.search.rejectedPassive} 图${aiStats.gates.vision.rejectedPassive} 听写${aiStats.gates.stt.rejectedPassive} TTS${aiStats.gates.tts.rejectedPassive}`,
       `AI缓存: ${aiStats.replyCacheEntries}条 ${aiStats.replyCacheHits}/${aiStats.replyCacheMisses}`,
       `搜索缓存: ${search.cacheEntries}/${search.maxEntries}条 空${search.negativeEntries} ${search.hits}/${search.misses} 飞行${search.inFlight}`,
-      `图片缓存: ${image.count}/${image.maxFiles}张 ${image.sizeMB}/${image.maxSizeMB}MB 单图${image.maxFileMB}MB 跳转${image.maxRedirects} 清理${image.cleanupIntervalMinutes}m ${image.hits}/${image.misses} 失败${image.downloadFailures}`,
+      `图片缓存: ${image.count}/${image.maxFiles}张 ${image.sizeMB}/${image.maxSizeMB}MB 单图${image.maxFileMB}MB 跳转${image.maxRedirects} 清理${image.cleanupIntervalMinutes}m ${image.hits}/${image.misses} 失败${image.downloadFailures} 飞行${image.inFlight}`,
       ...(image.lastError ? [`图片最近错误: ${image.lastError}`] : []),
-      `听写: ${stt.enabled ? 'on' : 'off'} ${stt.provider}${stt.localReady ? '/local' : ''} payload=${stt.payloadMode}/${stt.lastPayloadMode || '-'} record=${stt.recordFormat} 缓存${stt.cacheFiles}条 ${stt.hits}/${stt.misses} 本地${stt.localRuns} API${stt.apiRuns} 下载失败${stt.downloadMisses} 空转写${stt.transcriptMisses}`,
+      `听写: ${stt.enabled ? 'on' : 'off'} ${stt.provider}${stt.localReady ? '/local' : ''} payload=${stt.payloadMode}/${stt.lastPayloadMode || '-'} record=${stt.recordFormat} 缓存${stt.cacheFiles}/${stt.maxCacheFiles}条 ${stt.sizeMB}/${stt.maxCacheMB}MB ${stt.hits}/${stt.misses} 本地${stt.localRuns} API${stt.apiRuns} 下载失败${stt.downloadMisses} 空转写${stt.transcriptMisses}`,
       ...(stt.lastError ? [`听写最近错误: ${stt.lastError}`] : []),
-      `语音: ${voice.provider}${voice.localReady ? '/local' : ''} send=${voice.sendMode} 缓存${voice.cacheFiles}条 ${voice.hits}/${voice.misses} 本地${voice.localRuns} API${voice.apiRuns} 克隆${voice.cloneEnabled ? (voice.cloneReady ? 'ready' : 'missing') : 'off'} 样本${voice.sampleSizeMB}MB`,
+      `语音: ${voice.provider}${voice.localReady ? '/local' : ''} send=${voice.sendMode} 缓存${voice.cacheFiles}/${voice.maxCacheFiles}条 ${voice.sizeMB}/${voice.maxCacheMB}MB ${voice.hits}/${voice.misses} 本地${voice.localRuns} API${voice.apiRuns} 克隆${voice.cloneEnabled ? (voice.cloneReady ? 'ready' : 'missing') : 'off'} 样本${voice.sampleSizeMB}MB`,
       ...(voice.lastMode ? [`语音最近模式: ${voice.lastMode}`] : []),
       ...(voice.lastError ? [`语音最近错误: ${voice.lastError}`] : []),
       ...liveLines,

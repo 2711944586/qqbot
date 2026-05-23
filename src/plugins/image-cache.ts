@@ -45,6 +45,7 @@ interface CacheEntry {
 const memIndex: Map<string, CacheEntry> = new Map();
 let cacheHits = 0;
 let cacheMisses = 0;
+const downloadInFlight: Map<string, Promise<CacheEntry | null>> = new Map();
 
 function setImageError(message: string): void {
   lastImageError = message.slice(0, 160);
@@ -303,7 +304,12 @@ export async function getImageDataUrl(url: string): Promise<string | null> {
 
   // 下载新图
   cacheMisses++;
-  const entry = await downloadAndCache(url);
+  let download = downloadInFlight.get(hash);
+  if (!download) {
+    download = downloadAndCache(url).finally(() => downloadInFlight.delete(hash));
+    downloadInFlight.set(hash, download);
+  }
+  const entry = await download;
   if (!entry) return null;
 
   try {
@@ -384,6 +390,7 @@ export function getCacheStats(): {
   lastCleanupAt: number;
   lastCleanupDeleted: number;
   cleanupDeletedTotal: number;
+  inFlight: number;
   hits: number;
   misses: number;
   downloadFailures: number;
@@ -403,6 +410,7 @@ export function getCacheStats(): {
     lastCleanupAt,
     lastCleanupDeleted,
     cleanupDeletedTotal,
+    inFlight: downloadInFlight.size,
     hits: cacheHits,
     misses: cacheMisses,
     downloadFailures,

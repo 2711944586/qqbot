@@ -235,6 +235,8 @@ pm2 restart wanjier --update-env
 
 知识库一定会被调用：`enable_knowledge=true` 且 `knowledge_force_style=true` 时，每次 AI 回复都会先检索 `knowledge/wanjier.md`，再以 `[临场笔记]` 注入直播语态、回复节奏、反应强度和当前话题素材；遇到 CS2、选手、队伍、语录、礼物、切片等关键词时，再额外注入相关片段。模型被要求吸收这些笔记，但不能在群里说“根据知识库/根据素材”。用 `/kb stats` 看 `注入命中`，用 `/status` 看知识库命中计数。
 
+怎么确认“不是只靠 prompt 在演”：先发一条明确 CS/选手/队伍话题，再跑 `/trace last`。里面会显示 `知识分区`、`知识xxx字`、`开头` 和最终发送类型；`/status` 会显示最近知识分区、注入命中次数和开头去重状态。如果强触发时 `知识分区: 无命中`，先跑 `/kb stats`，再检查 `knowledge/wanjier.md` 是否存在、是否被 VPS 本地改坏。
+
 ## 从零部署总流程
 
 这是最稳的完整路线，适合一台新 VPS 从 0 到群里可用：
@@ -717,6 +719,8 @@ AI 核心字段：
 | `stt_max_file_mb` | `4` | 单段语音下载最大大小 |
 | `stt_timeout_ms` | `20000` | 听写 API 超时 |
 | `stt_cache_hours` | `24` | 听写文本缓存保留时间 |
+| `stt_cache_max_mb` | `128` | 听写缓存最大容量 |
+| `stt_cache_max_files` | `3000` | 听写缓存最大文件数 |
 | `enable_tts` | `true` | 开启语音命令和随机语音 |
 | `tts_model` | `mimo-v2.5-tts` | 普通 TTS 模型 |
 | `tts_provider` | `auto` | `api`、`local` 或 `auto` |
@@ -731,6 +735,8 @@ AI 核心字段：
 | `tts_send_mode` | `base64` | 语音发送方式；Docker NapCat 推荐 `base64`，避免容器读不到宿主机文件 |
 | `tts_timeout_ms` | `20000` | 语音 API 超时 |
 | `tts_cache_hours` | `24` | 语音缓存保留时间 |
+| `tts_cache_max_mb` | `512` | 语音缓存最大容量 |
+| `tts_cache_max_files` | `3000` | 语音缓存最大文件数 |
 | `tts_sample_max_mb` | `8` | 样本最大大小 |
 | `tts_probability` | `0.05-0.10` | 普通主动接话语音概率 |
 
@@ -1163,6 +1169,7 @@ npm run smoke
 | `/luck` | 今日运势 |
 | `/jrrp` | 今日人品 |
 | `/csplayer` | 每日 CS 选手，按 QQ、群、日期固定抽取，带选手图和短评 |
+| `/csplayer status` | 查看每日 CS 卡池、图片缓存、最近图片错误 |
 | `/今日选手` | `/csplayer` 中文别名 |
 | `/csteam` | 每日 CS 队伍，带队伍图和打法短评 |
 | `/csmap` | 每日 CS 地图 |
@@ -1179,10 +1186,12 @@ npm run smoke
 
 - 同一个群友在同一个群同一天抽到同一结果，不同群独立，第二天刷新。
 - 选手池包含现役与传奇选手，图片 URL 已提前写入资料池，来源是公开 Liquipedia Commons / Wikimedia Commons。
-- 队伍类会发队伍公开图；地图、武器、定位、道具、战术、残局类只发文字，避免外链不稳定。
+- 选手和队伍类会先把公开图片下载进本地图片缓存，再以 `base64://` 发给 QQ；图片失败时仍返回文字和错误提示，不会让命令像“没反应”。
+- 地图、武器、定位、道具、战术、残局类只发文字，避免外链不稳定。
 - 输出包含 @、标题、语境、指数、今天打法、别急点、机器短评和图源，排版尽量短而清楚。
 - 队伍字段写的是“队伍语境”，不是永久阵容。用户问“最新在哪队/最近状态”时应走 `/player 最新 <名字>` 或直接 @ 提问触发联网。
 - 输出走本地逻辑，不调用 AI，不临时联网搜图，不影响 @ 必回队列。
+- 图片状态用 `/csplayer status` 看：卡池数量、缓存容量、命中/失败次数、in-flight 下载数和最近错误都会显示。
 - 设计参考了常见“每日老婆/每日抽取”类 bot：当天固定、返回头像和昵称；本项目改成 CS 主题卡池，适配群聊和玩机器语态。
 
 每日 CS 模糊触发词：
@@ -1833,6 +1842,8 @@ pm2 logs wanjier --lines 0
 5. 群里跑 `/vision status` 看缓存命中、失败次数和最近错误。
 6. 跑 `/vision test <图片URL>`；它会先下载图片，再真实调用视觉模型。下载 OK 但模型失败，说明是模型/API 兼容问题；下载失败，说明是外链、代理或文件大小问题。
 7. 也可以把图片和 `/vision test` 发在同一条消息里；这能直接测试 NapCat `get_image` 兜底链路。
+8. 强触发里如果图片没吃到，跑 `/trace last` 看 `识图错误`。现在下载失败、缓存失败、模型调用失败都会进 trace，不再静默吞掉。
+9. 同一张图多人同时触发时会走图片 single-flight，同 URL 只下载一次；`/status` 里的图片缓存 `飞行` 数可以看到当前并发下载。
 
 ### 语音不可用
 
@@ -1845,14 +1856,17 @@ pm2 logs wanjier --lines 0
 7. 跑 `/voice stt <语音URL>` 单独测听写；跑 `/voice test` 单独测 TTS。一个成功一个失败时，按失败那条链路排查。
 8. 也可以把 QQ 语音和 `/voice stt` 发在同一条消息里；这能直接测试 NapCat `get_record`、转码、STT payload 和缓存。
 9. Docker NapCat 优先保持 `tts_send_mode=base64`。只有确认容器能读宿主机 `voice_cache/` 时，才改成 `file`。
+10. `/diag live` 会汇总 TTS/STT provider readiness、payload 模式、缓存容量和最近错误；管理员线上排障优先跑它。
+11. 明确语音直读成功时只发纯 `record`，不会拼 `reply`。如果你看到文字兜底，说明 TTS 没生成或 QQ 发送失败，直接看 `/voice last` 的 `fallback` 原因。
 
 ### 每日 CS 不触发或不出图
 
 1. 先跑 `/csplayer`，确认文字里有“今日CS选手”和“签位”。
-2. 跑 `/csteam`、`/csmap`、`/csutility`、`/cstactic`、`/csclutch`、`/csloadout` 分别确认各卡池。
-3. 图片 URL 是代码里预填的公开 Liquipedia/Wikimedia 链接，运行时不会联网搜索。
-4. 如果 QQ 不显示图片，先看 PM2 日志里 `send_group_msg` 是否报错；多数是 NapCat 图片发送或外链访问问题，不是 AI 问题。
-5. 临时解决：重新发一次 `/csplayer` 或 `/csteam`；长期解决：更新代码里的图片 URL，跑 `npm run smoke` 确认选手池每个条目都有图片字段。
+2. 跑 `/csplayer status`，看选手池数量、图片缓存大小、命中/失败次数、in-flight 下载数和最近图片错误。
+3. 跑 `/csteam`、`/csmap`、`/csutility`、`/cstactic`、`/csclutch`、`/csloadout` 分别确认各卡池。
+4. 图片 URL 是代码里预填的公开 Liquipedia/Wikimedia 链接，运行时不会联网搜索；发送前会先缓存并转换成 `base64://`，避免 QQ 端直接拉外链失败。
+5. 如果 QQ 不显示图片，先看 `/csplayer status` 和 PM2 日志里的 `send_group_msg` 是否报错；多数是图片下载、缓存、NapCat 图片发送问题，不是 AI 问题。
+6. 临时解决：重新发一次 `/csplayer` 或 `/csteam`；长期解决：更新代码里的图片 URL，跑 `npm run smoke` 确认选手池每个条目都有图片字段。
 
 ### 知识库越学越假
 

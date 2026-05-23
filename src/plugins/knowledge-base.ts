@@ -656,6 +656,19 @@ export function selectStyleKnowledge(maxChars: number = 1200): string {
   return fallback;
 }
 
+export function extractKnowledgeTitles(markdown: string, limit: number = 6): string[] {
+  const titles: string[] = [];
+  const seen = new Set<string>();
+  for (const match of markdown.matchAll(/^【(.+?)】/gm)) {
+    const title = match[1].trim();
+    if (!title || seen.has(title)) continue;
+    seen.add(title);
+    titles.push(title);
+    if (titles.length >= limit) break;
+  }
+  return titles;
+}
+
 export function getRandomKnowledgeLine(kind: 'quote' | 'gift' | 'player' | 'team' | 'style', query: string = ''): string {
   const sectionMap: Record<typeof kind, RegExp> = {
     quote: /公开索引|已核验短语锚点|短语锚点|戳一戳短句池/,

@@ -1,5 +1,6 @@
 import { MessageSegment, Plugin } from '../types';
 import { getRandomKnowledgeLine } from './knowledge-base';
+import { getCacheStats, getImageDataUrl } from './image-cache';
 
 /** 随机选择 */
 function randomPick(items: string[]): string {
@@ -42,6 +43,7 @@ interface DailyCard {
 }
 
 type DailyCardKind = 'team' | 'map' | 'weapon' | 'role' | 'loadout' | 'utility' | 'tactic' | 'clutch';
+let imageDataUrlResolver: (url: string) => Promise<string | null> = getImageDataUrl;
 
 const csPlayers: CSPlayer[] = [
   { nick: 'ZywOo', name: 'Mathieu Herbaut', team: 'Vitality', role: 'AWPer / 核心大哥', note: '今天就按这个纪律打，枪硬但别急着开香槟。', image: 'https://liquipedia.net/commons/images/2/2b/ZywOo_at_BLAST_Bounty_Winter_2026.jpg', imageSource: 'liquipedia', aliases: ['载物'] },
@@ -330,6 +332,12 @@ function normalizeDrawText(text: string): string {
   return text.toLowerCase().replace(/^\//, '').replace(/\s+/g, '').replace(/[：:，。！？!?、,.]/g, '');
 }
 
+function isCsPlayerStatusRequest(command: string | null, args: string[], rawText: string): boolean {
+  const first = (args[0] || '').toLowerCase();
+  if (command === 'csplayer' && ['status', '状态'].includes(first)) return true;
+  return /^(?:\/)?(?:csplayer|每日选手|今日选手|抽选手)(?:状态|status)$/.test(normalizeDrawText(rawText));
+}
+
 function isCsPlayerDrawRequest(command: string | null, rawText: string): boolean {
   if (['csplayer', 'playerday', 'todayplayer', '今日选手', '每日选手', '抽选手'].includes(command || '')) return true;
   const text = normalizeDrawText(rawText);
@@ -367,7 +375,19 @@ function isDailyCardRequest(command: string | null, rawText: string, kind: Daily
   return /(cs套餐|cs2套餐|今日套餐|每日套餐|今日套装|每日套装|今天怎么打|今天打啥)/.test(text);
 }
 
-function buildCsPlayerMessage(userId: number, player: CSPlayer, score?: number): MessageSegment[] {
+function buildImageFailureLine(): string {
+  const stats = getCacheStats();
+  return stats.lastError ? `\n图片没发出来：${stats.lastError}` : '\n图片没发出来，先看文字签。';
+}
+
+async function imageSegmentOrNote(url?: string): Promise<MessageSegment[]> {
+  if (!url) return [];
+  const dataUrl = await imageDataUrlResolver(url);
+  if (dataUrl) return [{ type: 'image', data: { file: dataUrl.replace(/^data:image\/[^;]+;base64,/, 'base64://') } }];
+  return [{ type: 'text', data: { text: buildImageFailureLine() } }];
+}
+
+async function buildCsPlayerMessage(userId: number, player: CSPlayer, score?: number): Promise<MessageSegment[]> {
   const scoreText = typeof score === 'number' ? `${scoreLine(score)} ${score}/100` : '';
   const roleAdvice = playerRoleAdvice(player, score);
   const text = [
@@ -384,16 +404,16 @@ function buildCsPlayerMessage(userId: number, player: CSPlayer, score?: number):
     { type: 'at', data: { qq: String(userId) } },
     { type: 'text', data: { text: ` ${text}` } },
   ];
-  message.push({ type: 'image', data: { file: player.image } });
+  message.push(...await imageSegmentOrNote(player.image));
   return message;
 }
 
-function buildPrivateCsPlayerMessage(player: CSPlayer, score?: number): MessageSegment[] {
-  const message = buildCsPlayerMessage(0, player, score).filter((seg) => seg.type !== 'at');
+async function buildPrivateCsPlayerMessage(player: CSPlayer, score?: number): Promise<MessageSegment[]> {
+  const message = (await buildCsPlayerMessage(0, player, score)).filter((seg) => seg.type !== 'at');
   return message;
 }
 
-function buildDailyCardMessage(userId: number, card: DailyCard, score: number, isPrivate: boolean): MessageSegment[] {
+async function buildDailyCardMessage(userId: number, card: DailyCard, score: number, isPrivate: boolean): Promise<MessageSegment[]> {
   const text = [
     `${card.title} | ${card.name}`,
     card.subtitle,
@@ -405,11 +425,11 @@ function buildDailyCardMessage(userId: number, card: DailyCard, score: number, i
   const message: MessageSegment[] = [];
   if (!isPrivate) message.push({ type: 'at', data: { qq: String(userId) } });
   message.push({ type: 'text', data: { text: isPrivate ? text : ` ${text}` } });
-  if (card.image) message.push({ type: 'image', data: { file: card.image } });
+  message.push(...await imageSegmentOrNote(card.image));
   return message;
 }
 
-function buildLoadoutMessage(userId: number, scopeId: number, isPrivate: boolean): MessageSegment[] {
+async function buildLoadoutMessage(userId: number, scopeId: number, isPrivate: boolean): Promise<MessageSegment[]> {
   const team = dailyCardFor('csteam_pack', userId, scopeId, csTeams);
   const map = dailyCardFor('csmap_pack', userId, scopeId, csMaps);
   const weapon = dailyCardFor('csweapon_pack', userId, scopeId, csWeapons);
@@ -429,7 +449,7 @@ function buildLoadoutMessage(userId: number, scopeId: number, isPrivate: boolean
   const message: MessageSegment[] = [];
   if (!isPrivate) message.push({ type: 'at', data: { qq: String(userId) } });
   message.push({ type: 'text', data: { text: isPrivate ? text : ` ${text}` } });
-  if (team.image) message.push({ type: 'image', data: { file: team.image } });
+  message.push(...await imageSegmentOrNote(team.image));
   return message;
 }
 
@@ -437,7 +457,7 @@ export const funPlugin: Plugin = {
   name: 'fun',
   description: '趣味功能 - 掷骰子、抽签、决策辅助等',
 
-  handler: (ctx) => {
+  handler: async (ctx) => {
     const raw = ctx.rawText.trim();
     // ===== 掷骰子 =====
     if (ctx.command === 'roll' || ctx.command === 'dice') {
@@ -529,62 +549,74 @@ export const funPlugin: Plugin = {
     }
 
     // ===== 每日CS选手 =====
+    if (isCsPlayerStatusRequest(ctx.command, ctx.args, raw)) {
+      const stats = getCacheStats();
+      ctx.reply([
+        '每日CS选手状态',
+        `选手池: ${csPlayers.length}人`,
+        `队伍池: ${csTeams.length}队`,
+        `图片缓存: ${stats.count}/${stats.maxFiles}张 ${stats.sizeMB}/${stats.maxSizeMB}MB`,
+        `图片命中: ${stats.hits}/${stats.misses} 失败${stats.downloadFailures} 飞行${stats.inFlight}`,
+        ...(stats.lastError ? [`最近图片错误: ${stats.lastError}`] : []),
+      ].join('\n'));
+      return true;
+    }
     if (isCsPlayerDrawRequest(ctx.command, raw)) {
       const scopeId = ctx.groupId || 0;
       const player = dailyPlayerFor(ctx.event.user_id, scopeId);
       const score = dailyPlayerScore(ctx.event.user_id, scopeId);
       ctx.reply(ctx.isPrivate
-        ? buildPrivateCsPlayerMessage(player, score)
-        : buildCsPlayerMessage(ctx.event.user_id, player, score));
+        ? await buildPrivateCsPlayerMessage(player, score)
+        : await buildCsPlayerMessage(ctx.event.user_id, player, score));
       return true;
     }
 
     // ===== 每日CS队伍/地图/武器/定位/套餐 =====
     const scopeId = ctx.groupId || 0;
     if (isDailyCardRequest(ctx.command, raw, 'loadout')) {
-      ctx.reply(buildLoadoutMessage(ctx.event.user_id, scopeId, ctx.isPrivate));
+      ctx.reply(await buildLoadoutMessage(ctx.event.user_id, scopeId, ctx.isPrivate));
       return true;
     }
     if (isDailyCardRequest(ctx.command, raw, 'team')) {
       const card = dailyCardFor('csteam', ctx.event.user_id, scopeId, csTeams);
       const score = dailyScoreForKind('csteam', ctx.event.user_id, scopeId);
-      ctx.reply(buildDailyCardMessage(ctx.event.user_id, card, score, ctx.isPrivate));
+      ctx.reply(await buildDailyCardMessage(ctx.event.user_id, card, score, ctx.isPrivate));
       return true;
     }
     if (isDailyCardRequest(ctx.command, raw, 'map')) {
       const card = dailyCardFor('csmap', ctx.event.user_id, scopeId, csMaps);
       const score = dailyScoreForKind('csmap', ctx.event.user_id, scopeId);
-      ctx.reply(buildDailyCardMessage(ctx.event.user_id, card, score, ctx.isPrivate));
+      ctx.reply(await buildDailyCardMessage(ctx.event.user_id, card, score, ctx.isPrivate));
       return true;
     }
     if (isDailyCardRequest(ctx.command, raw, 'weapon')) {
       const card = dailyCardFor('csweapon', ctx.event.user_id, scopeId, csWeapons);
       const score = dailyScoreForKind('csweapon', ctx.event.user_id, scopeId);
-      ctx.reply(buildDailyCardMessage(ctx.event.user_id, card, score, ctx.isPrivate));
+      ctx.reply(await buildDailyCardMessage(ctx.event.user_id, card, score, ctx.isPrivate));
       return true;
     }
     if (isDailyCardRequest(ctx.command, raw, 'role')) {
       const card = dailyCardFor('csrole', ctx.event.user_id, scopeId, csRoles);
       const score = dailyScoreForKind('csrole', ctx.event.user_id, scopeId);
-      ctx.reply(buildDailyCardMessage(ctx.event.user_id, card, score, ctx.isPrivate));
+      ctx.reply(await buildDailyCardMessage(ctx.event.user_id, card, score, ctx.isPrivate));
       return true;
     }
     if (isDailyCardRequest(ctx.command, raw, 'utility')) {
       const card = dailyCardFor('csutility', ctx.event.user_id, scopeId, csUtilities);
       const score = dailyScoreForKind('csutility', ctx.event.user_id, scopeId);
-      ctx.reply(buildDailyCardMessage(ctx.event.user_id, card, score, ctx.isPrivate));
+      ctx.reply(await buildDailyCardMessage(ctx.event.user_id, card, score, ctx.isPrivate));
       return true;
     }
     if (isDailyCardRequest(ctx.command, raw, 'tactic')) {
       const card = dailyCardFor('cstactic', ctx.event.user_id, scopeId, csTactics);
       const score = dailyScoreForKind('cstactic', ctx.event.user_id, scopeId);
-      ctx.reply(buildDailyCardMessage(ctx.event.user_id, card, score, ctx.isPrivate));
+      ctx.reply(await buildDailyCardMessage(ctx.event.user_id, card, score, ctx.isPrivate));
       return true;
     }
     if (isDailyCardRequest(ctx.command, raw, 'clutch')) {
       const card = dailyCardFor('csclutch', ctx.event.user_id, scopeId, csClutches);
       const score = dailyScoreForKind('csclutch', ctx.event.user_id, scopeId);
-      ctx.reply(buildDailyCardMessage(ctx.event.user_id, card, score, ctx.isPrivate));
+      ctx.reply(await buildDailyCardMessage(ctx.event.user_id, card, score, ctx.isPrivate));
       return true;
     }
 
@@ -606,10 +638,14 @@ export const __test = {
   dailyCardFor,
   dailyScoreForKind,
   isCsPlayerDrawRequest,
+  isCsPlayerStatusRequest,
   isDailyCardRequest,
   buildCsPlayerMessage,
   buildDailyCardMessage,
   buildLoadoutMessage,
+  __setImageResolverForTests: (resolver?: (url: string) => Promise<string | null>) => {
+    imageDataUrlResolver = resolver || getImageDataUrl;
+  },
 };
 
 /** 字符串哈希 */

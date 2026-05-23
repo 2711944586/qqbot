@@ -15,6 +15,9 @@ let lastSttError = '';
 let lastSttPayloadMode = '';
 let localSttRuns = 0;
 let apiSttRuns = 0;
+let lastCleanupAt = 0;
+let lastCleanupDeleted = 0;
+let cleanupDeletedTotal = 0;
 
 if (!fs.existsSync(CACHE_DIR)) {
   fs.mkdirSync(CACHE_DIR, { recursive: true });
@@ -657,11 +660,37 @@ export function cleanSttCache(config?: AIConfig): void {
     if (!fs.existsSync(CACHE_DIR)) return;
     const now = Date.now();
     const maxAge = maxCacheAgeMs(config);
+    let deleted = 0;
+    let totalSize = 0;
+    const alive: Array<{ filepath: string; size: number; mtimeMs: number }> = [];
     for (const file of fs.readdirSync(CACHE_DIR)) {
       const filepath = path.join(CACHE_DIR, file);
       const stat = fs.statSync(filepath);
-      if (now - stat.mtimeMs > maxAge) fs.unlinkSync(filepath);
+      if (!stat.isFile()) continue;
+      if (now - stat.mtimeMs > maxAge) {
+        fs.unlinkSync(filepath);
+        deleted++;
+        continue;
+      }
+      totalSize += stat.size;
+      alive.push({ filepath, size: stat.size, mtimeMs: stat.mtimeMs });
     }
+    const maxSize = Math.max(8, config?.stt_cache_max_mb || 128) * 1024 * 1024;
+    const maxFiles = Math.max(50, config?.stt_cache_max_files || 3000);
+    const sorted = alive.sort((a, b) => a.mtimeMs - b.mtimeMs);
+    let remainingFiles = alive.length;
+    for (const entry of sorted) {
+      if (totalSize <= maxSize && remainingFiles <= maxFiles) break;
+      try {
+        fs.unlinkSync(entry.filepath);
+        totalSize -= entry.size;
+        remainingFiles--;
+        deleted++;
+      } catch { /* */ }
+    }
+    lastCleanupAt = now;
+    lastCleanupDeleted = deleted;
+    cleanupDeletedTotal += deleted;
   } catch { /* */ }
 }
 
@@ -688,6 +717,11 @@ export function getSttStats(config?: AIConfig): {
   payloadMode: string;
   recordFormat: string;
   lastPayloadMode: string;
+  maxCacheMB: number;
+  maxCacheFiles: number;
+  lastCleanupAt: number;
+  lastCleanupDeleted: number;
+  cleanupDeletedTotal: number;
 } {
   let files = 0;
   let size = 0;
@@ -721,5 +755,10 @@ export function getSttStats(config?: AIConfig): {
     payloadMode: config?.stt_payload_mode || 'auto',
     recordFormat: config?.stt_record_format || 'mp3',
     lastPayloadMode: lastSttPayloadMode,
+    maxCacheMB: config?.stt_cache_max_mb || 128,
+    maxCacheFiles: config?.stt_cache_max_files || 3000,
+    lastCleanupAt,
+    lastCleanupDeleted,
+    cleanupDeletedTotal,
   };
 }
