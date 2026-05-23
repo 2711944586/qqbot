@@ -723,6 +723,7 @@ async function testExplicitVoiceReply() {
   const handler = new MessageHandler(bot);
   handler.use(aiChat.aiChatPlugin);
   let llmCalls = 0;
+  const aiVoiceText = `AI自由发挥语音烟测${Date.now()}`;
 
   aiChat.__setLLMCallerForTests(async (_config, messages) => {
     llmCalls++;
@@ -731,7 +732,7 @@ async function testExplicitVoiceReply() {
       ? current.content
       : current.content.map((item) => item.text || '').join('\n');
     assert.ok(content.includes('用户明确要求语音回复: 是'), 'prompt should mark explicit voice request');
-    return 'AI自由发挥语音烟测';
+    return aiVoiceText;
   });
 
   try {
@@ -745,11 +746,18 @@ async function testExplicitVoiceReply() {
     assert.ok(record.data.file.startsWith('base64://'), 'Docker NapCat default should send TTS as base64 record segment');
     assert.strictEqual(fs.readFileSync(capturePath, 'utf-8'), directText, 'verbatim voice reply should speak exactly the user provided text');
 
+    const directText2 = `云朵原神 smoke ${Date.now()}？好想玩原神`;
+    handler.handleEvent(makeEvent(906, 96, ` 直接用语音念 ${directText2}`));
+    await waitFor(() => sent.length === 2, 'direct voice read with at mention');
+    assert.strictEqual(llmCalls, 0, 'direct voice read should bypass LLM even with at mention');
+    assert.ok(sent[1].message.some((seg) => seg.type === 'record'), 'direct voice read should send record segment');
+    assert.strictEqual(fs.readFileSync(capturePath, 'utf-8'), directText2, 'direct voice read should speak the exact text after the instruction');
+
     handler.handleEvent(makePlainEvent(905, 95, '用语音回答 今天NAVI咋样'));
-    await waitFor(() => sent.length === 2, 'ai voice answer');
+    await waitFor(() => sent.length === 3, 'ai voice answer');
     assert.strictEqual(llmCalls, 1, 'voice answer should call LLM when user asks for an answer');
-    assert.ok(sent[1].message.some((seg) => seg.type === 'record'), 'voice answer should send record segment');
-    assert.strictEqual(fs.readFileSync(capturePath, 'utf-8'), 'AI自由发挥语音烟测', 'voice answer should speak the LLM response');
+    assert.ok(sent[2].message.some((seg) => seg.type === 'record'), 'voice answer should send record segment');
+    assert.strictEqual(fs.readFileSync(capturePath, 'utf-8'), aiVoiceText, 'voice answer should speak the LLM response');
   } finally {
     delete process.env.SMOKE_TTS_CAPTURE;
     if (fs.existsSync(capturePath)) fs.unlinkSync(capturePath);

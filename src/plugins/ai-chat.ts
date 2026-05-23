@@ -1528,11 +1528,14 @@ function extractVerbatimVoiceText(text: string, command: string | null): string 
     return '';
   }
 
+  const lead = String.raw`(?:(?:请|麻烦|帮我|给我|你(?:给我)?|可以|能不能|能否|直接|现在|马上|立刻|就|老哥|哥们儿?|哥们)\s*)*`;
   const patterns = [
-    /^(?:请)?(?:用|发|来|整|给我)?\s*(?:语音|voice|tts|say)\s*(?:回复|回|说|念|读|念出来|读出来)?\s*(?:一下|下)?[：:,，、\s]+([\s\S]+)$/i,
-    /^(?:请)?(?:用|发|来|整|给我)?\s*(?:语音|voice|tts|say)\s*(?:回复|回|说|念|读|念出来|读出来)?\s*(?:一下|下)?([\s\S]+)$/i,
-    /^(?:请)?(?:回复|回|说|念|读)\s*(?:语音|voice|tts|say)\s*(?:一下|下)?[：:,，、\s]+([\s\S]+)$/i,
-    /^(?:请)?(?:回复|回|说|念|读)\s*(?:语音|voice|tts|say)\s*(?:一下|下)?([\s\S]+)$/i,
+    new RegExp(`^${lead}(?:用|发|来|整|给我)?\\s*(?:语音|voice|tts|say)\\s*(?:回复|回|说|念|读|念出来|读出来)?\\s*(?:一下|下)?[：:,，、\\s]+([\\s\\S]+)$`, 'i'),
+    new RegExp(`^${lead}(?:用|发|来|整|给我)?\\s*(?:语音|voice|tts|say)\\s*(?:回复|回|说|念|读|念出来|读出来)?\\s*(?:一下|下)?([\\s\\S]+)$`, 'i'),
+    new RegExp(`^${lead}(?:回复|回|说|念|读)\\s*(?:语音|voice|tts|say)\\s*(?:一下|下)?[：:,，、\\s]+([\\s\\S]+)$`, 'i'),
+    new RegExp(`^${lead}(?:回复|回|说|念|读)\\s*(?:语音|voice|tts|say)\\s*(?:一下|下)?([\\s\\S]+)$`, 'i'),
+    new RegExp(`^${lead}(?:念出来|读出来|念|读)\\s*(?:一下|下)?[：:,，、\\s]+([\\s\\S]+)$`, 'i'),
+    new RegExp(`^${lead}(?:念出来|读出来)\\s*(?:一下|下)?([\\s\\S]+)$`, 'i'),
   ];
 
   for (const pattern of patterns) {
@@ -1550,6 +1553,35 @@ function extractVerbatimVoiceText(text: string, command: string | null): string 
   return '';
 }
 
+function splitVoiceTextForTts(text: string, maxChars: number, maxParts: number = 4): string[] {
+  const cleaned = sanitizeOutgoingText(text)
+    .replace(/\s+/g, ' ')
+    .replace(/[#*_`>]/g, '')
+    .trim();
+  if (!cleaned) return [];
+  const limit = Math.max(10, maxChars);
+  const result: string[] = [];
+  let rest = cleaned;
+  while (rest.length > 0 && result.length < maxParts) {
+    if (rest.length <= limit) {
+      result.push(rest);
+      break;
+    }
+    const window = rest.slice(0, limit + 1);
+    let cut = -1;
+    for (const match of window.matchAll(/[。！？!?；;，,、\s]/g)) {
+      if (typeof match.index === 'number' && match.index >= Math.floor(limit * 0.45) && match.index <= limit) {
+        cut = match.index + match[0].length;
+      }
+    }
+    if (cut <= 1) cut = limit;
+    const chunk = rest.slice(0, cut).trim();
+    if (chunk.length >= 2) result.push(chunk);
+    rest = rest.slice(cut).replace(/^[\s,，。！？!?.、；;]+/, '').trim();
+  }
+  return result.filter((item) => item.length >= 2);
+}
+
 function stripVoiceReplyInstruction(text: string): string {
   return text
     .replace(/请?(?:用|发|来|整|给我)?\s*(?:语音|voice|tts|say)\s*(?:回(?:复)?|说|念|读|回答)?\s*(?:一下|下)?[：:,，、]?\s*/ig, '')
@@ -1559,8 +1591,8 @@ function stripVoiceReplyInstruction(text: string): string {
 }
 
 async function sendVerbatimVoice(ctx: PluginContext, config: AIConfig, text: string, fallbackMessageId?: number, fallbackUserId?: number): Promise<boolean> {
-  const spokenText = clampVoiceText(text, config.tts_max_chars || 120);
-  if (!spokenText) return false;
+  const voiceTexts = splitVoiceTextForTts(text, config.tts_max_chars || 120);
+  if (voiceTexts.length === 0) return false;
   if (!config.enable_tts) {
     const message = '语音没开，这句没法念';
     if (fallbackMessageId && fallbackUserId) ctx.replyQuoteTo(fallbackMessageId, fallbackUserId, message);
@@ -1574,14 +1606,18 @@ async function sendVerbatimVoice(ctx: PluginContext, config: AIConfig, text: str
     else ctx.reply(message);
     return true;
   }
+  let sentAny = false;
   try {
-    const voicePath = await withGate('tts', () => generateVoice(config, spokenText), true);
-    if (voicePath) {
-      ctx.reply([voiceRecordSegment(config, voicePath)]);
-      return true;
+    for (const voiceText of voiceTexts) {
+      const voicePath = await withGate('tts', () => generateVoice(config, voiceText), true);
+      if (voicePath) {
+        ctx.reply([voiceRecordSegment(config, voicePath)]);
+        sentAny = true;
+      }
     }
   } catch { /* */ }
-  const message = `语音生成失败 ${spokenText}`;
+  if (sentAny) return true;
+  const message = `语音生成失败 ${voiceTexts[0]}`;
   if (fallbackMessageId && fallbackUserId) ctx.replyQuoteTo(fallbackMessageId, fallbackUserId, message);
   else ctx.reply(message);
   return true;
