@@ -12,7 +12,7 @@ const tts = require('../dist/plugins/tts');
 const stt = require('../dist/plugins/stt');
 const aiChat = require('../dist/plugins/ai-chat');
 const imageCache = require('../dist/plugins/image-cache');
-const { registerPokeListener } = require('../dist/plugins/poke');
+const { registerPokeListener, __test: pokeTest } = require('../dist/plugins/poke');
 const { repeaterPlugin } = require('../dist/plugins/repeater');
 const { funPlugin, __test: funTest } = require('../dist/plugins/fun');
 const { pingPlugin } = require('../dist/plugins/ping');
@@ -1118,6 +1118,14 @@ async function testRepeaterAndPoke() {
   const pokeText = firstText(sent[0].message) || '';
   assert.ok(pokeText.length > 0 && pokeText.length <= 40, 'poke reply should be a short live-style line');
   assert.ok(!/模板|核验|机器人|bot|不是本人/.test(pokeText), 'poke reply should not leak knowledge metadata');
+  assert.ok(
+    pokeTest.pokeReplyGroups.flat().every((line) => pokeTest.isGoodPokeLine(line)),
+    'fallback poke lines should be short and metadata-free',
+  );
+  assert.ok(
+    /戳|弹幕|战术|默认|信息|道具|急|问题|看|问|打断|干嘛|催/.test(pokeTest.fallbackPokeReply()),
+    'fallback poke reply should sound like a live interaction',
+  );
 
   const handler = new MessageHandler(bot);
   handler.use(repeaterPlugin);
