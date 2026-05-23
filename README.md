@@ -19,9 +19,12 @@
 - 联网搜索：DuckDuckGo Instant、DuckDuckGo HTML、Bing RSS 兜底，带 single-flight、正/负缓存和磁盘缓存。
 - 上下文记忆：每群持久化到 `context_store/`，旧消息异步压缩，不阻塞回复。
 - 图片识别缓存：图片下载后缓存到 `image_cache/`，减少重复识图成本。
+- NapCat 只给图片 `file` 不给 `url` 时，会自动调用 OneBot `get_image`；返回 URL、本地路径或 base64 都能继续识图。
 - 识图自动兼容多种 payload：`image_url` 对象、`image_url` 字符串、`input_image`、`image` 四种格式自动重试。
 - STT 语音听写缓存：语音输入缓存到 `stt_cache/`，支持 API、本地命令、自动兜底三种模式。
+- NapCat 只给语音 `file` 不给 `url` 时，会自动调用 OneBot `get_record`，按 `stt_record_format` 转成 mp3/wav/amr/m4a 后再听写。
 - TTS 语音缓存：语音输出缓存到 `voice_cache/`，支持 API、本地授权语音引擎、自动兜底三种模式；有授权样本时可尝试供应商 voiceclone。
+- Docker NapCat 默认用 `base64://` 发送 TTS 语音，避免容器读不到宿主机 `voice_cache/` 文件。
 - 统一发送出口允许 emoji，但会过滤 `😂`、`🤣` 和“笑哭”，避免回复里出现固定笑哭表情。
 - `/status` 和 `/diag` 提供队列、缓存、知识库、并发、内存和配置状态。
 
@@ -37,7 +40,7 @@ src/
   types.ts                 OneBot 和配置类型
   plugins/
     ai-chat.ts             核心 AI、队列、上下文、知识注入、搜索、识图、STT、TTS
-    knowledge-base.ts      Markdown 知识库、候选、隔离、自动写入、回滚、审计
+    knowledge-base.ts      Markdown 知识库、候选、主库分层自动写入、回滚、审计
     web-search.ts          联网搜索、single-flight、正/负缓存
     concurrency.ts         全局并发闸门
     context-store.ts       上下文持久化
@@ -53,7 +56,7 @@ knowledge/
   wanjier.md               主知识库
   sources.json             联网刷新来源配置
   inbox/                   本地转写/笔记导入目录
-  quarantine/              自动隔离风险内容，运行产物，默认忽略
+  quarantine/              旧版本遗留目录；当前不再写入
 scripts/
   smoke.js                 构建后 smoke test
 ```
@@ -183,6 +186,8 @@ pm2 restart wanjier --update-env
     "enable_stt": true,
     "stt_model": "mimo-v2.5-pro",
     "stt_provider": "auto",
+    "stt_payload_mode": "auto",
+    "stt_record_format": "mp3",
     "stt_local_command": "",
     "stt_local_timeout_ms": 15000,
     "enable_tts": true,
@@ -195,6 +200,7 @@ pm2 restart wanjier --update-env
     "tts_clone_enabled": true,
     "tts_sample_path": "voice_sample.mp3",
     "tts_max_chars": 120,
+    "tts_send_mode": "base64",
     "tts_timeout_ms": 20000,
     "tts_cache_hours": 24,
     "tts_probability": 0.1
@@ -661,7 +667,9 @@ AI 核心字段：
 | `knowledge_auto_interval_minutes` | `180` | 自动刷新间隔，最低 30 |
 | `knowledge_auto_commit_public_facts` | `true` | 自动写入公开事实/短摘要 |
 | `knowledge_aggressive_auto_commit` | `true` | 可信公开摘要激进写入 |
-| `knowledge_quarantine_long_quotes` | `true` | 长语录/礼物/转写隔离 |
+| `knowledge_quarantine_long_quotes` | `false` | 兼容旧字段；当前不写隔离区，风险内容进入主库待核验分区 |
+| `knowledge_expansion_enabled` | `true` | 启用知识库扩写 |
+| `knowledge_expansion_batch_max_sources` | `12` | 手动扩写每批最多来源 |
 | `knowledge_auto_batch_max_sources` | `6` | 后台每批最多来源 |
 | `knowledge_manual_batch_max_sources` | `10` | 手动刷新每批最多来源 |
 | `knowledge_auto_max_block_chars` | `1200` | 自动写入单块最大字符数 |
@@ -672,6 +680,7 @@ AI 核心字段：
 | 字段 | 推荐值 | 说明 |
 |---|---:|---|
 | `max_group_queue` | `5` | 同群普通主动接话队列上限，强触发不丢 |
+| `gate_passive_queue_max` | `20` | 全局闸门普通任务最大排队数，强触发不受此限制 |
 | `ai_global_concurrency` | `3` | 全局 AI 并发，2G1C 多群同时 @ 推荐值 |
 | `search_global_concurrency` | `3` | 全局搜索并发 |
 | `vision_global_concurrency` | `1` | 全局识图并发 |
@@ -690,9 +699,14 @@ AI 核心字段：
 | `image_cache_max_mb` | `512` | 图片缓存上限，70GB 存储推荐值 |
 | `image_cache_max_file_mb` | `2` | 单图下载最大大小 |
 | `image_cache_max_age_hours` | `72` | 图片缓存过期时间 |
+| `image_download_max_redirects` | `3` | 图片下载最多跟随跳转次数 |
+| `image_cache_cleanup_interval_minutes` | `30` | 图片缓存定期清理间隔 |
+| `image_cache_max_files` | `5000` | 图片缓存最大文件数 |
 | `enable_stt` | `true` | 开启 QQ 语音输入听写 |
 | `stt_model` | 按供应商填写 | 支持音频输入/听写的模型 |
 | `stt_provider` | `auto` | `api`、`local` 或 `auto` |
+| `stt_payload_mode` | `auto` | 远端听写 payload，`auto` 会尝试 `input_audio` 和 `audio_url` |
+| `stt_record_format` | `mp3` | NapCat `get_record` 的输出格式；opaque `file` 语音会先转成该格式再听写 |
 | `stt_local_command` | 空或本地命令 | 本地听写命令，读取 `QQBOT_STT_INPUT`，输出文本 |
 | `stt_local_timeout_ms` | `15000` | 本地听写超时 |
 | `stt_max_records` | `1` | 单条消息最多听写几段语音 |
@@ -710,6 +724,7 @@ AI 核心字段：
 | `tts_sample_path` | `voice_sample.mp3` | 授权样本路径，相对项目根目录或绝对路径 |
 | `tts_voice_prompt` | 见示例 | 语音风格提示 |
 | `tts_max_chars` | `80-120` | 单条语音最大字符数 |
+| `tts_send_mode` | `base64` | 语音发送方式；Docker NapCat 推荐 `base64`，避免容器读不到宿主机文件 |
 | `tts_timeout_ms` | `20000` | 语音 API 超时 |
 | `tts_cache_hours` | `24` | 语音缓存保留时间 |
 | `tts_sample_max_mb` | `8` | 样本最大大小 |
@@ -744,6 +759,8 @@ STT 听写同理：
 - 普通模型：`mimo-v2.5-tts`，默认内置音色。
 - 克隆模型：`mimo-v2.5-tts-voiceclone`，当 `voice_sample.mp3` 可读时把样本以 `data:audio/...;base64,...` 放到 `audio.voice`。
 - 输出格式：默认请求 `audio.format=mp3`，bot 会把返回音频保存到 `voice_cache/` 再用 OneBot 的 `record` 段发送。
+- 发送格式：默认 `tts_send_mode=base64`，发送 `base64://...` 给 NapCat；这对 Docker 部署最稳，因为容器不需要读取 PM2 所在宿主机的 `voice_cache/` 文件。
+- 只有当 NapCat 与 bot 在同一文件系统、并且确认能读取本地文件时，才考虑把 `tts_send_mode` 改成 `file`。
 - 兼容兜底：如果供应商兼容层调整，bot 会依次尝试 v2.5 官方格式、无 `format` 格式、旧 `system/user/assistant` 格式，并在 `/voice status` 显示 `最近TTS模式`。
 
 参考官方文档：`https://platform.xiaomimimo.com/docs/en-US/api/chat/openai-api?target=request-body`
@@ -964,6 +981,8 @@ cat "$OUT"
 - `enable_stt=true` 后才会听写语音。
 - `stt_model` 必须填写供应商支持音频输入或听写的模型。
 - QQ 语音常见是 `amr` 或 `silk`。如果服务器安装了 `ffmpeg`，bot 会尝试转成 mp3 再听写。
+- NapCat 事件里如果语音段只有 `file` 没有 `url`，bot 会自动调用 `get_record`；`stt_record_format=mp3` 会让 NapCat 优先吐出 mp3，后面再交给本地或远端 STT。
+- `get_record` 返回 URL、本地路径、`base64://...` 或 `data:audio/...;base64,...` 都能识别；Docker 部署不需要手工映射语音缓存目录。
 - 如果供应商不支持当前音频请求格式，`@` 仍会引用原消息回复，只是不会假装听懂语音内容。
 - 2G1C 推荐 `stt_global_concurrency=1`、`stt_max_records=1`，避免多人同时发语音把队列堵死。
 - 如果配置了 `stt_provider=auto` 且 `stt_local_command` 有效，会先走本地听写，本地失败再走远端 API。
@@ -1006,6 +1025,7 @@ apt install -y ffmpeg
 
 - `TTS: on`：语音功能开启。
 - `TTS提供方`：当前走 `api`、`local` 还是 `auto`。
+- `TTS发送`：推荐看到 `base64`；Docker NapCat 如果用 `file`，很容易因为容器读不到宿主机路径而发不出语音。
 - `克隆: ready`：样本可用，会走克隆模型。
 - `克隆: missing`：样本缺失、太小、太大或路径错误，会降级普通 TTS。
 - `最近TTS模式`：最近一次远端请求采用的 payload 格式，例如 `mimo-voiceclone-chat-v25`。
@@ -1025,7 +1045,7 @@ apt install -y ffmpeg
 - `local tts command missing`：`tts_provider` 是 `local/auto`，但 `tts_local_command` 没填。
 - `local tts timeout`：本地语音引擎太慢或模型没加载好，提高 `tts_local_timeout_ms`，或让引擎常驻服务再用 wrapper 调 HTTP。
 - `local tts failed`：wrapper 退出码非 0 或没有生成音频，直接在 VPS 上手动执行 wrapper 看 stderr。
-- QQ 不显示语音：确认 OneBot/NapCat 支持本地 `file://` 语音发送，查看 PM2 日志。
+- QQ 不显示语音：先确认 `/voice status` 的 `TTS发送` 是 `base64`。Docker NapCat 不建议用 `file://`，除非容器挂载了同一个 `voice_cache/` 路径并且 NapCat 有读取权限。
 - `听写 HTTP 400/422`：多数是供应商不支持当前音频输入格式，换 `stt_model` 或关闭 `enable_stt`。
 - `local stt command missing`：`stt_provider` 是 `local/auto`，但 `stt_local_command` 没填。
 - `local stt failed`：本地听写脚本没有输出文本，检查模型路径、音频格式和脚本权限。
@@ -1085,7 +1105,7 @@ apt install -y ffmpeg
 | `/kb ingest [full]` | 管理员 | 从 `knowledge/inbox/` 生成候选 |
 | `/kb list` | 管理员 | 查看待确认候选 |
 | `/kb show <ID>` | 管理员 | 查看候选详情 |
-| `/kb commit <ID>` | 管理员 | 写入主知识库或隔离 |
+| `/kb commit <ID>` | 管理员 | 写入主知识库分层区 |
 | `/kb drop <ID>` | 管理员 | 丢弃候选 |
 
 工具和管理：
@@ -1187,11 +1207,13 @@ knowledge/sources.json
 knowledge/inbox/
 ```
 
-风险隔离：
+旧版本遗留目录：
 
 ```text
 knowledge/quarantine/
 ```
+
+当前版本不再向该目录写入。所有公开事实、短摘要、拟态模板、待核验语料都进入 `knowledge/wanjier.md` 的分层区域，并用来源、置信度、核验状态和内容类型管理风险。
 
 ### 本地检索
 
@@ -1224,8 +1246,8 @@ knowledge/quarantine/
 
 - `public_fact`：可信公开事实，满足条件时自动写入。
 - 可信 `public_summary`：`--aggressive` 或 `knowledge_aggressive_auto_commit=true` 时可自动写入短摘要。
-- `unknown`：礼物原话、疑似长转写、切片台词，默认不写主库。
-- 长句、疑似原话、礼物感谢完整话术进入 `knowledge/quarantine/`。
+- `unknown`：礼物原话、疑似长转写、切片台词，默认只生成候选；手动确认后进入主库待核验分区。
+- 长句、疑似原话、礼物感谢完整话术不写隔离目录，只能以摘要、短摘、拟态模板或待核验语料写入主库。
 - 后台自动刷新会读取 `sources.json` 的 `intervalMinutes`，只跑到期来源；手动 `/kb refresh` 不受间隔限制。
 - 来源上次自动刷新时间记录在 `knowledge/source-state.json`，这是运行产物，默认不提交。
 
@@ -1361,8 +1383,12 @@ knowledge/inbox/
     "image_cache_max_mb": 512,
     "image_cache_max_file_mb": 2,
     "image_cache_max_age_hours": 72,
+    "image_download_max_redirects": 3,
+    "image_cache_cleanup_interval_minutes": 30,
+    "image_cache_max_files": 5000,
     "enable_stt": true,
     "stt_model": "你的音频输入模型",
+    "stt_payload_mode": "auto",
     "stt_max_records": 1,
     "stt_max_file_mb": 4,
     "stt_timeout_ms": 20000,
@@ -1377,13 +1403,17 @@ knowledge/inbox/
     "passive_random_allow_numeric": false,
     "poke_reply_probability": 1,
     "max_group_queue": 5,
+    "gate_passive_queue_max": 20,
     "ai_global_concurrency": 3,
     "search_global_concurrency": 3,
     "vision_global_concurrency": 1,
     "stt_global_concurrency": 1,
     "tts_global_concurrency": 1,
     "knowledge_auto_batch_max_sources": 6,
-    "knowledge_manual_batch_max_sources": 10
+    "knowledge_manual_batch_max_sources": 10,
+    "knowledge_expansion_enabled": true,
+    "knowledge_expansion_batch_max_sources": 12,
+    "knowledge_quarantine_long_quotes": false
   }
 }
 ```
@@ -1413,6 +1443,7 @@ knowledge/inbox/
     "enable_stt": false,
     "vision_max_images": 1,
     "tts_probability": 0,
+    "gate_passive_queue_max": 10,
     "max_group_queue": 3,
     "ai_global_concurrency": 1,
     "search_global_concurrency": 2,
@@ -1420,7 +1451,8 @@ knowledge/inbox/
     "stt_global_concurrency": 1,
     "tts_global_concurrency": 1,
     "knowledge_auto_batch_max_sources": 3,
-    "knowledge_manual_batch_max_sources": 6
+    "knowledge_manual_batch_max_sources": 6,
+    "knowledge_expansion_batch_max_sources": 6
   }
 }
 ```
@@ -1469,6 +1501,13 @@ npm run smoke
 /kb audit
 /kb refresh --aggressive 玩机器Machine 萌娘百科 6657
 /kb batches
+```
+
+可选本地维护命令：
+
+```bash
+npm run cache:clean
+npm run stt:test -- <语音URL或本地文件>
 ```
 
 私聊手动检查：
@@ -1769,10 +1808,11 @@ pm2 logs wanjier --lines 0
 
 1. 确认 `enable_vision=true`。
 2. 确认 `vision_model` 支持多模态。
-3. 图片 URL 必须能由服务器访问。
+3. 图片 URL 必须能由服务器访问；如果 NapCat 事件只有 `file`，bot 会自动调用 `get_image`，并兼容 URL、本地路径和 base64 返回。
 4. 单图超过 `image_cache_max_file_mb` 会被图片缓存层拒绝；2G1C 示例默认 2MB，1G 降级档建议 1MB。
 5. 群里跑 `/vision status` 看缓存命中、失败次数和最近错误。
 6. 跑 `/vision test <图片URL>`；它会先下载图片，再真实调用视觉模型。下载 OK 但模型失败，说明是模型/API 兼容问题；下载失败，说明是外链、代理或文件大小问题。
+7. 也可以把图片和 `/vision test` 发在同一条消息里；这能直接测试 NapCat `get_image` 兜底链路。
 
 ### 语音不可用
 
@@ -1782,6 +1822,8 @@ pm2 logs wanjier --lines 0
 4. 强触发默认优先文字引用，普通主动接话才可能随机语音。
 5. 跑 `/voice status` 看 `最近错误`、`听写最近错误`、样本状态和缓存命中。
 6. 跑 `/voice stt <语音URL>` 单独测听写；跑 `/voice test` 单独测 TTS。一个成功一个失败时，按失败那条链路排查。
+7. 也可以把 QQ 语音和 `/voice stt` 发在同一条消息里；这能直接测试 NapCat `get_record`、转码、STT payload 和缓存。
+8. Docker NapCat 优先保持 `tts_send_mode=base64`。只有确认容器能读宿主机 `voice_cache/` 时，才改成 `file`。
 
 ### 每日 CS 不触发或不出图
 
@@ -1853,7 +1895,7 @@ pm2 logs wanjier --lines 80 --nostream
 - 不断言假赛、开挂、违法等严重指控，除非用户提供可靠公开来源。
 - 不使用歧视性辱骂，不围绕性别、地域、民族、疾病、残障攻击。
 - 不大段复制公开平台视频、文章、脚本库内容。
-- 礼物感谢和切片长句默认写成拟态模板或隔离候选。
+- 礼物感谢和切片长句默认写成拟态模板、摘要或主库待核验语料，不冒充核验原话。
 
 ## License
 

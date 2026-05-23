@@ -86,8 +86,12 @@ export interface AIConfig {
   knowledge_auto_interval_minutes?: number;
   /** 是否允许自动写入公开事实/短摘要 */
   knowledge_auto_commit_public_facts?: boolean;
-  /** 是否把长语录/疑似转写隔离，不写主库 */
+  /** 兼容旧配置；当前默认不写隔离区，风险内容进入主库待核验分区 */
   knowledge_quarantine_long_quotes?: boolean;
+  /** 是否启用知识库扩写 */
+  knowledge_expansion_enabled?: boolean;
+  /** 知识库扩写每批最多来源数 */
+  knowledge_expansion_batch_max_sources?: number;
   /** 知识来源搜索超时毫秒 */
   knowledge_source_timeout_ms?: number;
   /** 是否激进自动写入可信公开摘要 */
@@ -102,6 +106,8 @@ export interface AIConfig {
   knowledge_auto_log_retention_days?: number;
   /** 每个群AI回复队列最大长度 */
   max_group_queue?: number;
+  /** 普通/低优先级全局gate最大排队数，强触发不受此限制 */
+  gate_passive_queue_max?: number;
   /** 全局AI并发 */
   ai_global_concurrency?: number;
   /** 全局搜索并发 */
@@ -128,6 +134,12 @@ export interface AIConfig {
   image_cache_max_file_mb?: number;
   /** 图片缓存过期小时数 */
   image_cache_max_age_hours?: number;
+  /** 图片下载最多跟随跳转次数 */
+  image_download_max_redirects?: number;
+  /** 图片缓存清理间隔分钟 */
+  image_cache_cleanup_interval_minutes?: number;
+  /** 图片缓存最大文件数 */
+  image_cache_max_files?: number;
   /** 是否启用TTS语音回复 */
   enable_tts: boolean;
   /** 是否启用语音输入听写 */
@@ -136,6 +148,10 @@ export interface AIConfig {
   stt_model?: string;
   /** 语音听写提供方 */
   stt_provider?: 'api' | 'local' | 'auto';
+  /** 语音听写payload兼容模式 */
+  stt_payload_mode?: 'auto' | 'input_audio' | 'audio_url';
+  /** OneBot get_record 输出格式 */
+  stt_record_format?: 'mp3' | 'wav' | 'amr' | 'm4a';
   /** 本地语音听写命令，使用环境变量QQBOT_STT_INPUT/QQBOT_STT_OUTPUT */
   stt_local_command?: string;
   /** 本地语音听写命令超时毫秒 */
@@ -148,6 +164,8 @@ export interface AIConfig {
   stt_timeout_ms?: number;
   /** 语音听写缓存小时数 */
   stt_cache_hours?: number;
+  /** 队列繁忙时是否延后上下文压缩 */
+  context_compression_defer_when_busy?: boolean;
   /** 普通TTS模型 */
   tts_model?: string;
   /** TTS提供方 */
@@ -168,6 +186,8 @@ export interface AIConfig {
   tts_voice_prompt?: string;
   /** TTS单条最大字符数 */
   tts_max_chars?: number;
+  /** TTS发送模式，base64 适合 Docker NapCat */
+  tts_send_mode?: 'auto' | 'base64' | 'file';
   /** TTS请求超时毫秒 */
   tts_timeout_ms?: number;
   /** TTS缓存小时数 */

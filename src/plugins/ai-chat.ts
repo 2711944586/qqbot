@@ -40,6 +40,7 @@ import { loadContext, writeSession, deleteSession, markDirty, setFlushHandler, g
 import * as https from 'https';
 import * as http from 'http';
 import * as crypto from 'crypto';
+import * as fs from 'fs';
 
 // ============ 类型 ============
 interface ChatMessage {
@@ -255,6 +256,122 @@ function extractRecordUrls(message: MessageSegment[]): string[] {
     .filter((seg) => seg.type === 'record')
     .map((seg) => seg.type === 'record' ? (seg.data.url || seg.data.file || '') : '')
     .filter(Boolean);
+}
+
+function uniqueNonEmpty(items: string[]): string[] {
+  return [...new Set(items.map((item) => item.trim()).filter(Boolean))];
+}
+
+function isDirectMediaSource(input: string): boolean {
+  return /^(https?:\/\/|file:\/\/|data:|base64:\/\/)/i.test(input) || (!!input && fs.existsSync(input));
+}
+
+function firstStringCandidate(items: any[]): string {
+  for (const item of items) {
+    if (typeof item === 'string' && item.trim()) return item.trim();
+  }
+  return '';
+}
+
+function normalizeApiBase64Source(value: string, mime: string): string {
+  const raw = value.trim();
+  if (!raw) return '';
+  if (raw.startsWith('data:')) return raw;
+  if (raw.startsWith('base64://')) return `data:${mime};base64,${raw.slice('base64://'.length).replace(/\s+/g, '')}`;
+  const compact = raw.replace(/\s+/g, '');
+  if (compact.length < 80) return '';
+  if (!/^[A-Za-z0-9+/_=-]+$/.test(compact)) return '';
+  return `data:${mime};base64,${compact}`;
+}
+
+function firstMediaString(data: any, inlineMime: string): string {
+  const url = firstStringCandidate([
+    data?.url,
+    data?.file_url,
+    data?.data?.url,
+    data?.data?.file_url,
+  ]);
+  if (url) return url;
+
+  const inline = firstStringCandidate([
+    data?.base64,
+    data?.b64,
+    data?.base64_file,
+    data?.file_base64,
+    data?.data?.base64,
+    data?.data?.b64,
+    data?.data?.base64_file,
+    data?.data?.file_base64,
+  ]);
+  const inlineSource = inline ? normalizeApiBase64Source(inline, inlineMime) : '';
+  if (inlineSource) return inlineSource;
+
+  const candidates = [
+    data?.file,
+    data?.path,
+    data?.file_path,
+    data?.data?.file,
+    data?.data?.path,
+    data?.data?.file_path,
+  ];
+  for (const item of candidates) {
+    if (typeof item === 'string' && item.trim()) return item.trim();
+  }
+  return '';
+}
+
+async function resolveOneBotImageSources(ctx: PluginContext, message: MessageSegment[]): Promise<string[]> {
+  const raw = uniqueNonEmpty(extractImageUrls(message));
+  const resolved: string[] = [];
+  for (const source of raw) {
+    if (isDirectMediaSource(source)) {
+      resolved.push(source);
+      continue;
+    }
+    try {
+      const res = await ctx.bot.callApiAsync('get_image', { file: source }, 3000);
+      const next = firstMediaString((res as any)?.data || res, 'image/jpeg');
+      resolved.push(next || source);
+    } catch {
+      resolved.push(source);
+    }
+  }
+  return uniqueNonEmpty(resolved);
+}
+
+async function resolveOneBotRecordSources(ctx: PluginContext, config: AIConfig, message: MessageSegment[]): Promise<string[]> {
+  const raw = uniqueNonEmpty(extractRecordUrls(message));
+  const resolved: string[] = [];
+  for (const source of raw) {
+    if (isDirectMediaSource(source)) {
+      resolved.push(source);
+      continue;
+    }
+    try {
+      const res = await ctx.bot.callApiAsync('get_record', {
+        file: source,
+        out_format: config.stt_record_format || 'mp3',
+      }, 5000);
+      const next = firstMediaString((res as any)?.data || res, 'audio/mpeg');
+      resolved.push(next || source);
+    } catch {
+      resolved.push(source);
+    }
+  }
+  return uniqueNonEmpty(resolved);
+}
+
+function voiceRecordSegment(config: AIConfig, filepath: string): MessageSegment {
+  const mode = config.tts_send_mode || 'base64';
+  if (mode !== 'file') {
+    try {
+      const buffer = fs.readFileSync(filepath);
+      if (buffer.length > 0 && buffer.length <= 16 * 1024 * 1024) {
+        return { type: 'record', data: { file: `base64://${buffer.toString('base64')}` } };
+      }
+    } catch { /* fall back to file */ }
+  }
+  return { type: 'record', data: { file: `file://${filepath}` } };
 }
 
 function isAtBot(event: MessageEvent): boolean {
@@ -577,7 +694,8 @@ function buildSystemPrompt(config: AIConfig): string {
     '',
     '[定位硬规则]',
     '- 日常直接用第一人称直播口吻接弹幕，不要主动解释自己是什么，也不要说“作为bot/机器人”。',
-    '- 只有被明确问身份、授权、本人关系、现实代表性时，才说明自己是群里的风格bot，不是现实主播本人。',
+    '- 如果只是问“你是不是bot/机器人/AI”，嘴硬接住，坚持第一人称玩机器口吻，不要助手式自曝。',
+    '- 如果对方明确追问现实主播本人、授权、代表本人、现实身份关系，才说明这是群里的风格bot，不是现实主播本人，不代表本人。',
     '- 每次只回复【当前要回复的消息】，不要回答历史上下文里其他人的旧问题。',
     `- ${aggressionRule}不要持续人身攻击、辱骂、歧视或攻击现实隐私。`,
     '- 回复要像直播间即时反应：先短反应，再补一句判断；不要像AI助手排条目，除非用户明确要列表。',
@@ -709,7 +827,7 @@ async function handleKnowledgeCommand(ctx: PluginContext, config: AIConfig): Pro
       `注入命中: ${stats.selectHits}/${stats.selectMisses}`,
       `候选: ${stats.candidates}`,
       `自动: ${stats.autoEnabled ? 'on' : 'off'} 最近${formatTime(stats.lastAutoRefreshAt)}`,
-      `自动写入: ${stats.autoCommitted} 隔离文件: ${stats.quarantineFiles} 审计问题: ${stats.auditIssues}`,
+      `自动写入: ${stats.autoCommitted} 待核验主库化 审计问题: ${stats.auditIssues}`,
       `来源状态: ${stats.sourceStates} 个`,
     ].join('\n'));
     return true;
@@ -755,7 +873,7 @@ async function handleKnowledgeCommand(ctx: PluginContext, config: AIConfig): Pro
       `entries ${batch.entries}`,
       `committed ${batch.committed}`,
       `rollback ${batch.rolledBack}`,
-      `quarantine ${batch.quarantined}`,
+      'main-only',
     ].join(' | ')).join('\n'));
     return true;
   }
@@ -778,7 +896,7 @@ async function handleKnowledgeCommand(ctx: PluginContext, config: AIConfig): Pro
     ctx.reply([
       `知识库审计: ${report.sections}块 ${report.chars}字`,
       `问题: hard ${hard} / risk ${risk} / info ${info}`,
-      `隔离: ${report.quarantineFiles} 文件`,
+      '写入策略: 主库分层，风险内容标为待核验',
       ...report.issues.slice(0, 8).map((item) => `${item.level}: ${item.title}`),
     ].join('\n'));
     return true;
@@ -793,7 +911,7 @@ async function handleKnowledgeCommand(ctx: PluginContext, config: AIConfig): Pro
         `自动更新: ${isKnowledgeAutoEnabled() ? 'on' : 'off'}`,
         `最近刷新: ${stats.lastAutoRefreshAt ? new Date(stats.lastAutoRefreshAt).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' }) : '无'}`,
         `自动写入: ${stats.autoCommitted}`,
-        `隔离: ${stats.quarantineFiles}`,
+        '写入策略: 全部写主库分层，风险内容标为待核验',
         `审计问题: ${audit?.issues.length || 0}`,
         '/kb auto on|off|run',
       ].join('\n'));
@@ -980,6 +1098,9 @@ const groupQueueAges: Map<string, number[]> = new Map();
 const lastReplyAt: Map<string, number> = new Map();
 const replyCache: Map<string, { value: string; expiresAt: number }> = new Map();
 let skippedPassiveReplies = 0;
+let deferredCompressions = 0;
+let completedCompressions = 0;
+let failedCompressions = 0;
 let replyCacheHits = 0;
 let replyCacheMisses = 0;
 const directAiCommands = new Set(['ai', 'ask', 'chat']);
@@ -1044,7 +1165,7 @@ function chooseRefreshSources(config: AIConfig, queryOverride: string, autoRun: 
   const sources = configured.length > 0 ? configured : makeFallbackKnowledgeSources();
   const limit = autoRun
     ? (config.knowledge_auto_batch_max_sources || 4)
-    : (config.knowledge_manual_batch_max_sources || 8);
+    : (config.knowledge_expansion_batch_max_sources || config.knowledge_manual_batch_max_sources || 12);
   return autoRun
     ? filterDueKnowledgeSources(sources, limit)
     : sources.slice(0, limit);
@@ -1055,7 +1176,6 @@ function summarizeRefreshResult(
   searched: number,
   candidates: number,
   committed: number,
-  quarantinedCount: number,
   pending: KnowledgeCandidate[],
   failed: string[],
   auditIssues: number,
@@ -1067,7 +1187,6 @@ function summarizeRefreshResult(
     `搜索源: ${searched}`,
     `候选: ${candidates}`,
     `自动写入: ${committed}`,
-    `隔离: ${quarantinedCount}`,
     `待确认: ${pending.length}`,
     `失败: ${failed.length}`,
     `审计问题: ${auditIssues}`,
@@ -1108,7 +1227,6 @@ async function runKnowledgeRefresh(
   let searched = 0;
   let candidates = 0;
   let committed = 0;
-  let quarantinedCount = 0;
 
   for (const source of sources) {
     try {
@@ -1119,21 +1237,24 @@ async function runKnowledgeRefresh(
         continue;
       }
 
+      const expansionEnabled = config.knowledge_expansion_enabled !== false;
+      const sourceTypeWritable = source.sourceType === 'public_fact' || source.sourceType === 'public_summary' || source.sourceType === 'style_template';
+      const trustedSummaryEligible = aggressive && source.trusted && source.sourceType === 'public_summary';
+      const manualAggressiveEligible = aggressiveOverride && sourceTypeWritable;
       const autoCommitEligible = Boolean(
-        source.autoCommitEligible &&
+        expansionEnabled &&
         config.knowledge_auto_commit_public_facts !== false &&
         (
-          source.sourceType === 'public_fact' ||
-          (aggressive && source.trusted && source.sourceType === 'public_summary') ||
-          (aggressiveOverride && source.sourceType !== 'unknown')
+          (source.autoCommitEligible && source.sourceType === 'public_fact') ||
+          (source.autoCommitEligible && trustedSummaryEligible) ||
+          manualAggressiveEligible
         ),
       );
-      const risk = config.knowledge_quarantine_long_quotes === false ? 'review' : undefined;
       const candidate = previewKnowledgeCandidate(source.query, result, `refresh:${source.id}`, {
         sourceType: source.sourceType,
         confidence: source.trusted ? 'high' : 'medium',
         autoCommitEligible,
-        risk,
+        risk: 'review',
       });
       candidates++;
 
@@ -1144,8 +1265,6 @@ async function runKnowledgeRefresh(
       });
       if (action === 'committed') {
         committed++;
-      } else if (action === 'quarantined') {
-        quarantinedCount++;
       } else if (candidate.status === 'dropped' && wasEligible) {
         // 重复内容已被去重丢弃，不算待确认。
       } else {
@@ -1161,7 +1280,7 @@ async function runKnowledgeRefresh(
 
   markKnowledgeAutoRefresh();
   const audit = auditKnowledge();
-  return summarizeRefreshResult(batchId, searched, candidates, committed, quarantinedCount, pending, failed, audit.issues.length, autoRun);
+  return summarizeRefreshResult(batchId, searched, candidates, committed, pending, failed, audit.issues.length, autoRun);
 }
 
 function ensureKnowledgeAutoTimer(config: AIConfig): void {
@@ -1171,6 +1290,7 @@ function ensureKnowledgeAutoTimer(config: AIConfig): void {
     vision: config.vision_global_concurrency,
     tts: config.tts_global_concurrency,
     stt: config.stt_global_concurrency,
+    passiveQueueMax: config.gate_passive_queue_max,
   });
   configureSearchCache(config);
   configureImageCache(config);
@@ -1425,6 +1545,9 @@ export function getAiChatStats(): {
   replyCacheHits: number;
   replyCacheMisses: number;
   gates: ReturnType<typeof getGateStats>;
+  deferredCompressions: number;
+  completedCompressions: number;
+  failedCompressions: number;
 } {
   let pendingJobs = 0;
   let forcedJobs = 0;
@@ -1445,6 +1568,9 @@ export function getAiChatStats(): {
     replyCacheHits,
     replyCacheMisses,
     gates: getGateStats(),
+    deferredCompressions,
+    completedCompressions,
+    failedCompressions,
   };
 }
 
@@ -1506,7 +1632,8 @@ export const aiChatPlugin: Plugin = {
         return true;
       }
       if (subCommand === 'test') {
-        const url = ctx.args.slice(1).join(' ').trim() || extractImageUrls(ctx.event.message)[0] || '';
+        const resolvedImages = await resolveOneBotImageSources(ctx, ctx.event.message);
+        const url = ctx.args.slice(1).join(' ').trim() || resolvedImages[0] || '';
         if (!url) {
           ctx.reply('/vision test <图片URL>\n也可以把图片和 /vision test 发在同一条消息里');
           return true;
@@ -1562,6 +1689,8 @@ export const aiChatPlugin: Plugin = {
           `普通模型: ${stats.model}`,
           `克隆模型: ${stats.cloneModel}`,
           `听写模型: ${sttStats.model || '未配置'}`,
+          `TTS发送: ${stats.sendMode}`,
+          `STT格式: ${sttStats.recordFormat} / payload ${sttStats.payloadMode}`,
           ...(stats.provider !== 'api' ? [`本地TTS命令: ${stats.localCommand || '未配置'}`] : []),
           ...(sttStats.provider !== 'api' ? [`本地STT命令: ${sttStats.localCommand || '未配置'}`] : []),
           `克隆: ${stats.cloneEnabled ? (stats.cloneReady ? 'ready' : 'missing') : 'off'}`,
@@ -1586,7 +1715,8 @@ export const aiChatPlugin: Plugin = {
       }
 
       if (subCommand === 'stt' || subCommand === 'listen' || subCommand === 'transcribe') {
-        const input = ctx.args.slice(1).join(' ').trim() || extractRecordUrls(ctx.event.message)[0] || '';
+        const resolvedRecords = await resolveOneBotRecordSources(ctx, config, ctx.event.message);
+        const input = ctx.args.slice(1).join(' ').trim() || resolvedRecords[0] || '';
         if (!input) {
           ctx.reply('/voice stt <语音URL>\n也可以把语音和 /voice stt 发在同一条消息里');
           return true;
@@ -1626,7 +1756,7 @@ export const aiChatPlugin: Plugin = {
       }
       const voicePath = await withGate('tts', () => generateVoice(config, text));
       if (voicePath) {
-        ctx.reply([{ type: 'record', data: { file: `file://${voicePath}` } }]);
+        ctx.reply([voiceRecordSegment(config, voicePath)]);
       } else {
         ctx.reply('语音生成失败');
       }
@@ -1668,8 +1798,8 @@ export const aiChatPlugin: Plugin = {
 
     // ===== 提取信息 =====
     const senderName = ctx.event.sender.card || ctx.event.sender.nickname;
-    const imageUrls = extractImageUrls(ctx.event.message);
-    const recordUrls = extractRecordUrls(ctx.event.message);
+    const imageUrls = await resolveOneBotImageSources(ctx, ctx.event.message);
+    const recordUrls = await resolveOneBotRecordSources(ctx, config, ctx.event.message);
     const hasImages = imageUrls.length > 0;
     const hasRecords = recordUrls.length > 0;
     const replySeg = ctx.event.message.find((seg) => seg.type === 'reply');
@@ -1776,7 +1906,7 @@ export const aiChatPlugin: Plugin = {
       try {
         if (job.hasRecords && config.enable_stt && !skipHeavyEnhancements) {
           try {
-            recordTranscripts = await withGate('stt', () => transcribeRecords(config, job.recordUrls));
+            recordTranscripts = await withGate('stt', () => transcribeRecords(config, job.recordUrls), job.forced);
           } catch { /* */ }
         }
 
@@ -1794,7 +1924,7 @@ export const aiChatPlugin: Plugin = {
           const limitedUrls = job.imageUrls.slice(0, limit);
           const dataUrls: string[] = [];
           for (const url of limitedUrls) {
-            const d = await withGate('vision', () => getImageDataUrl(url));
+            const d = await withGate('vision', () => getImageDataUrl(url), job.forced);
             if (d) dataUrls.push(d);
           }
 
@@ -1814,19 +1944,32 @@ export const aiChatPlugin: Plugin = {
         }
 
         // 检查压缩（异步，不阻塞）
-        if (!compressionInFlight.has(job.sessionId) && getQueueStats(job.sessionId).pending <= 1 && cm.needsCompression(job.sessionId)) {
+        const gates = getGateStats();
+        const shouldDeferCompression = config.context_compression_defer_when_busy !== false && (
+          getQueueStats(job.sessionId).pending > 1 ||
+          gates.ai.queued > 0 ||
+          gates.ai.active >= gates.ai.limit
+        );
+        if (!compressionInFlight.has(job.sessionId) && cm.needsCompression(job.sessionId)) {
           const oldMessages = cm.getOldMessagesToCompress(job.sessionId);
           if (oldMessages.length > 0) {
-            compressionInFlight.add(job.sessionId);
-            summarizeMessages(config, oldMessages)
-              .then(summary => {
-                if (summary) {
-                  cm.applyCompression(job.sessionId, summary);
-                  console.log(`[Context] ${job.chatType}${job.chatId} 压缩${oldMessages.length}条`);
-                }
-              })
-              .catch(() => {})
-              .finally(() => compressionInFlight.delete(job.sessionId));
+            if (shouldDeferCompression) {
+              deferredCompressions++;
+            } else {
+              compressionInFlight.add(job.sessionId);
+              withGate('ai', () => summarizeMessages(config, oldMessages), false)
+                .then(summary => {
+                  if (summary) {
+                    cm.applyCompression(job.sessionId, summary);
+                    completedCompressions++;
+                    console.log(`[Context] ${job.chatType}${job.chatId} 压缩${oldMessages.length}条`);
+                  }
+                })
+                .catch(() => {
+                  failedCompressions++;
+                })
+                .finally(() => compressionInFlight.delete(job.sessionId));
+            }
           }
         }
 
@@ -1930,11 +2073,11 @@ export const aiChatPlugin: Plugin = {
         const shouldSendVoice = voiceAllowed && (job.forceVoice || (!job.forced && Math.random() < (config.tts_probability || 0.15)));
         if (shouldSendVoice) {
           try {
-            const voicePath = await withGate('tts', () => generateVoice(config, finalText));
+            const voicePath = await withGate('tts', () => generateVoice(config, finalText), job.forced || job.forceVoice);
             if (voicePath) {
               const recordMessage: MessageSegment[] = [
                 ...(useQuote ? [{ type: 'reply' as const, data: { id: String(job.messageId) } }] : []),
-                { type: 'record', data: { file: `file://${voicePath}` } },
+                voiceRecordSegment(config, voicePath),
               ];
               ctx.reply(recordMessage);
               sentVoice = true;

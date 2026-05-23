@@ -278,5 +278,61 @@
     "trusted": false,
     "autoCommitEligible": false,
     "intervalMinutes": 1440
+  },
+  {
+    "id": "liquipedia-machinewjq-2026-profile",
+    "query": "Liquipedia MachineWJQ Liu Yibo 6657 caster player manager broadcasts awards",
+    "sourceType": "public_fact",
+    "trusted": true,
+    "autoCommitEligible": true,
+    "intervalMinutes": 1440
+  },
+  {
+    "id": "moegirl-machine-quote-formula-index",
+    "query": "萌娘百科 玩机器Machine 公式解说 让人不禁感叹 让人不禁想问",
+    "sourceType": "public_summary",
+    "trusted": true,
+    "autoCommitEligible": true,
+    "intervalMinutes": 1440
+  },
+  {
+    "id": "bilibili-machine-danmaku-top10-current",
+    "query": "Bilibili 6657直播间烂梗top10 玩机器直播间被发送次数最多的弹幕",
+    "sourceType": "public_summary",
+    "trusted": false,
+    "autoCommitEligible": false,
+    "intervalMinutes": 720
+  },
+  {
+    "id": "bilibili-machine-match-cut-index-current",
+    "query": "Bilibili 玩机器 金句频出 切片 CS2 比赛 解说 NAVI Vitality Spirit Falcons",
+    "sourceType": "public_summary",
+    "trusted": false,
+    "autoCommitEligible": false,
+    "intervalMinutes": 720
+  },
+  {
+    "id": "hltv-top20-2025-official-overview",
+    "query": "HLTV top 20 2025 official overview ZywOo donk ropz m0NESY sh1ro NiKo b1t",
+    "sourceType": "public_fact",
+    "trusted": true,
+    "autoCommitEligible": true,
+    "intervalMinutes": 1440
+  },
+  {
+    "id": "egamersworld-vrs-may-2026-crosscheck",
+    "query": "CS2 Valve Regional Standings May 2026 Vitality apEX flameZ mezii ropz ZywOo",
+    "sourceType": "public_fact",
+    "trusted": true,
+    "autoCommitEligible": true,
+    "intervalMinutes": 720
+  },
+  {
+    "id": "bilibili-machine-recording-title-index",
+    "query": "玩机器Machine录播 小众宝藏结晶直播间 6657 斗鱼6657 直播回放",
+    "sourceType": "public_summary",
+    "trusted": false,
+    "autoCommitEligible": false,
+    "intervalMinutes": 1440
   }
 ]

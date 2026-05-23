@@ -8,6 +8,7 @@ const kb = require('../dist/plugins/knowledge-base');
 const { configureGates, getGateStats, withGate } = require('../dist/plugins/concurrency');
 const search = require('../dist/plugins/web-search');
 const tts = require('../dist/plugins/tts');
+const stt = require('../dist/plugins/stt');
 const aiChat = require('../dist/plugins/ai-chat');
 const imageCache = require('../dist/plugins/image-cache');
 const { registerPokeListener } = require('../dist/plugins/poke');
@@ -70,6 +71,9 @@ async function testConfig() {
   assert.strictEqual(config.ai.image_cache_max_mb, 512);
   assert.strictEqual(config.ai.image_cache_max_file_mb, 2);
   assert.strictEqual(config.ai.image_cache_max_age_hours, 72);
+  assert.strictEqual(config.ai.image_download_max_redirects, 3);
+  assert.strictEqual(config.ai.image_cache_cleanup_interval_minutes, 30);
+  assert.strictEqual(config.ai.image_cache_max_files, 5000);
   assert.strictEqual(config.ai.vision_payload_mode, 'auto');
   assert.strictEqual(config.ai.tts_model, 'mimo-v2.5-tts');
   assert.strictEqual(config.ai.tts_provider, 'auto');
@@ -80,12 +84,15 @@ async function testConfig() {
   assert.strictEqual(config.ai.tts_clone_enabled, true);
   assert.strictEqual(config.ai.tts_sample_path, 'voice_sample.mp3');
   assert.strictEqual(config.ai.tts_max_chars, 120);
+  assert.strictEqual(config.ai.tts_send_mode, 'base64');
   assert.strictEqual(config.ai.tts_timeout_ms, 20000);
   assert.strictEqual(config.ai.tts_cache_hours, 24);
   assert.strictEqual(config.ai.tts_sample_max_mb, 8);
   assert.strictEqual(config.ai.enable_stt, true);
   assert.strictEqual(config.ai.stt_model, 'mimo-v2.5-pro');
   assert.strictEqual(config.ai.stt_provider, 'auto');
+  assert.strictEqual(config.ai.stt_payload_mode, 'auto');
+  assert.strictEqual(config.ai.stt_record_format, 'mp3');
   assert.strictEqual(config.ai.stt_local_command, '');
   assert.strictEqual(config.ai.stt_local_timeout_ms, 15000);
   assert.strictEqual(config.ai.stt_max_records, 1);
@@ -94,7 +101,12 @@ async function testConfig() {
   assert.strictEqual(config.ai.stt_cache_hours, 24);
   assert.strictEqual(config.ai.search_negative_cache_seconds, 60);
   assert.strictEqual(config.ai.knowledge_aggressive_auto_commit, true);
+  assert.strictEqual(config.ai.knowledge_quarantine_long_quotes, false);
+  assert.strictEqual(config.ai.knowledge_expansion_enabled, true);
+  assert.strictEqual(config.ai.knowledge_expansion_batch_max_sources, 12);
   assert.strictEqual(config.ai.knowledge_auto_batch_max_sources, 6);
+  assert.strictEqual(config.ai.gate_passive_queue_max, 20);
+  assert.strictEqual(config.ai.context_compression_defer_when_busy, true);
   assert.ok(config.ai.trigger_keywords.includes('抽道具'), 'example trigger keywords should include daily CS utility');
   assert.ok(config.ai.trigger_keywords.includes('今日套餐'), 'example trigger keywords should include daily CS loadout');
   assert.strictEqual(hasUsableApiKey('在这里填入你的API密钥'), false, 'example placeholder key should not be treated as usable');
@@ -137,6 +149,24 @@ async function testKnowledge() {
   assert.ok(batches.some((batch) => batch.batchId === batchId), 'batch should be logged');
   const rollback = kb.rollbackKnowledgeBatch(batchId);
   assert.ok(rollback.removedBlocks >= 1, 'rollback should remove committed block');
+
+  const reviewBatch = `smoke_review_${Date.now().toString(36)}`;
+  const reviewCandidate = kb.previewKnowledgeCandidate(
+    'smoke 礼物 长句 待核验',
+    '这是公开搜索摘要，不是原话。礼物感谢只写拟态模板 https://example.com/review-smoke',
+    'smoke-review',
+    { sourceType: 'public_summary', confidence: 'medium', autoCommitEligible: true, risk: 'needs_source' },
+  );
+  const reviewAction = kb.autoCommitKnowledgeCandidate(reviewCandidate, { batchId: reviewBatch, maxBlockChars: 800 });
+  assert.strictEqual(reviewAction, 'committed', 'review/risky candidates should still commit to main knowledge sections');
+  const reviewRollback = kb.rollbackKnowledgeBatch(reviewBatch);
+  assert.ok(reviewRollback.removedBlocks >= 1, 'review candidate rollback should remove main knowledge block');
+
+  const paths = kb.getKnowledgeRuntimePaths();
+  const quarantineFiles = fs.existsSync(paths.quarantineDir)
+    ? fs.readdirSync(paths.quarantineDir).filter((file) => file.includes('smoke')).length
+    : 0;
+  assert.strictEqual(quarantineFiles, 0, 'knowledge auto write should not create quarantine files');
 }
 
 async function testKnowledgeSourceState() {
@@ -277,6 +307,41 @@ async function testImageStats() {
   const stats = imageCache.getCacheStats();
   assert.ok(Object.prototype.hasOwnProperty.call(stats, 'downloadFailures'), 'image stats should expose download failures');
   assert.ok(Object.prototype.hasOwnProperty.call(stats, 'lastError'), 'image stats should expose last error');
+  assert.ok(Object.prototype.hasOwnProperty.call(stats, 'maxRedirects'), 'image stats should expose max redirects');
+  assert.ok(Object.prototype.hasOwnProperty.call(stats, 'cleanupIntervalMinutes'), 'image stats should expose cleanup interval');
+}
+
+async function testImageRedirectAndCleanup() {
+  const jpeg = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xdb]), Buffer.alloc(220), Buffer.from([0xff, 0xd9])]);
+  const server = http.createServer((req, res) => {
+    if (req.url.startsWith('/redirect')) {
+      res.writeHead(302, { Location: '/image.jpg' });
+      res.end();
+      return;
+    }
+    res.writeHead(200, { 'Content-Type': 'image/jpeg' });
+    res.end(jpeg);
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  try {
+    imageCache.configureImageCache({
+      image_cache_max_mb: 20,
+      image_cache_max_file_mb: 0.5,
+      image_cache_max_age_hours: 1,
+      image_download_max_redirects: 3,
+      image_cache_cleanup_interval_minutes: 5,
+      image_cache_max_files: 50,
+    });
+    const dataUrl = await imageCache.getImageDataUrl(`http://127.0.0.1:${address.port}/redirect?t=${Date.now()}`);
+    assert.ok(dataUrl && dataUrl.startsWith('data:image/jpeg;base64,'), 'image cache should follow redirects and return data URL');
+    imageCache.cleanupCache();
+    const stats = imageCache.getCacheStats();
+    assert.strictEqual(stats.maxRedirects, 3);
+    assert.ok(stats.lastCleanupAt > 0, 'manual image cleanup should update cleanup timestamp');
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
 }
 
 async function testGates() {
@@ -307,6 +372,104 @@ async function testGates() {
   }, true);
   await Promise.all([blocker, passive, forced]);
   assert.deepStrictEqual(order, ['blocker', 'forced', 'passive'], 'priority gate jobs should run before queued passive jobs');
+
+  configureGates({ ai: 1, search: 2, vision: 1, tts: 1, stt: 1, passiveQueueMax: 1 });
+  let release;
+  const cappedOrder = [];
+  const held = withGate('ai', async () => {
+    await new Promise((resolve) => { release = resolve; });
+    cappedOrder.push('held');
+  });
+  await new Promise((resolve) => setTimeout(resolve, 1));
+  const queued = withGate('ai', async () => {
+    cappedOrder.push('queued');
+  });
+  await assert.rejects(
+    () => withGate('ai', async () => 'rejected'),
+    /passive queue full/,
+    'passive gate jobs should be rejected after passive queue cap',
+  );
+  const priority = withGate('ai', async () => {
+    cappedOrder.push('priority');
+  }, true);
+  release();
+  await Promise.all([held, queued, priority]);
+  assert.deepStrictEqual(cappedOrder, ['held', 'priority', 'queued'], 'priority should bypass passive queue cap and run before queued passive job');
+  assert.ok(getGateStats().ai.rejectedPassive >= 1, 'gate stats should count rejected passive jobs');
+}
+
+function makeWavBuffer() {
+  const samples = Buffer.alloc(320);
+  const header = Buffer.alloc(44);
+  header.write('RIFF', 0);
+  header.writeUInt32LE(36 + samples.length, 4);
+  header.write('WAVE', 8);
+  header.write('fmt ', 12);
+  header.writeUInt32LE(16, 16);
+  header.writeUInt16LE(1, 20);
+  header.writeUInt16LE(1, 22);
+  header.writeUInt32LE(16000, 24);
+  header.writeUInt32LE(32000, 28);
+  header.writeUInt16LE(2, 32);
+  header.writeUInt16LE(16, 34);
+  header.write('data', 36);
+  header.writeUInt32LE(samples.length, 40);
+  return Buffer.concat([header, samples]);
+}
+
+async function testSttPayloadModesAndRedirect() {
+  const config = readConfig();
+  const wav = makeWavBuffer();
+  const requests = [];
+  const server = http.createServer((req, res) => {
+    if (req.url.startsWith('/audio-redirect')) {
+      res.writeHead(302, { Location: '/audio.wav' });
+      res.end();
+      return;
+    }
+    if (req.url.startsWith('/audio.wav')) {
+      res.writeHead(200, { 'Content-Type': 'audio/wav' });
+      res.end(wav);
+      return;
+    }
+    let body = '';
+    req.on('data', (chunk) => { body += chunk.toString(); });
+    req.on('end', () => {
+      const json = JSON.parse(body);
+      requests.push(json);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ choices: [{ message: { content: `听写-${requests.length}` } }] }));
+    });
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  try {
+    config.ai.api_url = `http://127.0.0.1:${address.port}/v1/chat/completions`;
+    config.ai.api_key = 'sk-live-test-key-1234567890';
+    config.ai.enable_stt = true;
+    config.ai.stt_provider = 'api';
+    config.ai.stt_timeout_ms = 5000;
+    config.ai.image_download_max_redirects = 3;
+
+    config.ai.stt_payload_mode = 'input_audio';
+    let result = await stt.transcribeRecords(config.ai, [`http://127.0.0.1:${address.port}/audio-redirect?mode=input_audio&t=${Date.now()}`]);
+    assert.deepStrictEqual(result, ['听写-1']);
+    assert.ok(JSON.stringify(requests.at(-1)).includes('input_audio'), 'input_audio mode should send input_audio payload');
+
+    config.ai.stt_payload_mode = 'audio_url';
+    result = await stt.transcribeRecords(config.ai, [`http://127.0.0.1:${address.port}/audio-redirect?mode=audio_url&t=${Date.now()}`]);
+    assert.deepStrictEqual(result, ['听写-2']);
+    assert.ok(JSON.stringify(requests.at(-1)).includes('audio_url'), 'audio_url mode should send audio_url payload');
+
+    config.ai.stt_payload_mode = 'auto';
+    result = await stt.transcribeRecords(config.ai, [`http://127.0.0.1:${address.port}/audio-redirect?mode=auto&t=${Date.now()}`]);
+    assert.deepStrictEqual(result, ['听写-3']);
+    const stats = stt.getSttStats(config.ai);
+    assert.strictEqual(stats.payloadMode, 'auto');
+    assert.ok(['input_audio', 'audio_url'].includes(stats.lastPayloadMode), 'STT stats should expose last payload mode');
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
 }
 
 async function testSearchSingleFlight() {
@@ -571,6 +734,106 @@ async function testExplicitVoiceReply() {
     await waitFor(() => sent.length === 1, 'explicit voice reply');
     assert.strictEqual(sent[0].message.find((seg) => seg.type === 'reply')?.data.id, '901');
     assert.ok(sent[0].message.some((seg) => seg.type === 'record'), 'explicit voice request should send record segment');
+    const record = sent[0].message.find((seg) => seg.type === 'record');
+    assert.ok(record.data.file.startsWith('base64://'), 'Docker NapCat default should send TTS as base64 record segment');
+  } finally {
+    aiChat.__setLLMCallerForTests();
+    aiChat.shutdownAiChat();
+  }
+}
+
+async function testOpaqueOneBotRecordResolution() {
+  const config = makeConfigForHandler();
+  config.ai.enable_stt = true;
+  config.ai.stt_provider = 'local';
+  config.ai.stt_record_format = 'mp3';
+  config.ai.stt_local_command = `"${process.execPath}" -e "const fs=require('fs');fs.writeFileSync(process.env.QQBOT_STT_OUTPUT,'听写到了这段语音','utf-8');console.log('听写到了这段语音');"`;
+  const sent = [];
+  const apiCalls = [];
+  const wavBase64 = makeWavBuffer().toString('base64');
+  const bot = {
+    getConfig: () => config,
+    sendGroupMessage: async (groupId, message, onMessageId) => {
+      sent.push({ groupId, message });
+      if (onMessageId) onMessageId(92_000 + sent.length);
+      return true;
+    },
+    callApiAsync: async (action, params) => {
+      apiCalls.push({ action, params });
+      if (action === 'get_record') {
+        return { retcode: 0, data: { base64: wavBase64 } };
+      }
+      return { retcode: 0, data: {} };
+    },
+  };
+  const handler = new MessageHandler(bot);
+  handler.use(aiChat.aiChatPlugin);
+
+  aiChat.__setLLMCallerForTests(async (_config, messages) => {
+    const current = messages[messages.length - 1];
+    const content = typeof current.content === 'string'
+      ? current.content
+      : current.content.map((item) => item.text || '').join('\n');
+    assert.ok(content.includes('语音数量: 1'), 'opaque record should be counted');
+    assert.ok(content.includes('语音听写: 听写到了这段语音'), 'opaque record should be resolved and transcribed');
+    return '听到了 这段语音链路是通的';
+  });
+
+  try {
+    handler.handleEvent(makeEvent(902, 92, '', [{ type: 'record', data: { file: 'opaque-record-token.amr' } }]));
+    await waitFor(() => sent.length === 1, 'opaque record reply');
+    assert.ok(
+      apiCalls.some((call) => call.action === 'get_record' && call.params.file === 'opaque-record-token.amr' && call.params.out_format === 'mp3'),
+      'opaque OneBot record should call get_record with configured output format',
+    );
+    assert.strictEqual(sent[0].message.find((seg) => seg.type === 'reply')?.data.id, '902');
+  } finally {
+    aiChat.__setLLMCallerForTests();
+    aiChat.shutdownAiChat();
+  }
+}
+
+async function testOpaqueOneBotImageResolution() {
+  const config = makeConfigForHandler();
+  config.ai.enable_vision = true;
+  config.ai.vision_payload_mode = 'auto';
+  const sent = [];
+  const apiCalls = [];
+  const jpgBase64 = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xdb]), Buffer.alloc(220), Buffer.from([0xff, 0xd9])]).toString('base64');
+  const bot = {
+    getConfig: () => config,
+    sendGroupMessage: async (groupId, message, onMessageId) => {
+      sent.push({ groupId, message });
+      if (onMessageId) onMessageId(93_000 + sent.length);
+      return true;
+    },
+    callApiAsync: async (action, params) => {
+      apiCalls.push({ action, params });
+      if (action === 'get_image') {
+        return { retcode: 0, data: { base64: jpgBase64 } };
+      }
+      return { retcode: 0, data: {} };
+    },
+  };
+  const handler = new MessageHandler(bot);
+  handler.use(aiChat.aiChatPlugin);
+
+  aiChat.__setLLMCallerForTests(async (_config, messages, useVision) => {
+    assert.strictEqual(useVision, true, 'opaque image should enable vision payload');
+    const current = messages[messages.length - 1];
+    assert.ok(Array.isArray(current.content), 'vision message should be multimodal');
+    assert.ok(current.content.some((part) => part.type === 'image_url'), 'vision message should include an image part');
+    return '图看到了 识图链路是通的';
+  });
+
+  try {
+    handler.handleEvent(makeEvent(903, 93, ' 看下图', [{ type: 'image', data: { file: 'opaque-image-token.jpg' } }]));
+    await waitFor(() => sent.length === 1, 'opaque image reply');
+    assert.ok(
+      apiCalls.some((call) => call.action === 'get_image' && call.params.file === 'opaque-image-token.jpg'),
+      'opaque OneBot image should call get_image',
+    );
+    assert.strictEqual(sent[0].message.find((seg) => seg.type === 'reply')?.data.id, '903');
   } finally {
     aiChat.__setLLMCallerForTests();
     aiChat.shutdownAiChat();
@@ -877,10 +1140,14 @@ async function main() {
   await testLocalTtsProvider();
   await testApiTtsProvider();
   await testImageStats();
+  await testImageRedirectAndCleanup();
   await testGates();
+  await testSttPayloadModesAndRedirect();
   await testSearchSingleFlight();
   await testMessageReplyTargeting();
   await testExplicitVoiceReply();
+  await testOpaqueOneBotRecordResolution();
+  await testOpaqueOneBotImageResolution();
   await testPassiveTriggerFiltering();
   await testPrivateMessages();
   await testRepeaterAndPoke();

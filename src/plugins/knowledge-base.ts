@@ -25,8 +25,8 @@ export interface KnowledgeCandidate {
   confidence: 'high' | 'medium' | 'low';
   evidenceUrls: string[];
   autoCommitEligible: boolean;
-  risk: 'safe' | 'review' | 'quarantine';
-  status: 'pending' | 'committed' | 'quarantined' | 'dropped';
+  risk: 'safe' | 'review' | 'needs_source';
+  status: 'pending' | 'committed' | 'dropped';
 }
 
 export interface KnowledgeSource {
@@ -71,13 +71,12 @@ interface KnowledgeAutoLogEntry {
   hash: string;
   evidenceUrls: string[];
   createdAt: number;
-  status: 'committed' | 'quarantined' | 'rolled_back';
+  status: 'committed' | 'rolled_back';
   chars: number;
 }
 
 const KNOWLEDGE_DIR = path.resolve(__dirname, '..', '..', 'knowledge');
 const INBOX_DIR = path.join(KNOWLEDGE_DIR, 'inbox');
-const QUARANTINE_DIR = path.join(KNOWLEDGE_DIR, 'quarantine');
 const DEFAULT_KNOWLEDGE_FILE = path.join(KNOWLEDGE_DIR, 'wanjier.md');
 const SOURCES_FILE = path.join(KNOWLEDGE_DIR, 'sources.json');
 const AUDIT_FILE = path.join(KNOWLEDGE_DIR, 'audit.json');
@@ -115,7 +114,6 @@ let selectMisses = 0;
 let searchHits = 0;
 let searchMisses = 0;
 let autoCommitted = 0;
-let quarantined = 0;
 let autoEnabled = true;
 let lastAutoRefreshAt = 0;
 let lastAuditReport: KnowledgeAuditReport | null = null;
@@ -124,7 +122,6 @@ const pendingCandidates: Map<string, KnowledgeCandidate> = new Map();
 function ensureKnowledgeDirs(): void {
   if (!fs.existsSync(KNOWLEDGE_DIR)) fs.mkdirSync(KNOWLEDGE_DIR, { recursive: true });
   if (!fs.existsSync(INBOX_DIR)) fs.mkdirSync(INBOX_DIR, { recursive: true });
-  if (!fs.existsSync(QUARANTINE_DIR)) fs.mkdirSync(QUARANTINE_DIR, { recursive: true });
   ensureSourcesFile();
 }
 
@@ -156,7 +153,7 @@ export function getKnowledgeRuntimePaths(): { knowledgeDir: string; mainFile: st
     knowledgeDir: KNOWLEDGE_DIR,
     mainFile: DEFAULT_KNOWLEDGE_FILE,
     sourcesFile: SOURCES_FILE,
-    quarantineDir: QUARANTINE_DIR,
+    quarantineDir: path.join(KNOWLEDGE_DIR, 'quarantine'),
     auditFile: AUDIT_FILE,
     inboxDir: INBOX_DIR,
   };
@@ -255,7 +252,6 @@ export function listKnowledgeBatches(limit: number = 8): KnowledgeBatchSummary[]
     current.createdAt = Math.min(current.createdAt, entry.createdAt);
     current.entries++;
     if (entry.status === 'committed') current.committed++;
-    if (entry.status === 'quarantined') current.quarantined++;
     if (entry.status === 'rolled_back') current.rolledBack++;
     groups.set(entry.batchId, current);
   }
@@ -328,9 +324,9 @@ function escapeRegExp(text: string): string {
 
 function detectRisk(text: string, sourceType: KnowledgeCandidate['sourceType']): KnowledgeCandidate['risk'] {
   if (sourceType === 'local_transcript') return 'review';
-  if (/礼物|感谢|原话|转写|逐字|完整|台词|切片/.test(text)) return 'quarantine';
+  if (/礼物|感谢|原话|转写|逐字|完整|台词|切片/.test(text)) return 'review';
   const longLine = text.split(/\r?\n/).some((line) => line.trim().length > 220);
-  if (longLine) return 'quarantine';
+  if (longLine) return 'needs_source';
   return 'safe';
 }
 
@@ -453,7 +449,7 @@ function createCandidate(
     sourceType,
     confidence: meta.confidence || (sourceType === 'public_fact' ? 'high' : 'medium'),
     evidenceUrls: meta.evidenceUrls || extractUrls(markdown + '\n' + source),
-    autoCommitEligible: meta.autoCommitEligible === true && risk === 'safe',
+    autoCommitEligible: meta.autoCommitEligible === true,
     risk,
     status: meta.status || 'pending',
   };
@@ -467,14 +463,52 @@ function candidateToMarkdown(candidate: KnowledgeCandidate): string {
     ? candidate.evidenceUrls.map((url) => `- 证据链接：${url}`).join('\n')
     : '- 证据链接：暂无';
   return [
-    candidate.markdown.trim(),
+    retitleCandidateMarkdown(candidate).trim(),
     '',
     `- 知识来源类型：${candidate.sourceType}`,
     `- 置信度：${candidate.confidence}`,
-    `- 风险：${candidate.risk}`,
+    `- 核验状态：${candidate.risk === 'safe' ? '已按公开事实/短摘要写入' : '待核验，回复时不得当作逐字原话'}`,
+    `- 内容类型：${knowledgeContentType(candidate)}`,
     `- 自动写入资格：${candidate.autoCommitEligible ? '是' : '否'}`,
     evidence,
   ].join('\n');
+}
+
+function knowledgeContentType(candidate: KnowledgeCandidate): string {
+  if (candidate.sourceType === 'public_fact') return '公开核验事实';
+  if (candidate.sourceType === 'local_transcript') return '本地素材摘录';
+  if (candidate.sourceType === 'style_template') return '直播语态模板';
+  if (/礼物|感谢/.test(candidate.query + candidate.markdown)) return '礼物拟态模板';
+  if (/bot|机器人|身份|本人|授权/.test(candidate.query + candidate.markdown)) return '身份问询话术';
+  if (/切片|录播|弹幕|语录|名场面/.test(candidate.query + candidate.markdown)) return '公开切片摘要';
+  return '待核验语料';
+}
+
+function sectionForCandidate(candidate: KnowledgeCandidate): string {
+  const type = knowledgeContentType(candidate);
+  return type === '公开核验事实'
+    ? '公开核验事实 - 自动扩写'
+    : type === '本地素材摘录'
+      ? '本地素材摘录 - 主库'
+      : type === '直播语态模板'
+        ? '直播语态模板 - 自动扩写'
+        : type === '礼物拟态模板'
+          ? '礼物拟态模板 - 自动扩写'
+          : type === '身份问询话术'
+            ? '身份问询话术 - 自动扩写'
+            : type === '公开切片摘要'
+              ? '公开切片摘要 - 自动扩写'
+              : '待核验语料 - 主库';
+}
+
+function retitleCandidateMarkdown(candidate: KnowledgeCandidate): string {
+  const lines = candidate.markdown.trim().split(/\r?\n/);
+  const sectionTitle = sectionForCandidate(candidate);
+  if (lines[0]?.startsWith('## ')) {
+    lines[0] = `## ${sectionTitle}`;
+    return lines.join('\n');
+  }
+  return [`## ${sectionTitle}`, '', candidate.markdown.trim()].join('\n');
 }
 
 function candidateBlock(candidate: KnowledgeCandidate, batchId: string, hash: string, maxChars: number): string {
@@ -490,27 +524,6 @@ function hasCommittedHash(hash: string): boolean {
   loadKnowledge();
   if (cachedFullText.includes(`hash=${hash}`)) return true;
   return readAutoLog().some((entry) => entry.hash === hash && entry.status === 'committed');
-}
-
-function quarantineCandidate(candidate: KnowledgeCandidate, reason: string): KnowledgeCandidate {
-  ensureKnowledgeDirs();
-  const filename = `${candidate.id}-${safeFilename(candidate.title)}.md`;
-  const filepath = path.join(QUARANTINE_DIR, filename);
-  const content = [
-    `# ${candidate.title}`,
-    '',
-    `- 隔离原因：${reason}`,
-    `- 来源：${candidate.source}`,
-    `- 查询：${candidate.query}`,
-    `- 创建时间：${new Date(candidate.createdAt).toISOString()}`,
-    '',
-    candidateToMarkdown(candidate),
-  ].join('\n');
-  fs.writeFileSync(filepath, content, 'utf-8');
-  candidate.status = 'quarantined';
-  pendingCandidates.delete(candidate.id);
-  quarantined++;
-  return candidate;
 }
 
 export function getKnowledgeStats(): {
@@ -533,9 +546,6 @@ export function getKnowledgeStats(): {
   sourceStates: number;
 } {
   loadKnowledge();
-  const quarantineFiles = fs.existsSync(QUARANTINE_DIR)
-    ? fs.readdirSync(QUARANTINE_DIR).filter((file) => file.endsWith('.md')).length
-    : 0;
   const batches = listKnowledgeBatches(100);
   const sourceStates = Object.keys(readSourceState()).length;
   return {
@@ -547,9 +557,9 @@ export function getKnowledgeStats(): {
     searchHits,
     searchMisses,
     candidates: pendingCandidates.size,
-    quarantineFiles,
+    quarantineFiles: 0,
     autoCommitted,
-    quarantined,
+    quarantined: 0,
     autoEnabled,
     lastAutoRefreshAt,
     auditIssues: lastAuditReport?.issues.length || 0,
@@ -730,7 +740,7 @@ export function previewInboxCandidates(mode: 'summary' | 'full' = 'summary'): Kn
       sourceType: 'local_transcript',
       confidence: 'medium',
       autoCommitEligible: false,
-      risk: mode === 'full' ? 'quarantine' : 'review',
+      risk: mode === 'full' ? 'needs_source' : 'review',
       evidenceUrls: extractUrls(raw),
     }));
   }
@@ -757,9 +767,6 @@ export function commitKnowledgeCandidate(id: string): KnowledgeCandidate | null 
   ensureKnowledgeDirs();
   const candidate = pendingCandidates.get(id);
   if (!candidate) return null;
-  if (candidate.risk === 'quarantine') {
-    return quarantineCandidate(candidate, '候选风险为 quarantine，禁止直接写入主库');
-  }
   const suffix = `\n\n${candidateToMarkdown(candidate)}\n`;
   fs.appendFileSync(DEFAULT_KNOWLEDGE_FILE, suffix, 'utf-8');
   candidate.status = 'committed';
@@ -772,26 +779,10 @@ export function commitKnowledgeCandidate(id: string): KnowledgeCandidate | null 
 export function autoCommitKnowledgeCandidate(
   candidate: KnowledgeCandidate,
   options: { batchId?: string; maxBlockChars?: number } = {},
-): 'committed' | 'quarantined' | 'pending' {
+): 'committed' | 'pending' {
   ensureKnowledgeDirs();
   const batchId = options.batchId || `manual_${Date.now().toString(36)}`;
   const hash = hashCandidate(candidate);
-  if (candidate.risk === 'quarantine') {
-    quarantineCandidate(candidate, '自动刷新识别为长语录/礼物/转写风险');
-    appendAutoLog({
-      batchId,
-      candidateId: candidate.id,
-      title: candidate.title,
-      query: candidate.query,
-      source: candidate.source,
-      hash,
-      evidenceUrls: candidate.evidenceUrls,
-      createdAt: Date.now(),
-      status: 'quarantined',
-      chars: candidate.markdown.length,
-    });
-    return 'quarantined';
-  }
   if (!candidate.autoCommitEligible) return 'pending';
   loadKnowledge();
   if (hasCommittedHash(hash)) {
@@ -855,10 +846,17 @@ export function rollbackKnowledgeBatch(batchId: string): { removedBlocks: number
   return { removedBlocks, updatedEntries };
 }
 
-export function quarantineKnowledgeCandidate(id: string, reason: string = '管理员手动隔离'): KnowledgeCandidate | null {
+export function quarantineKnowledgeCandidate(id: string, reason: string = '管理员手动标为待核验'): KnowledgeCandidate | null {
   const candidate = pendingCandidates.get(id);
   if (!candidate) return null;
-  return quarantineCandidate(candidate, reason);
+  candidate.risk = 'needs_source';
+  candidate.autoCommitEligible = false;
+  candidate.markdown = [
+    candidate.markdown,
+    '',
+    `- 待核验原因：${reason}`,
+  ].join('\n');
+  return commitKnowledgeCandidate(id);
 }
 
 export function setKnowledgeAutoEnabled(enabled: boolean): void {
@@ -917,16 +915,13 @@ export function auditKnowledge(): KnowledgeAuditReport {
     }
   }
 
-  const quarantineFiles = fs.existsSync(QUARANTINE_DIR)
-    ? fs.readdirSync(QUARANTINE_DIR).filter((file) => file.endsWith('.md')).length
-    : 0;
   const report: KnowledgeAuditReport = {
     generatedAt: Date.now(),
     issues,
     sections: cachedSections.length,
     chars: cachedFullText.length,
     candidates: pendingCandidates.size,
-    quarantineFiles,
+    quarantineFiles: 0,
   };
   fs.writeFileSync(AUDIT_FILE, JSON.stringify(report, null, 2), 'utf-8');
   lastAuditReport = report;

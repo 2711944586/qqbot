@@ -71,16 +71,14 @@ export const diagPlugin: Plugin = {
     const sources = loadKnowledgeSources();
     if (sources.length >= 4) ok.push(`公开来源 ${sources.length} 个`);
     else risk.push(`公开来源偏少: ${sources.length}`);
-    if (ai.knowledge_quarantine_long_quotes !== false) ok.push('长语录/转写隔离开启');
-    else risk.push('长语录/转写隔离关闭，主库污染风险高');
+    if (ai.knowledge_quarantine_long_quotes === false) ok.push('知识写入策略为主库分层，风险内容标记待核验');
+    else risk.push('knowledge_quarantine_long_quotes 仍是旧策略，建议改 false 并使用主库待核验分区');
 
     const audit = auditKnowledge();
     const auditHard = audit.issues.filter((item) => item.level === 'hard').length;
     const auditRisk = audit.issues.filter((item) => item.level === 'risk').length;
     if (auditHard > 0) hard.push(`知识库 hard 问题 ${auditHard} 个`);
     if (auditRisk > 0) risk.push(`知识库 risk 问题 ${auditRisk} 个`);
-    if (audit.quarantineFiles > 0) suggestions.push(`隔离候选 ${audit.quarantineFiles} 个，后续可人工整理为摘要`);
-
     const aiStats = getAiChatStats();
     const search = getSearchStats();
     const image = getCacheStats();
@@ -102,7 +100,7 @@ export const diagPlugin: Plugin = {
         fs.accessSync(paths.knowledgeDir, fs.constants.W_OK);
         liveLines.push('live写盘: knowledge目录可写');
       } catch {
-        hard.push('knowledge目录不可写，自动审计/隔离/日志会失败');
+        hard.push('knowledge目录不可写，自动审计/主库写入/日志会失败');
       }
     }
 
@@ -117,16 +115,17 @@ export const diagPlugin: Plugin = {
       ...(risk.length > 0 ? risk.slice(0, 8).map((item) => `- ${item}`) : ['- 暂无明显风险']),
       `建议: ${suggestions.length}`,
       ...suggestions.slice(0, 5).map((item) => `? ${item}`),
-      `知识审计: ${audit.sections}块 ${audit.chars}字 问题${audit.issues.length} 隔离${audit.quarantineFiles}`,
+      `知识审计: ${audit.sections}块 ${audit.chars}字 问题${audit.issues.length} 主库分层`,
       `队列: ${aiStats.pendingJobs}待处理 / ${aiStats.forcedJobs}强触发`,
       `并发: AI ${aiStats.gates.ai.active}/${aiStats.gates.ai.limit}+${aiStats.gates.ai.queued} 搜索 ${aiStats.gates.search.active}/${aiStats.gates.search.limit}+${aiStats.gates.search.queued} 图${aiStats.gates.vision.active}/${aiStats.gates.vision.limit}+${aiStats.gates.vision.queued} 听写${aiStats.gates.stt.active}/${aiStats.gates.stt.limit}+${aiStats.gates.stt.queued} TTS${aiStats.gates.tts.active}/${aiStats.gates.tts.limit}+${aiStats.gates.tts.queued}`,
+      `Gate背压: 普通拒绝AI${aiStats.gates.ai.rejectedPassive} 搜索${aiStats.gates.search.rejectedPassive} 图${aiStats.gates.vision.rejectedPassive} 听写${aiStats.gates.stt.rejectedPassive} TTS${aiStats.gates.tts.rejectedPassive}`,
       `AI缓存: ${aiStats.replyCacheEntries}条 ${aiStats.replyCacheHits}/${aiStats.replyCacheMisses}`,
       `搜索缓存: ${search.cacheEntries}/${search.maxEntries}条 空${search.negativeEntries} ${search.hits}/${search.misses} 飞行${search.inFlight}`,
-      `图片缓存: ${image.count}张 ${image.sizeMB}/${image.maxSizeMB}MB 单图${image.maxFileMB}MB ${image.hits}/${image.misses} 失败${image.downloadFailures}`,
+      `图片缓存: ${image.count}/${image.maxFiles}张 ${image.sizeMB}/${image.maxSizeMB}MB 单图${image.maxFileMB}MB 跳转${image.maxRedirects} 清理${image.cleanupIntervalMinutes}m ${image.hits}/${image.misses} 失败${image.downloadFailures}`,
       ...(image.lastError ? [`图片最近错误: ${image.lastError}`] : []),
-      `听写: ${stt.enabled ? 'on' : 'off'} ${stt.provider}${stt.localReady ? '/local' : ''} 缓存${stt.cacheFiles}条 ${stt.hits}/${stt.misses} 本地${stt.localRuns} API${stt.apiRuns} 下载失败${stt.downloadMisses} 空转写${stt.transcriptMisses}`,
+      `听写: ${stt.enabled ? 'on' : 'off'} ${stt.provider}${stt.localReady ? '/local' : ''} payload=${stt.payloadMode}/${stt.lastPayloadMode || '-'} record=${stt.recordFormat} 缓存${stt.cacheFiles}条 ${stt.hits}/${stt.misses} 本地${stt.localRuns} API${stt.apiRuns} 下载失败${stt.downloadMisses} 空转写${stt.transcriptMisses}`,
       ...(stt.lastError ? [`听写最近错误: ${stt.lastError}`] : []),
-      `语音: ${voice.provider}${voice.localReady ? '/local' : ''} 缓存${voice.cacheFiles}条 ${voice.hits}/${voice.misses} 本地${voice.localRuns} API${voice.apiRuns} 克隆${voice.cloneEnabled ? (voice.cloneReady ? 'ready' : 'missing') : 'off'} 样本${voice.sampleSizeMB}MB`,
+      `语音: ${voice.provider}${voice.localReady ? '/local' : ''} send=${voice.sendMode} 缓存${voice.cacheFiles}条 ${voice.hits}/${voice.misses} 本地${voice.localRuns} API${voice.apiRuns} 克隆${voice.cloneEnabled ? (voice.cloneReady ? 'ready' : 'missing') : 'off'} 样本${voice.sampleSizeMB}MB`,
       ...(voice.lastMode ? [`语音最近模式: ${voice.lastMode}`] : []),
       ...(voice.lastError ? [`语音最近错误: ${voice.lastError}`] : []),
       ...liveLines,

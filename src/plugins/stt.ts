@@ -12,6 +12,7 @@ let cacheMisses = 0;
 let downloadMisses = 0;
 let transcriptMisses = 0;
 let lastSttError = '';
+let lastSttPayloadMode = '';
 let localSttRuns = 0;
 let apiSttRuns = 0;
 
@@ -28,6 +29,7 @@ function cacheKey(input: string, config: AIConfig): string {
       config.model || '',
       config.api_url || '',
       config.stt_provider || 'api',
+      config.stt_payload_mode || 'auto',
       config.stt_local_command || '',
     ].join('\n'))
     .digest('hex')
@@ -186,7 +188,34 @@ function readLocalRecord(input: string, maxBytes: number): Buffer | null {
   return fs.readFileSync(filepath);
 }
 
-function downloadRecord(url: string, timeoutMs: number, maxBytes: number): Promise<Buffer | null> {
+function readInlineRecord(input: string, maxBytes: number): Buffer | null {
+  try {
+    let raw = '';
+    if (input.startsWith('base64://')) {
+      raw = input.slice('base64://'.length);
+    } else {
+      const match = input.match(/^data:audio\/[^;]+;base64,(.+)$/s);
+      raw = match ? match[1] : '';
+    }
+    if (!raw) return null;
+    const compact = raw.replace(/\s+/g, '');
+    if (!/^[A-Za-z0-9+/_=-]+$/.test(compact)) {
+      setSttError('inline audio is not valid base64');
+      return null;
+    }
+    const buffer = Buffer.from(compact, 'base64');
+    if (buffer.length <= 0 || buffer.length > maxBytes) {
+      setSttError(`inline size out of range: ${buffer.length}/${maxBytes}`);
+      return null;
+    }
+    return buffer;
+  } catch (err) {
+    setSttError(`inline audio read failed: ${err instanceof Error ? err.message : String(err)}`);
+    return null;
+  }
+}
+
+function downloadRecord(url: string, timeoutMs: number, maxBytes: number, redirectCount: number = 0, maxRedirects: number = 3): Promise<Buffer | null> {
   return new Promise((resolve) => {
     let parsed: URL;
     try {
@@ -211,7 +240,29 @@ function downloadRecord(url: string, timeoutMs: number, maxBytes: number): Promi
       path: parsed.pathname + parsed.search,
       headers: { 'User-Agent': 'Mozilla/5.0 (compatible; qqbot/1.0)' },
     }, (res) => {
-      if (res.statusCode && res.statusCode >= 400) {
+      const statusCode = res.statusCode || 0;
+      if ([301, 302, 303, 307, 308].includes(statusCode) && res.headers.location) {
+        if (redirectCount >= maxRedirects) {
+          setSttError(`download redirect limit ${maxRedirects}`);
+          finish(null);
+          res.resume();
+          return;
+        }
+        let nextUrl = '';
+        try {
+          nextUrl = new URL(res.headers.location, parsed).toString();
+        } catch {
+          setSttError('download invalid redirect');
+          finish(null);
+          res.resume();
+          return;
+        }
+        res.resume();
+        void downloadRecord(nextUrl, timeoutMs, maxBytes, redirectCount + 1, maxRedirects).then(finish);
+        return;
+      }
+
+      if (statusCode >= 400) {
         setSttError(`download HTTP ${res.statusCode}`);
         finish(null);
         res.resume();
@@ -248,10 +299,18 @@ function downloadRecord(url: string, timeoutMs: number, maxBytes: number): Promi
 async function getRecordBuffer(input: string, config: AIConfig): Promise<Buffer | null> {
   const maxBytes = Math.max(1, config.stt_max_file_mb || 4) * 1024 * 1024;
   try {
+    const inline = readInlineRecord(input, maxBytes);
+    if (inline) return inline;
     const local = readLocalRecord(input, maxBytes);
     if (local) return local;
     if (!/^https?:\/\//i.test(input)) return null;
-    return await downloadRecord(input, Math.max(3000, config.stt_timeout_ms || 20000), maxBytes);
+    return await downloadRecord(
+      input,
+      Math.max(3000, config.stt_timeout_ms || 20000),
+      maxBytes,
+      0,
+      Math.max(0, Math.min(config.image_download_max_redirects ?? 3, 10)),
+    );
   } catch (err) {
     setSttError(err instanceof Error ? err.message : String(err));
     return null;
@@ -408,6 +467,8 @@ async function callAudioModel(config: AIConfig, buffer: Buffer, mime: string, so
   const text = { type: 'text', text: '请听写这段QQ语音。' };
   const attempts = [
     {
+      mode: 'input_audio' as const,
+      payload: {
       ...base,
       messages: [
         system,
@@ -419,8 +480,11 @@ async function callAudioModel(config: AIConfig, buffer: Buffer, mime: string, so
           ],
         },
       ],
+      },
     },
     {
+      mode: 'audio_url' as const,
+      payload: {
       ...base,
       messages: [
         system,
@@ -432,11 +496,20 @@ async function callAudioModel(config: AIConfig, buffer: Buffer, mime: string, so
           ],
         },
       ],
+      },
     },
   ];
 
-  for (const payload of attempts) {
-    const text = await postAudioPayload(config, payload);
+  const mode = config.stt_payload_mode || 'auto';
+  const selected = mode === 'input_audio'
+    ? attempts.slice(0, 1)
+    : mode === 'audio_url'
+      ? attempts.slice(1, 2)
+      : attempts;
+
+  for (const attempt of selected) {
+    const text = await postAudioPayload(config, attempt.payload);
+    lastSttPayloadMode = attempt.mode;
     if (text) return text;
   }
   return '';
@@ -612,6 +685,9 @@ export function getSttStats(config?: AIConfig): {
   maxRecords: number;
   maxFileMB: number;
   lastError: string;
+  payloadMode: string;
+  recordFormat: string;
+  lastPayloadMode: string;
 } {
   let files = 0;
   let size = 0;
@@ -642,5 +718,8 @@ export function getSttStats(config?: AIConfig): {
     maxRecords: config?.stt_max_records || 1,
     maxFileMB: config?.stt_max_file_mb || 4,
     lastError: lastSttError,
+    payloadMode: config?.stt_payload_mode || 'auto',
+    recordFormat: config?.stt_record_format || 'mp3',
+    lastPayloadMode: lastSttPayloadMode,
   };
 }

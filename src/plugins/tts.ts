@@ -693,6 +693,7 @@ export function getVoiceStats(config?: AIConfig): {
   model: string;
   cloneModel: string;
   maxChars: number;
+  sendMode: string;
   lastMode: string;
   lastError: string;
 } {
@@ -718,6 +719,7 @@ export function getVoiceStats(config?: AIConfig): {
     model: config?.tts_model || 'mimo-v2.5-tts',
     cloneModel: config?.tts_clone_model || 'mimo-v2.5-tts-voiceclone',
     maxChars: config?.tts_max_chars || 120,
+    sendMode: config?.tts_send_mode || 'base64',
     lastMode: lastVoiceMode,
     lastError: lastVoiceError,
   };
