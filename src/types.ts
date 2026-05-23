@@ -2,6 +2,8 @@
 
 // ============ 配置 ============
 export interface BotConfig {
+  /** 配置模板版本，用于部署预检和配置漂移提示 */
+  config_version?: number;
   ws_url: string;
   /** 期望登录的Bot QQ号，仅用于启动展示/部署校验；运行时以OneBot self_id为准 */
   bot_qq?: number;

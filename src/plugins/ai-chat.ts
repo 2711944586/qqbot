@@ -1337,6 +1337,7 @@ const knowledgeRefreshQueries = [
 let knowledgeAutoTimer: NodeJS.Timeout | null = null;
 let knowledgeAutoRunning = false;
 let knowledgeAutoConfig: AIConfig | null = null;
+let knowledgeAutoIntervalMinutes = 0;
 let maintenanceTimer: NodeJS.Timeout | null = null;
 const compressionInFlight: Set<string> = new Set();
 
@@ -1662,8 +1663,13 @@ function ensureKnowledgeAutoTimer(config: AIConfig): void {
   configureSearchCache(config);
   configureImageCache(config);
   knowledgeAutoConfig = config;
-  if (knowledgeAutoTimer) return;
   const intervalMinutes = Math.max(30, config.knowledge_auto_interval_minutes || 180);
+  if (knowledgeAutoTimer && intervalMinutes === knowledgeAutoIntervalMinutes) return;
+  if (knowledgeAutoTimer) {
+    clearInterval(knowledgeAutoTimer);
+    knowledgeAutoTimer = null;
+  }
+  knowledgeAutoIntervalMinutes = intervalMinutes;
   knowledgeAutoTimer = setInterval(() => {
     const activeConfig = knowledgeAutoConfig;
     if (!activeConfig || activeConfig.knowledge_auto_update === false || !isKnowledgeAutoEnabled()) return;
@@ -1983,6 +1989,7 @@ export function shutdownAiChat(): void {
   if (knowledgeAutoTimer) {
     clearInterval(knowledgeAutoTimer);
     knowledgeAutoTimer = null;
+    knowledgeAutoIntervalMinutes = 0;
   }
   if (maintenanceTimer) {
     clearInterval(maintenanceTimer);
@@ -2016,6 +2023,8 @@ export function getAiChatStats(): {
   failedCompressions: number;
   lastKnowledgeTitles: string[];
   lastOpenerDeduped: boolean;
+  knowledgeAutoIntervalMinutes: number;
+  knowledgeAutoRunning: boolean;
 } {
   let pendingJobs = 0;
   let forcedJobs = 0;
@@ -2041,6 +2050,8 @@ export function getAiChatStats(): {
     failedCompressions,
     lastKnowledgeTitles: lastReplyTrace?.knowledgeTitles || [],
     lastOpenerDeduped: lastReplyTrace?.openerDeduped === true,
+    knowledgeAutoIntervalMinutes,
+    knowledgeAutoRunning,
   };
 }
 

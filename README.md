@@ -26,7 +26,7 @@
 - TTS 语音缓存：语音输出缓存到 `voice_cache/`，支持 API、本地授权语音引擎、自动兜底三种模式；有授权样本时可尝试供应商 voiceclone。
 - Docker NapCat 默认用 `base64://` 发送 TTS 语音，避免容器读不到宿主机 `voice_cache/` 文件。
 - 统一发送出口允许 emoji，但会过滤 `😂`、`🤣` 和“笑哭”，避免回复里出现固定笑哭表情。
-- `/status` 和 `/diag` 提供队列、缓存、知识库、并发、内存和配置状态。
+- `/status`、`/diag` 和 `/maint` 提供队列、缓存、知识库、并发、内存、配置漂移和清理维护能力。
 
 ## 项目结构
 
@@ -50,7 +50,7 @@ src/
     diag.ts                严格自检
     status.ts              运行状态
     fun.ts                 roll/luck/jrrp/choose/rand/csplayer
-    admin.ts               reload/ban/unban/kick/title
+    admin.ts               reload/maint/ban/unban/kick/title
     help.ts ping.ts stats.ts time.ts poke.ts recall.ts repeater.ts welcome.ts
 knowledge/
   wanjier.md               主知识库
@@ -148,6 +148,7 @@ pm2 restart wanjier --update-env
 
 ```json
 {
+  "config_version": 20260524,
   "ai": {
     "api_url": "https://token-plan-cn.xiaomimimo.com/v1/chat/completions",
     "api_key": "在这里填入你的API密钥",
@@ -207,6 +208,8 @@ pm2 restart wanjier --update-env
   }
 }
 ```
+
+`config_version` 不是功能开关，但它很有用：升级后 `npm run doctor`、`/maint status`、`/maint config` 会拿它和当前示例配置比对。如果 VPS 的 `config.json` 没有这个字段，或者小于 `20260524`，说明你大概率还没同步最新字段和 prompt。
 
 当前 `wanjier` 预设提示词在 `config.example.json` 的 `ai.presets.wanjier.system_prompt`，核心要求是：
 
@@ -511,6 +514,7 @@ nano config.json
 /whoami
 /diag
 /status
+/maint status
 /voice status
 /kb stats
 /quote
@@ -521,6 +525,7 @@ nano config.json
 - `/whoami` 的 `当前bot号` 等于 NapCat 登录号。
 - `/diag` 没有 AI 接口、知识库、配置硬伤。
 - `/status` 里队列没有长期堆积。
+- `/maint status` 里 `config_version` 不偏旧，缓存和闸门数字能正常显示。
 - `/voice status` 显示 `STT: on`、`TTS: on`；如果放了样本，克隆应为 `ready`。
 - `/kb stats` 能看到知识库块数和字数。
 
@@ -611,6 +616,7 @@ pm2 restart wanjier
 
 | 字段 | 说明 |
 |---|---|
+| `config_version` | 配置模板版本，当前为 `20260524`；`npm run doctor` 和 `/maint config` 会用它判断 VPS 配置是否落后 |
 | `ws_url` | OneBot WebSocket 地址，通常是 `ws://127.0.0.1:3001` |
 | `bot_qq` | 期望登录的机器人 QQ，仅用于展示和错号提醒 |
 | `bot_name` | 机器人显示名 |
@@ -1131,9 +1137,13 @@ apt install -y ffmpeg
 | `/status` | 运行状态 |
 | `/diag` | 快速严格自检，不消耗 AI token |
 | `/diag live` | 管理员真实联网/写盘自检 |
+| `/maint status` | 管理员维护面板：配置版本、队列、缓存、知识库、闸门、内存 |
+| `/maint config` | 管理员查看关键运行配置和配置漂移 |
+| `/maint clean` | 管理员清理搜索、图片、TTS、STT 缓存并跑知识库审计 |
+| `/maint gc` | 管理员手动触发 Node GC，需要 PM2 `--expose-gc` |
 | `/time` | 当前时间 |
 | `/stats` | 群统计 |
-| `/reload` | 管理员重载配置 |
+| `/reload` | 管理员重载配置，并重新应用并发闸门、缓存和知识库后台参数 |
 | `/addgroup [群号]` | 管理员加入群白名单 |
 | `/rmgroup <群号>` | 管理员移出群白名单 |
 | `/ban @人 [分钟]` | 管理员禁言 |
@@ -1542,6 +1552,22 @@ npm run cache:clean
 npm run stt:test -- <语音URL或本地文件>
 ```
 
+线上群内维护命令：
+
+```text
+/reload
+/maint status
+/maint config
+/maint clean
+/maint gc
+```
+
+- `/reload` 会重新读取 `config.json`，并立即重新应用 AI/搜索/识图/STT/TTS 全局并发、搜索缓存容量、图片缓存上限、知识库自动刷新配置。改普通配置后不用重启，除非你换了环境变量、Node 参数或 PM2 配置。
+- `/maint status` 是轻量维护面板，适合看队列是否堵住、知识库是否命中、缓存是否膨胀、配置版本是否偏旧。
+- `/maint config` 专门看关键配置漂移，升级后第一时间跑它。
+- `/maint clean` 会清理搜索、图片、TTS、STT 缓存，修剪知识库自动日志，并跑一次知识库审计。
+- `/maint gc` 只做手动内存回收；PM2 的 `ecosystem.config.js` 已经带 `--expose-gc`，如果你不是用这个文件启动，需要把该参数补上。
+
 私聊手动检查：
 
 ```text
@@ -1902,6 +1928,7 @@ pm2 logs wanjier --lines 80
 
 ```json
 {
+  "config_version": 20260524,
   "ai": {
     "temperature": 0.92,
     "trigger_probability": 0.08,
@@ -1916,7 +1943,20 @@ pm2 logs wanjier --lines 80
     "stt_payload_mode": "auto",
     "stt_record_format": "mp3",
     "enable_tts": true,
-    "tts_send_mode": "base64"
+    "tts_send_mode": "base64",
+    "search_cache_max_entries": 1000,
+    "image_cache_max_mb": 512,
+    "image_cache_max_files": 5000,
+    "tts_cache_max_mb": 512,
+    "tts_cache_max_files": 3000,
+    "stt_cache_max_mb": 128,
+    "stt_cache_max_files": 3000,
+    "ai_global_concurrency": 3,
+    "search_global_concurrency": 3,
+    "vision_global_concurrency": 1,
+    "stt_global_concurrency": 1,
+    "tts_global_concurrency": 1,
+    "gate_passive_queue_max": 20
   }
 }
 ```
@@ -1930,6 +1970,16 @@ npm run smoke
 pm2 restart wanjier --update-env
 pm2 logs wanjier --lines 80 --nostream
 ```
+
+如果只是改了 `config.json`，进程已经在线，也可以在群里用管理员账号发：
+
+```text
+/reload
+/maint config
+/maint status
+```
+
+`/reload` 会热应用并发、缓存、知识库自动刷新和多模态开关；`/maint config` 如果还提示 `config_version` 偏旧，就继续对照 `config.example.json` 补字段。
 
 本次升级后建议在 VPS 上额外检查：
 
@@ -1947,6 +1997,7 @@ pm2 logs wanjier --lines 80 --nostream
 ```text
 /ping
 /whoami
+/maint status
 /csplayer
 今天抽个CS选手
 戳一戳 bot

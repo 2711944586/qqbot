@@ -3,6 +3,7 @@ import * as path from 'path';
 import { AIConfig, BotConfig, PresetConfig } from './types';
 
 export const CONFIG_PATH = path.resolve(__dirname, '..', 'config.json');
+export const CONFIG_VERSION = 20260524;
 
 type PlainObject = Record<string, unknown>;
 
@@ -345,6 +346,7 @@ export function normalizeConfig(value: unknown): BotConfig {
   )) || undefined;
 
   return {
+    config_version: Math.floor(asNumber(value.config_version, 0, 0, Number.MAX_SAFE_INTEGER)) || undefined,
     ws_url: wsUrl,
     bot_qq: configuredBotQq,
     bot_name: asString(value.bot_name, 'QQ Bot'),

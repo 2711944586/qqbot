@@ -1,5 +1,24 @@
-import { loadConfig } from '../config';
+import { CONFIG_VERSION, loadConfig } from '../config';
 import { Plugin } from '../types';
+import { getAiChatStats, startAiChatBackgroundTasks } from './ai-chat';
+import { cleanupCache as cleanImageCache, getCacheStats as getImageCacheStats } from './image-cache';
+import { auditKnowledge, getKnowledgeStats, pruneKnowledgeAutoLog } from './knowledge-base';
+import { cleanSttCache, getSttStats } from './stt';
+import { cleanVoiceCache, getVoiceStats } from './tts';
+import { cleanSearchCache, getSearchStats } from './web-search';
+
+function formatDate(timestamp: number): string {
+  if (!timestamp) return '无';
+  return new Date(timestamp).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' });
+}
+
+function formatMb(bytes: number): string {
+  return (bytes / 1024 / 1024).toFixed(1);
+}
+
+function isMaintCommand(command: string | null): boolean {
+  return command === 'maint' || command === 'maintenance' || command === '维护';
+}
 
 export const adminPlugin: Plugin = {
   name: 'admin',
@@ -19,10 +38,108 @@ export const adminPlugin: Plugin = {
       try {
         const newConfig = loadConfig();
         ctx.bot.updateConfig(newConfig);
-        ctx.reply('✅ 配置已重载');
+        startAiChatBackgroundTasks(newConfig.ai);
+        ctx.reply([
+          '配置已重载，运行期参数也重新应用了',
+          `config_version: ${newConfig.config_version || '未填写'} / ${CONFIG_VERSION}`,
+          `预设: ${newConfig.ai.active_preset || '无'}，知识库: ${newConfig.ai.enable_knowledge ? 'on' : 'off'}，搜索: ${newConfig.ai.enable_search ? 'on' : 'off'}`,
+          `并发: AI ${newConfig.ai.ai_global_concurrency} / 搜索 ${newConfig.ai.search_global_concurrency} / 图 ${newConfig.ai.vision_global_concurrency} / 听写 ${newConfig.ai.stt_global_concurrency} / 语音 ${newConfig.ai.tts_global_concurrency}`,
+          '跑 /maint status 可以看当前维护面板',
+        ].join('\n'));
       } catch (err) {
         ctx.reply(`❌ 重载失败: ${err instanceof Error ? err.message : err}`);
       }
+      return true;
+    }
+
+    // ===== 运行维护 =====
+    if (isMaintCommand(ctx.command)) {
+      if (!isAdmin) {
+        ctx.replyAt('权限不足，仅管理员可用');
+        return true;
+      }
+
+      const action = (ctx.args[0] || 'status').toLowerCase();
+      const currentConfig = ctx.bot.getConfig();
+
+      if (action === 'clean' || action === '清理') {
+        const beforeImage = getImageCacheStats();
+        const beforeSearch = getSearchStats();
+        const beforeVoice = getVoiceStats(currentConfig.ai);
+        const beforeStt = getSttStats(currentConfig.ai);
+        cleanSearchCache();
+        cleanImageCache();
+        cleanVoiceCache(currentConfig.ai);
+        cleanSttCache(currentConfig.ai);
+        pruneKnowledgeAutoLog(currentConfig.ai.knowledge_auto_log_retention_days || 14);
+        const audit = auditKnowledge();
+        const afterImage = getImageCacheStats();
+        const afterSearch = getSearchStats();
+        const afterVoice = getVoiceStats(currentConfig.ai);
+        const afterStt = getSttStats(currentConfig.ai);
+        ctx.reply([
+          '维护清理跑完了',
+          `搜索缓存: ${beforeSearch.cacheEntries} -> ${afterSearch.cacheEntries} 条`,
+          `图片缓存: ${beforeImage.count}/${beforeImage.sizeMB}MB -> ${afterImage.count}/${afterImage.sizeMB}MB，最近删${afterImage.lastCleanupDeleted}`,
+          `语音缓存: ${beforeVoice.cacheFiles}/${beforeVoice.sizeMB}MB -> ${afterVoice.cacheFiles}/${afterVoice.sizeMB}MB，最近删${afterVoice.lastCleanupDeleted}`,
+          `听写缓存: ${beforeStt.cacheFiles}/${beforeStt.sizeMB}MB -> ${afterStt.cacheFiles}/${afterStt.sizeMB}MB，最近删${afterStt.lastCleanupDeleted}`,
+          `知识库审计: ${audit.issues.length} 个问题`,
+        ].join('\n'));
+        return true;
+      }
+
+      if (action === 'gc') {
+        if (typeof global.gc !== 'function') {
+          ctx.reply('gc 没开放。PM2 启动 Node 需要 --expose-gc，仓库里的 ecosystem.config.js 已经配了，重启后再试。');
+          return true;
+        }
+        const before = process.memoryUsage();
+        global.gc();
+        const after = process.memoryUsage();
+        ctx.reply([
+          '手动 GC 跑完了',
+          `heap: ${formatMb(before.heapUsed)}MB -> ${formatMb(after.heapUsed)}MB`,
+          `rss: ${formatMb(before.rss)}MB -> ${formatMb(after.rss)}MB`,
+        ].join('\n'));
+        return true;
+      }
+
+      if (action === 'config' || action === '配置') {
+        ctx.reply([
+          '当前运行配置',
+          `config_version: ${currentConfig.config_version || '未填写'} / ${CONFIG_VERSION}${(currentConfig.config_version || 0) < CONFIG_VERSION ? '，建议同步 config.example.json' : ''}`,
+          `bot_qq: ${currentConfig.bot_qq || '未填写'}，self_id: ${ctx.event.self_id}`,
+          `预设: ${currentConfig.ai.active_preset || '无'}，trigger=${currentConfig.ai.trigger_mode}，随机=${currentConfig.ai.trigger_probability}，相关=${currentConfig.ai.related_reply_probability}`,
+          `知识: ${currentConfig.ai.enable_knowledge ? 'on' : 'off'}，强制风格=${currentConfig.ai.knowledge_force_style ? 'on' : 'off'}，max=${currentConfig.ai.knowledge_max_chars}`,
+          `多模态: 识图=${currentConfig.ai.enable_vision ? 'on' : 'off'}，听写=${currentConfig.ai.enable_stt ? 'on' : 'off'}，语音=${currentConfig.ai.enable_tts ? 'on' : 'off'}`,
+          `缓存: 搜索${currentConfig.ai.search_cache_max_entries}条，图片${currentConfig.ai.image_cache_max_mb}MB/${currentConfig.ai.image_cache_max_files}文件，TTS${currentConfig.ai.tts_cache_max_mb}MB，STT${currentConfig.ai.stt_cache_max_mb}MB`,
+          `并发: AI ${currentConfig.ai.ai_global_concurrency} / 搜索 ${currentConfig.ai.search_global_concurrency} / 图 ${currentConfig.ai.vision_global_concurrency} / 听写 ${currentConfig.ai.stt_global_concurrency} / 语音 ${currentConfig.ai.tts_global_concurrency}，普通排队上限 ${currentConfig.ai.gate_passive_queue_max}`,
+        ].join('\n'));
+        return true;
+      }
+
+      const aiStats = getAiChatStats();
+      const imageStats = getImageCacheStats();
+      const searchStats = getSearchStats();
+      const voiceStats = getVoiceStats(currentConfig.ai);
+      const sttStats = getSttStats(currentConfig.ai);
+      const knowledgeStats = getKnowledgeStats();
+      const mem = process.memoryUsage();
+      ctx.reply([
+        '维护状态',
+        `config_version: ${currentConfig.config_version || '未填写'} / ${CONFIG_VERSION}${(currentConfig.config_version || 0) < CONFIG_VERSION ? '，偏旧' : ''}`,
+        `内存: heap ${formatMb(mem.heapUsed)}MB / rss ${formatMb(mem.rss)}MB`,
+        `队列: ${aiStats.queuedGroups}群 待处理${aiStats.pendingJobs} 强触发${aiStats.forcedJobs} 最老${Math.round(aiStats.oldestQueueAgeMs / 1000)}s`,
+        `闸门: AI ${aiStats.gates.ai.active}/${aiStats.gates.ai.limit}+${aiStats.gates.ai.queued} 搜索 ${aiStats.gates.search.active}/${aiStats.gates.search.limit}+${aiStats.gates.search.queued} 图 ${aiStats.gates.vision.active}/${aiStats.gates.vision.limit}+${aiStats.gates.vision.queued} 听写 ${aiStats.gates.stt.active}/${aiStats.gates.stt.limit}+${aiStats.gates.stt.queued} 语音 ${aiStats.gates.tts.active}/${aiStats.gates.tts.limit}+${aiStats.gates.tts.queued}`,
+        `知识库: ${knowledgeStats.sections}块 ${knowledgeStats.chars}字 注入${knowledgeStats.selectHits}/${knowledgeStats.selectMisses} 审计${knowledgeStats.auditIssues} 自动批次${knowledgeStats.batches}`,
+        `知识自动刷新: ${knowledgeStats.autoEnabled && currentConfig.ai.knowledge_auto_update !== false ? 'on' : 'off'} ${aiStats.knowledgeAutoRunning ? '刷新中' : '空闲'} 间隔${aiStats.knowledgeAutoIntervalMinutes || currentConfig.ai.knowledge_auto_interval_minutes || '-'}m`,
+        ...(aiStats.lastKnowledgeTitles.length > 0 ? [`最近知识分区: ${aiStats.lastKnowledgeTitles.join(' / ')}`] : []),
+        `搜索缓存: ${searchStats.cacheEntries}/${searchStats.maxEntries} 空${searchStats.negativeEntries} 命中${searchStats.hits}/${searchStats.misses} 飞行${searchStats.inFlight}`,
+        `图片缓存: ${imageStats.count}/${imageStats.maxFiles} ${imageStats.sizeMB}/${imageStats.maxSizeMB}MB，最近清理${formatDate(imageStats.lastCleanupAt)} 删${imageStats.lastCleanupDeleted}`,
+        `语音缓存: ${voiceStats.cacheFiles}/${voiceStats.maxCacheFiles} ${voiceStats.sizeMB}/${voiceStats.maxCacheMB}MB，最近清理${formatDate(voiceStats.lastCleanupAt)} 删${voiceStats.lastCleanupDeleted}`,
+        `听写缓存: ${sttStats.cacheFiles}/${sttStats.maxCacheFiles} ${sttStats.sizeMB}/${sttStats.maxCacheMB}MB，最近清理${formatDate(sttStats.lastCleanupAt)} 删${sttStats.lastCleanupDeleted}`,
+        '可用: /maint clean 清缓存审计，/maint gc 手动GC，/maint config 看关键配置',
+      ].join('\n'));
       return true;
     }
 

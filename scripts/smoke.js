@@ -15,6 +15,7 @@ const imageCache = require('../dist/plugins/image-cache');
 const { registerPokeListener, __test: pokeTest } = require('../dist/plugins/poke');
 const { repeaterPlugin } = require('../dist/plugins/repeater');
 const { funPlugin, __test: funTest } = require('../dist/plugins/fun');
+const { adminPlugin } = require('../dist/plugins/admin');
 const { pingPlugin } = require('../dist/plugins/ping');
 const { MessageHandler } = require('../dist/handler');
 const sanitize = require('../dist/message-sanitize');
@@ -65,6 +66,7 @@ async function withPreservedFile(filepath, fn) {
 
 async function testConfig() {
   const config = readConfig();
+  assert.strictEqual(config.config_version, 20260524);
   assert.strictEqual(config.ai.trigger_probability, 0.08);
   assert.strictEqual(config.ai.passive_random_min_chars, 4);
   assert.strictEqual(config.ai.passive_random_allow_numeric, false);
@@ -629,6 +631,41 @@ function makeConfigForHandler() {
   config.enabled_groups = [];
   config.admin_qq = [1];
   return config;
+}
+
+async function testAdminMaintenanceCommands() {
+  const config = makeConfigForHandler();
+  const sent = [];
+  const bot = {
+    getConfig: () => config,
+    updateConfig: (nextConfig) => Object.assign(config, nextConfig),
+    sendGroupMessage: async (groupId, message, onMessageId) => {
+      sent.push({ groupId, message });
+      if (onMessageId) onMessageId(39_000 + sent.length);
+      return true;
+    },
+    callApiAsync: async () => ({ retcode: 0, data: {} }),
+  };
+  const handler = new MessageHandler(bot);
+  handler.use(adminPlugin);
+
+  handler.handleEvent(makePlainEvent(801, 1, '/maint status'));
+  await waitFor(() => sent.length === 1, 'maint status');
+  assert.ok(firstText(sent[0].message).includes('维护状态'), 'maint status should render maintenance panel');
+  assert.ok(firstText(sent[0].message).includes('config_version'), 'maint status should show config version');
+
+  handler.handleEvent(makePlainEvent(802, 1, '/maint config'));
+  await waitFor(() => sent.length === 2, 'maint config');
+  assert.ok(firstText(sent[1].message).includes('当前运行配置'), 'maint config should render config drift panel');
+  assert.ok(firstText(sent[1].message).includes('多模态'), 'maint config should show multimodal switches');
+
+  handler.handleEvent(makePlainEvent(803, 1, '/maint clean'));
+  await waitFor(() => sent.length === 3, 'maint clean');
+  assert.ok(firstText(sent[2].message).includes('维护清理跑完了'), 'maint clean should render cleanup summary');
+
+  handler.handleEvent(makePlainEvent(804, 2, '/maint status'));
+  await waitFor(() => sent.length === 4, 'maint non-admin denial');
+  assert.ok(firstText(sent[3].message).includes('权限不足'), 'maint should be admin-only');
 }
 
 async function waitFor(condition, label, timeoutMs = 3000) {
@@ -1309,6 +1346,7 @@ async function main() {
   await testGates();
   await testSttPayloadModesAndRedirect();
   await testSearchSingleFlight();
+  await testAdminMaintenanceCommands();
   await testMessageReplyTargeting();
   await testExplicitVoiceReply();
   await testOpaqueOneBotRecordResolution();

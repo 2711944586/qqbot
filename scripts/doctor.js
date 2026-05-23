@@ -91,6 +91,20 @@ function checkConfig(config, example) {
   }
   const ai = isPlainObject(config.ai) ? config.ai : {};
   const exampleAi = isPlainObject(example.ai) ? example.ai : {};
+  const expectedVersion = Number(example.config_version || 0);
+  const currentVersion = Number(config.config_version || 0);
+
+  if (expectedVersion > 0) {
+    if (!currentVersion) {
+      risk.push(`config_version 未填写；建议同步为 ${expectedVersion}，方便后续判断配置是否落后`);
+    } else if (currentVersion < expectedVersion) {
+      risk.push(`config_version 偏旧: ${currentVersion} < ${expectedVersion}；建议对照 config.example.json 补齐新字段`);
+    } else if (currentVersion > expectedVersion) {
+      suggest.push(`config_version 高于示例: ${currentVersion} > ${expectedVersion}；如果不是你手动升级模板，请确认配置来源`);
+    } else {
+      ok.push(`config_version: ${currentVersion}`);
+    }
+  }
 
   try {
     const ws = new URL(String(config.ws_url || ''));
