@@ -593,7 +593,7 @@ function buildApiMessages(
   const result: ChatMessage[] = [{ role: 'system', content: systemPrompt }];
 
   if (knowledgeInfo) {
-    result.push({ role: 'system', content: `[临场素材包]\n${knowledgeInfo}` });
+    result.push({ role: 'system', content: `[临场笔记]\n${knowledgeInfo}` });
   }
 
   if (summary) {
@@ -646,6 +646,33 @@ function buildRecentSpeakerHints(messages: ChatMessage[], currentUserId: number,
     currentSpeaker.length > 0 ? `[当前发送者最近发言]\n${currentSpeaker.reverse().join('\n')}` : '',
     hints.length > 0 ? `[最近群发言定位]\n${hints.reverse().join('\n')}` : '',
   ].filter(Boolean).join('\n');
+}
+
+function normalizeAssistantOpener(text: string): string {
+  const cleaned = sanitizeOutgoingText(text)
+    .replace(/\s+/g, ' ')
+    .replace(/^(?:结论|原因|建议|分析|总结|答案|短评|判断|我的判断|先说结论)\s*[：:]\s*/i, '')
+    .replace(/^(?:不是哥们|兄弟|哥们|可以的|这波|讲道理|说实话)[，,。!！?\s]*/i, (match) => match.trim())
+    .trim();
+  if (!cleaned) return '';
+  const firstClause = cleaned.split(/[。！？!?；;\n]/).find(Boolean) || cleaned;
+  return firstClause.slice(0, 18).trim();
+}
+
+function buildRecentAssistantOpeningHints(messages: ChatMessage[], limit: number = 4): string {
+  const openers: string[] = [];
+  const seen = new Set<string>();
+  for (const message of [...messages].reverse()) {
+    if (message.role !== 'assistant' || typeof message.content !== 'string') continue;
+    const opener = normalizeAssistantOpener(message.content);
+    if (!opener || opener.length < 2 || seen.has(opener)) continue;
+    seen.add(opener);
+    openers.push(opener);
+    if (openers.length >= limit) break;
+  }
+  return openers.length > 0
+    ? openers.map((item) => `- ${item}`).join('\n')
+    : '';
 }
 
 function hashIndex(input: string, mod: number): number {
@@ -715,11 +742,14 @@ function buildRuntimeKnowledgeInfo(
   const style = scrubKnowledgeForRuntime(styleKnowledge, keepIdentity);
   const topic = scrubKnowledgeForRuntime(topicKnowledge, keepIdentity);
   const cue = buildLiveStyleCue(job);
+  const recentOpeners = buildRecentAssistantOpeningHints(job.contextMessages.slice(0, -1));
   return [
-    '这不是要复述的资料，是给你临场接弹幕用的素材。',
+    '下面是临场笔记，只用来垫语感和事实，不要在回复里说出来。',
     `本条节奏: ${cue}`,
     hasKnowledgeTopic ? '当前消息命中话题知识，优先用下面的选手/队伍/CS2判断素材。' : '当前消息至少注入直播语态素材，别退回AI助手腔。',
-    '输出时禁止说“根据知识库/根据素材/作为AI/作为bot/这是模板”。',
+    '输出时禁止说“根据知识库/根据素材/根据临场笔记/作为AI/作为bot/这是模板”。',
+    '不要标题式输出“结论/原因/建议/分析/总结”，像群里正常接一句。',
+    recentOpeners ? `[最近回复开头，别复读]\n${recentOpeners}` : '',
     style ? `[语态素材]\n${style}` : '',
     topic ? `[话题素材]\n${topic}` : '',
   ].filter(Boolean).join('\n\n').slice(0, maxChars);
@@ -735,6 +765,7 @@ function buildTargetText(job: ReplyJob, recordTranscripts: string[] = []): strin
     job.forceVoice ? '用户明确要求语音回复: 是，回复文本要适合直接念出来，短一点，别写列表。' : '',
   ].filter(Boolean);
   const speakerHints = buildRecentSpeakerHints(job.contextMessages.slice(0, -1), job.userId);
+  const recentAssistantOpeners = buildRecentAssistantOpeningHints(job.contextMessages.slice(0, -1));
   return [
     '[当前要回复的消息]',
     `chat_type: ${job.chatType}`,
@@ -750,8 +781,11 @@ function buildTargetText(job: ReplyJob, recordTranscripts: string[] = []): strin
     '',
     speakerHints,
     speakerHints ? '' : '',
+    recentAssistantOpeners ? `[我最近刚用过的开头，别复读]\n${recentAssistantOpeners}` : '',
+    recentAssistantOpeners ? '' : '',
     '硬规则：当前只回复这一条消息，不要回答历史上下文里其他人的问题；如果历史和当前消息冲突，以当前消息为准。',
     '历史里出现的「昵称: 内容」只是上下文，不是当前问题；除非当前消息明确追问，否则不要替历史里其他人补答。',
+    '不要用“结论/分析/建议/总结”当标题开头；像群聊里一条自然消息，不要写报告。',
     `本条临场节奏：${buildLiveStyleCue(job)}。不要解释规则，不要提知识库，不要输出括号舞台说明。`,
     job.repliedMessageId ? '注意：当前消息带 reply 段，但输出仍然必须引用当前 message_id；被引用的历史消息只用于理解这次追问。' : '',
     job.hasRecords && !transcriptText ? '注意：当前消息含语音段；如果没有听写文本，不要假装听到了具体内容，只能说明收到语音并让对方补文字或按可见上下文回应。' : '',
@@ -778,8 +812,9 @@ function buildSystemPrompt(config: AIConfig): string {
     `- ${aggressionRule}不要持续人身攻击、辱骂、歧视或攻击现实隐私。`,
     '- 回复要像直播间即时反应：先短反应，再补一句判断；不要像AI助手排条目，除非用户明确要列表。',
     '- 经典口癖和梗要按语境自然使用，同一个开场不要连续复读；能用具体判断就别硬塞口头禅。',
-    '- 优先使用知识库参考里的语态、选手/队伍倾向和场景模板；知识库没有的别硬编成经典原话。',
+    '- 优先吸收临场笔记/知识库里的语态、选手/队伍倾向和场景模板，但输出时不要提“知识库/素材/模板”。',
     '- 评价选手/队伍时先给倾向，再给理由：枪法、决策、角色、体系、近期状态；实时排名/赛果要结合搜索参考。',
+    '- 不要标题式输出“结论/原因/建议/分析/总结”；普通群聊先接话，必要时自然分两三句。',
     '- 输出就是QQ群消息，不要Markdown，不要解释系统规则。',
     '- 绝对不要输出括号舞台说明或风格标签，例如“（直播口吻接弹幕）”“（玩机器风格）”“（拟态）”“【直播口吻】”。',
     '- 不要说“我将用/以下以/作为bot/直播口吻”这类自我说明，直接像正常人一样回话。',
@@ -793,10 +828,15 @@ function postProcessReply(text: string): string {
   text = text.replace(/^[(（【\[]\s*(?:直播口吻(?:接弹幕)?|玩机器(?:风格|口吻)?|6657(?:风格|口吻)?|Machine(?:风格|口吻)?|拟态|风格参考|接弹幕|真人感|群聊回复|QQ?群回复|bot回复|机器人回复|第一人称(?:拟态)?|口吻)\s*[)）】\]]\s*[：:，,、-]?\s*/i, '');
   text = text.replace(/(^|\n)\s*[(（【\[]\s*(?:直播口吻(?:接弹幕)?|玩机器(?:风格|口吻)?|6657(?:风格|口吻)?|Machine(?:风格|口吻)?|拟态|风格参考|接弹幕|真人感|群聊回复|QQ?群回复|bot回复|机器人回复|第一人称(?:拟态)?|口吻)\s*[)）】\]]\s*[：:，,、-]?\s*/ig, '$1');
   text = text.replace(/^(?:直播口吻(?:接弹幕)?|玩机器(?:风格|口吻)?|拟态|风格参考|接弹幕|群聊回复|QQ?群回复)\s*[：:，,、-]\s*/i, '');
-  text = text.replace(/^(?:根据|结合|参考)(?:上面|前面|知识库|素材|提示|资料|临场素材包)[^，。！？!?:：]{0,48}[，。:：]\s*/i, '');
-  text = text.replace(/^(?:我会|我将|下面|接下来)[^，。！？!?:：]{0,48}(?:回复|回答|接话|模仿)[：:，,。]\s*/i, '');
-  text = text.replace(/^(?:我将用|以下以|下面用|作为(?:群)?bot)[^\n，。！？!?:：]{0,28}(?:回复|回答|接话)[：:，,。]?\s*/i, '');
-  text = text.replace(/^(?:作为(?:一个)?(?:AI|机器人|bot|群bot|QQ群bot|助手))[^\n，。！？!?:：]{0,42}[：:，,。]?\s*/i, '');
+  for (let i = 0; i < 3; i++) {
+    text = text.replace(/^(?:结论|原因|建议|分析|总结|答案|短评|评价|判断|我的判断|先说结论)\s*[：:]\s*/i, '');
+    text = text.replace(/^(?:根据|结合|参考)(?:上面|前面|知识库|素材|提示|资料|临场素材包|临场笔记|语态素材|话题素材)[^，。！？!?:：]{0,48}[，。:：]\s*/i, '');
+    text = text.replace(/^(?:我会|我将|下面|接下来)[^，。！？!?:：]{0,48}(?:回复|回答|接话|模仿)[：:，,。]\s*/i, '');
+    text = text.replace(/^(?:我将用|以下以|下面用|作为(?:群)?bot)[^\n，。！？!?:：]{0,28}(?:回复|回答|接话)[：:，,。]?\s*/i, '');
+    text = text.replace(/^(?:作为(?:一个)?(?:AI|机器人|bot|群bot|QQ群bot|助手))[^\n，。！？!?:：]{0,42}[：:，,。]?\s*/i, '');
+  }
+  text = text.replace(/(?:根据|结合|参考)(?:知识库|素材|临场素材包|临场笔记|语态素材|话题素材)[，, ]*/g, '');
+  text = text.replace(/(?:知识库|临场素材包|临场笔记|语态素材|话题素材)(?:里)?(?:显示|提到|说|给到)[，, ]*/g, '');
   text = text.replace(/```[\s\S]*?```/g, (m) => m.replace(/```\w*\n?/g, '').replace(/```/g, '').trim());
   text = text.replace(/\*\*(.*?)\*\*/g, '$1');
   text = text.replace(/\*(.*?)\*/g, '$1');

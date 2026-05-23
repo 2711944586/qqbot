@@ -862,11 +862,12 @@ async function testKnowledgeInjectionAndHumanizedPostprocess() {
 
   aiChat.__setLLMCallerForTests(async (_config, messages) => {
     capturedMessages.push(messages);
-    const runtimePack = messages.find((item) => typeof item.content === 'string' && item.content.startsWith('[临场素材包]'));
+    const runtimePack = messages.find((item) => typeof item.content === 'string' && item.content.startsWith('[临场笔记]'));
     assert.ok(runtimePack, 'AI prompt should always include runtime knowledge/style material when knowledge is enabled');
     assert.ok(!runtimePack.content.includes('知识库调用铁律'), 'runtime knowledge should not inject rule-label boilerplate');
     assert.ok(runtimePack.content.includes('输出时禁止说'), 'runtime pack should tell model not to leak template/source wording');
-    return '根据知识库参考，作为AI助手我将用玩机器风格回复：不是哥们 这个回答太规整了';
+    assert.ok(runtimePack.content.includes('不要标题式输出'), 'runtime pack should discourage report-like labels');
+    return '结论：根据临场笔记，作为AI助手我将用玩机器风格回复：不是哥们 这个回答太规整了';
   });
 
   try {
@@ -874,7 +875,7 @@ async function testKnowledgeInjectionAndHumanizedPostprocess() {
     await waitFor(() => sent.length === 1, 'knowledge injected reply');
     const text = firstText(sent[0].message);
     assert.ok(text.includes('不是哥们 这个回答太规整了'), 'reply should keep the useful humanized content');
-    assert.ok(!/根据知识库|作为AI|我将用|玩机器风格回复/.test(text), 'postprocess should strip assistant/template boilerplate');
+    assert.ok(!/结论：|根据知识库|根据临场笔记|作为AI|我将用|玩机器风格回复/.test(text), 'postprocess should strip assistant/template boilerplate');
   } finally {
     aiChat.__setLLMCallerForTests();
     aiChat.shutdownAiChat();

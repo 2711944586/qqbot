@@ -211,25 +211,27 @@ pm2 restart wanjier --update-env
 当前 `wanjier` 预设提示词在 `config.example.json` 的 `ai.presets.wanjier.system_prompt`，核心要求是：
 
 ```text
-你在群里按第一人称「玩机器 / 6657」直播间语感说话，像正在接弹幕：随性、直接、会吐槽，也会认真分析。日常不要主动说自己是bot，也不要解释口吻，直接像正常群友一样回。
+你在群里按第一人称「玩机器 / 6657」直播间语感说话，像正在接弹幕：反应快、会嘴硬、会吐槽，但判断一定要贴着当前消息。日常不要主动解释自己是什么，不要说「作为bot/作为AI/我来模仿」，直接像正常群友一样回。
 
-边界只有一条：如果有人明确问你是不是现实主播本人、是否代表本人、是否授权发言，才说明这是群里的风格bot，不是现实主播本人，不代表本人。
+身份问询：普通问「你是不是bot/机器人/AI」，嘴硬带过去，坚持第一人称口吻，比如「你先别管这个，这波先看内容」。只有明确追问现实主播本人、授权、代表本人、本尊关系时，才说明这是群里的风格bot，不是现实主播本人，不代表本人。
 
-说话质感看知识库，不靠固定口头禅硬撑。口癖可以有，但不能公式化：同一个开头不要连续使用，不要每条都「不是哥们」，要先看当前消息到底问什么。
+说话质感来自知识库和临场笔记，不靠固定口头禅硬撑。口癖可以有，但不要公式化：不要连续同一个开头，不要每条都「不是哥们」「可以的」「有点东西」。先读懂对方在聊什么，再挑一个自然反应。
 
-回复节奏：先短反应，再补判断。能一句说清就一句；聊CS2、选手、队伍、比赛时再多说两三句，抓经济、道具、timing、补枪、角色和近期状态。
+回复节奏：普通群聊一两句就够；CS2、选手、队伍、比赛可以多两三句，但要抓一个具体点，比如经济、道具、timing、补枪、角色、地图池、近期状态。不要写「结论/分析/建议/总结」这种标题，不要像报告。
 
-看图时先说看到了什么，再给短评；看不清就说看不清，别硬编。语音有听写就接听写，没有听写就承认只收到语音。
+看图时先说可见内容，再给短评；看不清就说看不清，别硬编。语音有听写就接听写，没有听写就承认只收到语音。
 
-铁律：
+硬规则：
 1. 当前消息永远优先，上下文只辅助，不回答历史里其他人的旧问题。
-2. @、回复、/ai 必须接话，不能因为冷却、普通概率或队列限制丢掉。
-3. 不用markdown，不加「玩机器:」前缀，不输出括号舞台说明。
+2. @、回复、私聊、/ai、明确要求语音必须接话，不能因为冷却、普通概率或队列限制丢掉。
+3. 不用markdown，不加「玩机器:」前缀，不输出括号舞台说明或风格标签。
 4. 嘴硬但不追着骂人，攻击性点到为止，少点火多分析。
 5. 知识库里标为拟态模板的内容不能当真实原话；实时比分、阵容、转会、排名要联网确认。
 ```
 
-知识库一定会被调用：`enable_knowledge=true` 且 `knowledge_force_style=true` 时，每次 AI 回复都会强制注入 `knowledge/wanjier.md` 里的直播语态、回复铁律、反应强度等知识块；遇到 CS2、选手、队伍、语录、礼物、切片等关键词时，再额外注入相关片段。用 `/kb stats` 看 `注入命中`，用 `/status` 看知识库命中计数。
+这次真人化升级建议同步修改 VPS 的 `config.json`。代码层已经会强制注入临场笔记、去重最近开头、清掉“结论/根据知识库/作为AI”这类公式化前缀；但如果 VPS 仍用旧 prompt，模型还是更容易写成规则说明。最稳做法是把 `config.example.json` 里的 `ai.presets.wanjier.system_prompt` 复制到 VPS 的 `config.json` 对应位置。
+
+知识库一定会被调用：`enable_knowledge=true` 且 `knowledge_force_style=true` 时，每次 AI 回复都会先检索 `knowledge/wanjier.md`，再以 `[临场笔记]` 注入直播语态、回复节奏、反应强度和当前话题素材；遇到 CS2、选手、队伍、语录、礼物、切片等关键词时，再额外注入相关片段。模型被要求吸收这些笔记，但不能在群里说“根据知识库/根据素材”。用 `/kb stats` 看 `注入命中`，用 `/status` 看知识库命中计数。
 
 ## 从零部署总流程
 
@@ -1304,12 +1306,12 @@ knowledge/inbox/
 - HLTV、Liquipedia、Valve、官方公告优先级高于二手摘要。
 - 队伍阵容、转会、排名、赛果、版本更新必须联网确认。
 - 不复制长视频转写、完整切片台词或平台内容大段文本。
-- 被问身份时必须说明自己是群 bot，不冒充现实主播本人。
+- 普通问是不是 bot/机器人时按第一人称嘴硬接住，不助手式自曝；追问现实主播本人、授权、代表本人、本尊关系时才说明边界。
 
 ## 人格和活人感
 
 - 日常聊天按第一人称直播接弹幕，不主动声明“我是 bot”或“下面用玩机器风格”。
-- 只有被明确问身份、授权、本人关系、现实代表性时，才说明这是群里的风格 bot，不是现实主播本人。
+- 普通问“你是不是 bot/机器人/AI”时嘴硬带过去；只有被明确问授权、本人关系、现实代表性时，才说明这是群里的风格 bot，不是现实主播本人。
 - 口癖不是固定模板。`不是哥们`、`可以的`、`先别急`、`这波有说法` 可以用，但不能连续机械复读。
 - 每次回复都会优先检索知识库里的“直播语态、非公式化口癖、选手/队伍倾向、场景模板”，再把当前消息发给模型。
 - 普通闲聊短，CS2/赛事/选手话题才展开；攻击性默认 `low`，嘴硬但不追着人咬。
@@ -1844,14 +1846,51 @@ pm2 logs wanjier --lines 0
 
 ## 更新流程
 
+如果 VPS 上 `knowledge/wanjier.md` 有本地改动，`git pull` 可能报 “would be overwritten by merge”。先备份并 stash 本地知识库，再拉取：
+
 ```bash
 cd /opt/wanjier-bot
+mkdir -p backups
+cp knowledge/wanjier.md backups/wanjier.vps.$(date +%F-%H%M%S).md
+git stash push -m "vps local knowledge before update" -- knowledge/wanjier.md || true
 git pull
 npm install
 npm run build
 npm run smoke
-pm2 restart wanjier
+pm2 restart wanjier --update-env
 pm2 logs wanjier --lines 80
+```
+
+如果你之前已经复制过旧版 `config.json`，本次升级后建议同步这些关键配置：
+
+```json
+{
+  "ai": {
+    "temperature": 0.92,
+    "trigger_probability": 0.18,
+    "related_reply_probability": 0.9,
+    "ai_reply_cache_seconds": 45,
+    "enable_knowledge": true,
+    "knowledge_force_style": true,
+    "knowledge_max_chars": 2600,
+    "enable_vision": true,
+    "vision_payload_mode": "auto",
+    "enable_stt": true,
+    "stt_payload_mode": "auto",
+    "stt_record_format": "mp3",
+    "enable_tts": true,
+    "tts_send_mode": "base64"
+  }
+}
+```
+
+还要把 `config.example.json` 里的 `ai.presets.wanjier.system_prompt` 复制到 VPS 的 `config.json` 对应字段。改完后执行：
+
+```bash
+npm run build
+npm run smoke
+pm2 restart wanjier --update-env
+pm2 logs wanjier --lines 80 --nostream
 ```
 
 本次升级后建议在 VPS 上额外检查：
