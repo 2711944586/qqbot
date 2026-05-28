@@ -22,7 +22,7 @@
     "temperature": 0.92,
     "trigger_mode": "smart",
     "trigger_keywords": ["玩机器", "机器", "MachineWJQ", "Machine", "6657", "CS2", "CSGO", "Major", "BLAST", "IEM", "ESL", "队伍", "选手", "切片", "语录", "直播", "礼物", "白给", "残局", "道具", "阵容", "转会", "比分", "赛程", "今日CS", "每日CS", "抽选手", "抽队伍", "抽地图", "抽武器", "抽定位", "抽道具", "抽战术", "抽残局", "今日套餐"],
-    "trigger_probability": 0.18,
+    "trigger_probability": 0.05,
     "passive_random_min_chars": 4,
     "passive_random_allow_numeric": false,
     "poke_reply_probability": 1,
@@ -98,14 +98,14 @@
     "tts_clone_enabled": true,
     "tts_sample_path": "voice_sample.mp3",
     "tts_voice_prompt": "用年轻男性声音，语气随意放松，像直播间接弹幕，语速偏快但吐字清楚。不要端播音腔，短句有停顿感。",
-    "tts_max_chars": 120,
+    "tts_max_chars": 180,
     "tts_send_mode": "base64",
     "tts_timeout_ms": 20000,
     "tts_cache_hours": 24,
     "tts_cache_max_mb": 512,
     "tts_cache_max_files": 3000,
     "tts_sample_max_mb": 8,
-    "tts_probability": 0.1,
+    "tts_probability": 0.2,
 
     "presets": {
       "wanjier": {
