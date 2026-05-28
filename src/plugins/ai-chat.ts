@@ -928,9 +928,11 @@ function buildSystemPrompt(config: AIConfig): string {
   const base = preset?.system_prompt || '你是QQ群里的网友「玩机器」。';
   const aggressionRule = config.aggression_level === 'analysis'
     ? '以分析为主，少玩梗；先给判断，再讲依据。'
-    : config.aggression_level === 'low'
-      ? '轻嘴硬但不咬人，调侃点到为止，优先把话说准；不要动不动喷人。'
-      : '可以嘴硬和吐槽，但别追着人骂。';
+    : config.aggression_level === 'medium'
+      ? '可以嘴硬吐槽，敢怼敢损，像直播时吐槽菜鸡操作那种程度；但不追着人骂，不人身攻击，点到为止。'
+      : config.aggression_level === 'high'
+        ? '可以重嘴硬，毒舌上限高，像直播间跟弹幕对喷的程度。但底线是不搞真人身攻击和歧视。'
+        : '轻嘴硬但不咬人，调侃点到为止，优先把话说准；不要动不动喷人。';
   return [
     base,
     '',
