@@ -297,7 +297,7 @@ export class MessageHandler {
   }
 
   private runPlugin(plugin: Plugin, ctx: PluginContext, config: BotConfig): Promise<boolean> {
-    const baseTimeoutMs = Math.max(90000, (config.ai?.api_timeout_ms || 15000) * 3 + 30000);
+    const baseTimeoutMs = Math.max(90000, (config.ai?.api_timeout_ms || 60000) * 3 + 30000);
     const timeoutMs = plugin.name === 'ai-chat'
       ? Math.max(300000, baseTimeoutMs)
       : baseTimeoutMs;

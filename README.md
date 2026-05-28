@@ -157,7 +157,7 @@ pm2 restart wanjier --update-env
     "active_preset": "wanjier",
     "max_context_messages": 50,
     "context_send_messages": 30,
-    "max_tokens": 400,
+    "max_tokens": 1600,
     "temperature": 0.92,
     "trigger_mode": "smart",
     "trigger_probability": 0.08,
@@ -167,7 +167,7 @@ pm2 restart wanjier --update-env
     "cooldown_seconds": 0,
     "enable_search": true,
     "search_timeout_ms": 1200,
-    "api_timeout_ms": 15000,
+    "api_timeout_ms": 60000,
     "enable_knowledge": true,
     "knowledge_max_chars": 2600,
     "knowledge_force_style": true,
@@ -635,9 +635,9 @@ AI 核心字段：
 | `api_key` | 必填 | API 密钥 |
 | `model` | 按供应商填写 | 文本模型 |
 | `vision_model` | 按供应商填写 | 识图模型 |
-| `max_tokens` | `400` | 群聊回复长度上限 |
+| `max_tokens` | `1600` | 单次模型输出预算；被模型截断时会自动续写补全 |
 | `temperature` | `0.9-0.95` | 推荐偏活一点，降低公式化；太飘再降回 `0.85` |
-| `api_timeout_ms` | `15000` | 单次模型请求超时 |
+| `api_timeout_ms` | `60000` | 单次模型请求等待时间，慢接口可继续调高 |
 
 `config.example.json` 里的 `api_key` 是占位值。运行时会把包含“在这里填入”“your api”“example”“placeholder”等占位特征的 key 视为未配置，避免无效请求排进队列后白等超时。
 
@@ -1416,7 +1416,7 @@ knowledge/inbox/
     "context_send_messages": 30,
     "knowledge_max_chars": 2600,
     "search_timeout_ms": 1200,
-    "api_timeout_ms": 15000,
+    "api_timeout_ms": 60000,
     "search_cache_max_entries": 1000,
     "ai_reply_cache_seconds": 45,
     "vision_max_images": 2,

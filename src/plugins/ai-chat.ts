@@ -67,6 +67,11 @@ interface MessageContent {
 
 type LLMCaller = (config: AIConfig, messages: ChatMessage[], useVision?: boolean) => Promise<string>;
 
+interface LLMPostResult {
+  content: string;
+  finishReason: string;
+}
+
 interface SessionContext {
   summary: string;
   /** 纯文字消息（不含图片DataURL，节省内存） */
@@ -491,7 +496,7 @@ function buildVisionMessageVariants(messages: ChatMessage[], mode: AIConfig['vis
 }
 
 // ============ LLM API 调用 ============
-function postLLM(config: AIConfig, messages: ChatMessage[], useVision: boolean = false, label: string = 'chat'): Promise<string> {
+function postLLMOnce(config: AIConfig, messages: ChatMessage[], useVision: boolean = false, label: string = 'chat'): Promise<LLMPostResult> {
   return new Promise((resolve, reject) => {
     let url: URL;
     try {
@@ -503,7 +508,7 @@ function postLLM(config: AIConfig, messages: ChatMessage[], useVision: boolean =
 
     const isHttps = url.protocol === 'https:';
     const model = useVision ? (config.vision_model || config.model) : config.model;
-    const timeoutMs = config.api_timeout_ms || 45000;
+    const timeoutMs = config.api_timeout_ms || 120000;
     const maxResponseBytes = 8 * 1024 * 1024;
     let settled = false;
 
@@ -531,7 +536,7 @@ function postLLM(config: AIConfig, messages: ChatMessage[], useVision: boolean =
 
     const transport = isHttps ? https : http;
 
-    const finish = (value: string): void => {
+    const finish = (value: LLMPostResult): void => {
       if (settled) return;
       settled = true;
       resolve(value);
@@ -567,8 +572,14 @@ function postLLM(config: AIConfig, messages: ChatMessage[], useVision: boolean =
             fail(new Error(json.error.message || JSON.stringify(json.error)));
             return;
           }
-          const content = json.choices?.[0]?.message?.content;
-          if (content) finish(String(content).trim());
+          const choice = json.choices?.[0];
+          const content = choice?.message?.content ?? choice?.text;
+          if (content) {
+            finish({
+              content: String(content).trim(),
+              finishReason: String(choice?.finish_reason || choice?.finishReason || ''),
+            });
+          }
           else fail(new Error(`${label}: 无内容返回`));
         } catch {
           fail(new Error(`${label}: 解析失败`));
@@ -584,6 +595,53 @@ function postLLM(config: AIConfig, messages: ChatMessage[], useVision: boolean =
     req.write(body);
     req.end();
   });
+}
+
+function isLengthLimitedFinish(reason: string): boolean {
+  const normalized = reason.toLowerCase();
+  return normalized === 'length' || normalized.includes('max_tokens') || normalized.includes('token_limit');
+}
+
+function appendContinuation(base: string, next: string): string {
+  const left = base.trimEnd();
+  const right = next.trimStart();
+  if (!left) return right;
+  if (!right) return left;
+  const maxOverlap = Math.min(240, left.length, right.length);
+  for (let len = maxOverlap; len >= 16; len--) {
+    if (left.endsWith(right.slice(0, len))) {
+      return `${left}${right.slice(len)}`;
+    }
+  }
+  const separator = /[。！？!?；;\n]$/.test(left) && !/^[，。！？!?；;、,.]/.test(right) ? '\n' : '';
+  return `${left}${separator}${right}`;
+}
+
+function buildContinuationMessages(messages: ChatMessage[], partialReply: string): ChatMessage[] {
+  return [
+    ...messages,
+    { role: 'assistant', content: partialReply },
+    {
+      role: 'user',
+      content: '刚才回复因为长度限制被截断了。请从断点自然续写补完，不要重头开始，不要解释原因，不要加标题。',
+    },
+  ];
+}
+
+async function postLLM(config: AIConfig, messages: ChatMessage[], useVision: boolean = false, label: string = 'chat'): Promise<string> {
+  const maxContinuationRounds = 2;
+  let currentMessages = messages;
+  let combined = '';
+
+  for (let round = 0; round <= maxContinuationRounds; round++) {
+    const result = await postLLMOnce(config, currentMessages, useVision, round === 0 ? label : `${label}:continue${round}`);
+    combined = appendContinuation(combined, result.content);
+    if (!isLengthLimitedFinish(result.finishReason)) break;
+    if (round >= maxContinuationRounds) break;
+    currentMessages = buildContinuationMessages(messages, combined);
+  }
+
+  return combined.trim();
 }
 
 async function callLLM(config: AIConfig, messages: ChatMessage[], useVision: boolean = false): Promise<string> {
@@ -610,7 +668,7 @@ async function callLLMWithRetry(config: AIConfig, messages: ChatMessage[], useVi
       return await llmCaller(config, messages, useVision);
     } catch (err) {
       lastError = err instanceof Error ? err : new Error(String(err));
-      if (attempt < maxAttempts - 1) await delay(500 * (attempt + 1));
+      if (attempt < maxAttempts - 1) await delay(1000 * (attempt + 1));
     }
   }
   throw lastError;
@@ -2594,7 +2652,7 @@ export const aiChatPlugin: Plugin = {
         const cacheHit = !!cleaned;
         if (!cleaned) {
           if (replyCacheKey) replyCacheMisses++;
-          const maxAttempts = job.forced ? 3 : 2;
+          const maxAttempts = job.forced ? 4 : 2;
           const reply = await withGate('ai', () => callLLMWithRetry(config, apiMessages, usesVisionPayload, maxAttempts), job.forced);
           cleaned = postProcessReply(reply);
           if (replyCacheKey && cleaned) {
@@ -2703,14 +2761,14 @@ export const aiChatPlugin: Plugin = {
           error: errMsg.slice(0, 160),
         });
         if (job.forced) {
-          ctx.replyQuoteTo(job.messageId, job.userId, '接口有点卡 你等会再说');
+          ctx.replyQuoteTo(job.messageId, job.userId, forcedFallbackReply(job, recordTranscripts));
         }
       }
     }).catch((err) => {
       const errMsg = err instanceof Error ? err.message : String(err);
       console.error(`[AI][${job.chatType}${job.chatId}] 队列异常:`, errMsg);
       if (job.forced) {
-        ctx.replyQuoteTo(job.messageId, job.userId, '接口有点卡 你等会再说');
+        ctx.replyQuoteTo(job.messageId, job.userId, '我在 刚才这条没生成出来，你再说一遍');
       }
     });
 
