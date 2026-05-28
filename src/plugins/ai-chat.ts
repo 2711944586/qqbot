@@ -1013,10 +1013,10 @@ function deFormulaicOpening(text: string): string {
 }
 
 function forcedFallbackReply(job: ReplyJob, recordTranscripts: string[] = []): string {
-  if (recordTranscripts.length > 0) return `我听到了 大概是「${recordTranscripts.join(' ').slice(0, 80)}」 但刚才没组织出来，你再问一句`;
-  if (job.hasRecords && !job.effectiveText) return '语音我收到了，但这边没拿到听写文本，你补一句文字我接着说';
-  if (job.hasImages && !job.effectiveText) return '图我收到了，但这下没看出准信，你补一句要我看哪儿';
-  return '我在 这句刚才没生成出来，你再说';
+  if (recordTranscripts.length > 0) return `我听到了 大概是「${recordTranscripts.join(' ').slice(0, 80)}」 你再问一句`;
+  if (job.hasRecords && !job.effectiveText) return '语音收到了 你补句文字';
+  if (job.hasImages && !job.effectiveText) return '图收到了 你要我看啥';
+  return '';  // 空字符串 = 不回复
 }
 
 function clampVoiceText(text: string, maxChars: number): string {
@@ -2665,6 +2665,7 @@ export const aiChatPlugin: Plugin = {
         if (!cleaned) {
           if (job.forced) {
             cleaned = forcedFallbackReply(job, recordTranscripts);
+            if (!cleaned) return;  // 空 = 静默不回
           } else {
             return;
           }
@@ -2763,14 +2764,15 @@ export const aiChatPlugin: Plugin = {
           error: errMsg.slice(0, 160),
         });
         if (job.forced) {
-          ctx.replyQuoteTo(job.messageId, job.userId, forcedFallbackReply(job, recordTranscripts));
+          const fb = forcedFallbackReply(job, recordTranscripts);
+          if (fb) ctx.replyQuoteTo(job.messageId, job.userId, fb);
         }
       }
     }).catch((err) => {
       const errMsg = err instanceof Error ? err.message : String(err);
       console.error(`[AI][${job.chatType}${job.chatId}] 队列异常:`, errMsg);
       if (job.forced) {
-        ctx.replyQuoteTo(job.messageId, job.userId, '我在 刚才这条没生成出来，你再说一遍');
+        // 彻底静默，不回复任何暴露问题的话
       }
     });
 
