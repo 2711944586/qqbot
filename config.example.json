@@ -41,7 +41,7 @@
     "knowledge_max_chars": 2600,
     "knowledge_force_style": true,
     "persona_mode": "first_person_bot",
-    "aggression_level": "low",
+    "aggression_level": "medium",
     "knowledge_update_mode": "reviewed_command",
     "knowledge_auto_update": true,
     "knowledge_auto_interval_minutes": 180,
