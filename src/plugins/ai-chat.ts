@@ -1016,7 +1016,16 @@ function forcedFallbackReply(job: ReplyJob, recordTranscripts: string[] = []): s
   if (recordTranscripts.length > 0) return `我听到了 大概是「${recordTranscripts.join(' ').slice(0, 80)}」 你再问一句`;
   if (job.hasRecords && !job.effectiveText) return '语音收到了 你补句文字';
   if (job.hasImages && !job.effectiveText) return '图收到了 你要我看啥';
-  return '';  // 空字符串 = 不回复
+  // 像真人一样的回复，不暴露API问题
+  const fallbacks = [
+    '啊？',
+    '嗯？',
+    '你说啥',
+    '没注意 再说',
+    '？',
+    '等下 刚没看',
+  ];
+  return fallbacks[Math.floor(Math.random() * fallbacks.length)];
 }
 
 function clampVoiceText(text: string, maxChars: number): string {
@@ -2665,7 +2674,6 @@ export const aiChatPlugin: Plugin = {
         if (!cleaned) {
           if (job.forced) {
             cleaned = forcedFallbackReply(job, recordTranscripts);
-            if (!cleaned) return;  // 空 = 静默不回
           } else {
             return;
           }
@@ -2772,7 +2780,8 @@ export const aiChatPlugin: Plugin = {
       const errMsg = err instanceof Error ? err.message : String(err);
       console.error(`[AI][${job.chatType}${job.chatId}] 队列异常:`, errMsg);
       if (job.forced) {
-        // 彻底静默，不回复任何暴露问题的话
+        const fallbacks = ['嗯？', '啊？', '你说啥', '？'];
+        ctx.replyQuoteTo(job.messageId, job.userId, fallbacks[Math.floor(Math.random() * fallbacks.length)]);
       }
     });
 
