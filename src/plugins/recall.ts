@@ -53,7 +53,7 @@ export function registerRecallListener(bot: Bot, enabled: boolean = true): void 
     if (Math.random() > 0.3) return;
 
     // 获取撤回者信息
-    const msgId = (notice as any).message_id;
+    const msgId = notice.message_id;
     const cached = msgId ? recentMessages.get(msgId) : null;
 
     let reply: string;

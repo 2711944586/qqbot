@@ -73,9 +73,9 @@ export function registerPokeListener(bot: Bot): void {
 
     const notice = event as NoticeEvent;
     // 戳一戳事件
-    if (notice.notice_type !== 'notify' || (notice as any).sub_type !== 'poke') return;
+    if (notice.notice_type !== 'notify' || notice.sub_type !== 'poke') return;
 
-    const targetId = (notice as any).target_id;
+    const targetId = notice.target_id;
     // 只有被戳的是bot自己才回应
     if (targetId !== notice.self_id) return;
 
@@ -90,7 +90,7 @@ export function registerPokeListener(bot: Bot): void {
     const reply = Math.random() < 0.35
       ? (shortKnowledgeReply() || fallbackPokeReply())
       : fallbackPokeReply();
-    const userId = (notice as any).user_id;
+    const userId = notice.user_id;
     const message = userId
       ? [
         { type: 'at' as const, data: { qq: String(userId) } },

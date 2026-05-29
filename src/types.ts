@@ -305,8 +305,16 @@ export interface NoticeEvent {
   self_id: number;
   post_type: 'notice';
   notice_type: string;
+  /** 子事件类型 (poke、group_increase等) */
+  sub_type?: string;
   group_id?: number;
   user_id?: number;
+  /** 戳一戳的目标 */
+  target_id?: number;
+  /** 撤回的消息ID */
+  message_id?: number;
+  /** 操作者 */
+  operator_id?: number;
   [key: string]: unknown;
 }
 

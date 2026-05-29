@@ -157,7 +157,7 @@ pm2 restart wanjier --update-env
     "active_preset": "wanjier",
     "max_context_messages": 50,
     "context_send_messages": 30,
-    "max_tokens": 1600,
+    "max_tokens": 4096,
     "temperature": 0.92,
     "trigger_mode": "smart",
     "trigger_probability": 0.08,
