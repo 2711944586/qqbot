@@ -197,7 +197,7 @@ function normalizeAiConfig(value: unknown): AIConfig {
   const personaMode = asString(raw.persona_mode, DEFAULT_AI_CONFIG.persona_mode || 'first_person_bot');
   const validPersonaModes = new Set(['first_person_bot', 'style_bot', 'assistant']);
   const aggressionLevel = asString(raw.aggression_level, DEFAULT_AI_CONFIG.aggression_level || 'low');
-  const validAggressionLevels = new Set(['low', 'medium', 'analysis']);
+  const validAggressionLevels = new Set(['low', 'medium', 'high', 'analysis']);
   const knowledgeUpdateMode = asString(raw.knowledge_update_mode, DEFAULT_AI_CONFIG.knowledge_update_mode || 'reviewed_command');
   const validKnowledgeUpdateModes = new Set(['reviewed_command', 'static']);
   const visionPayloadMode = asString(raw.vision_payload_mode, DEFAULT_AI_CONFIG.vision_payload_mode || 'auto');
@@ -365,14 +365,64 @@ export function loadConfig(configPath: string = CONFIG_PATH): BotConfig {
   }
 
   let parsed: unknown;
+  let originalText: string;
   try {
-    parsed = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+    originalText = fs.readFileSync(configPath, 'utf-8');
+    parsed = JSON.parse(originalText);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     throw new Error(`配置文件 JSON 解析失败: ${message}`);
   }
 
-  return normalizeConfig(parsed);
+  const normalized = normalizeConfig(parsed);
+
+  // 自动迁移：如果用户config.json比标准化后的少字段，补回去
+  // 这样升级后VPS不会因为缺新字段就丢失默认值
+  try {
+    if (isObject(parsed)) {
+      const merged = mergeMissingFields(parsed, normalized);
+      const newText = `${JSON.stringify(merged, null, 2)}\n`;
+      if (newText !== originalText && newText.trim().length > 50) {
+        const tmp = `${configPath}.migrate.${process.pid}.tmp`;
+        fs.writeFileSync(tmp, newText, 'utf-8');
+        fs.renameSync(tmp, configPath);
+        console.log(`[Config] 自动补全了 config.json 中缺失的字段（已备份合并到原文件）`);
+      }
+    }
+  } catch (err) {
+    // 迁移失败不影响启动
+    console.warn(`[Config] 自动迁移跳过: ${err instanceof Error ? err.message : err}`);
+  }
+
+  return normalized;
+}
+
+/** 把normalized中存在但raw里没有的字段补回去（不覆盖用户已设置的值） */
+function mergeMissingFields(raw: PlainObject, normalized: BotConfig): PlainObject {
+  const result: PlainObject = { ...raw };
+
+  // 顶级字段
+  const topFields = ['config_version', 'login_check_interval_seconds', 'login_check_api_timeout_ms', 'bot_name', 'command_prefix'] as const;
+  for (const key of topFields) {
+    if (!(key in result) && normalized[key as keyof BotConfig] !== undefined) {
+      result[key] = normalized[key as keyof BotConfig] as any;
+    }
+  }
+
+  // ai 字段
+  if (isObject(result.ai) && normalized.ai) {
+    const rawAi = result.ai;
+    const mergedAi: PlainObject = { ...rawAi };
+    for (const [key, value] of Object.entries(normalized.ai)) {
+      if (key === 'presets' || key === 'api_key') continue; // 这些不动
+      if (!(key in mergedAi) && value !== undefined && value !== null) {
+        mergedAi[key] = value as any;
+      }
+    }
+    result.ai = mergedAi;
+  }
+
+  return result;
 }
 
 export function updateConfigFile(
