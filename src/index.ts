@@ -104,6 +104,24 @@ function main(): void {
   process.on('SIGINT', () => shutdown(0));
   process.on('SIGTERM', () => shutdown(0));
 
+  // 内存监控：每5分钟检查一次，超过400MB主动GC，超过480MB主动重启避免OOM
+  const memMonitor = setInterval(() => {
+    const usage = process.memoryUsage();
+    const heapMB = Math.round(usage.heapUsed / 1024 / 1024);
+    const rssMB = Math.round(usage.rss / 1024 / 1024);
+    if (heapMB > 400) {
+      console.warn(`[Memory] 堆内存${heapMB}MB RSS=${rssMB}MB 触发GC`);
+      if (global.gc) {
+        try { global.gc(); } catch { /* */ }
+      }
+    }
+    if (rssMB > 480) {
+      console.error(`[Memory] RSS ${rssMB}MB 接近上限 主动重启避免OOM`);
+      shutdown(1);
+    }
+  }, 5 * 60 * 1000);
+  memMonitor.unref();
+
   const fatalShutdown = (label: string, reason: unknown) => {
     const message = reason instanceof Error
       ? (reason.stack || reason.message)

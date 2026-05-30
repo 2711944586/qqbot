@@ -1,8 +1,8 @@
 {
   "config_version": 20260524,
   "ws_url": "ws://127.0.0.1:3001",
-  "login_check_interval_seconds": 60,
-  "login_check_api_timeout_ms": 5000,
+  "login_check_interval_seconds": 30,
+  "login_check_api_timeout_ms": 8000,
   "bot_qq": 3853043835,
   "bot_name": "玩机器",
   "command_prefix": "/",

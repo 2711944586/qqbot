@@ -296,8 +296,8 @@ class ContextManager {
     this.flushDirtyToDisk();
     const now = Date.now();
     for (const [id, session] of this.sessions) {
-      // 30分钟没活跃就从内存里清出去（释放内存，磁盘还在）
-      if (now - session.lastActiveTime > 30 * 60 * 1000) {
+      // 15分钟没活跃就从内存里清出去（释放内存，磁盘还在）
+      if (now - session.lastActiveTime > 15 * 60 * 1000) {
         this.sessions.delete(id);
       }
     }
@@ -1019,7 +1019,41 @@ function postProcessReply(text: string): string {
   } else if (/^[哈啊嗯哦额呃草艹wW6]+$/.test(text) && text.length <= 6) {
     text = '有点抽象 先看你想说啥';
   }
+
+  // 长度感知的自然截断：超过300字的回复会被截到自然句末尾
+  // 群聊正常回复很少超过300字，超过的多半是模型在写报告
+  if (text.length > 350) {
+    text = naturalLengthTrim(text, 350);
+  }
+
   return sanitizeOutgoingText(text).trim();
+}
+
+/** 在自然句末尾截断 长度上限内尽量保留完整意思 */
+function naturalLengthTrim(text: string, maxLen: number): string {
+  if (text.length <= maxLen) return text;
+  // 找最后一个标点位置，保留到那里
+  const cutoff = text.slice(0, maxLen);
+  const lastPunct = Math.max(
+    cutoff.lastIndexOf('。'),
+    cutoff.lastIndexOf('！'),
+    cutoff.lastIndexOf('!'),
+    cutoff.lastIndexOf('？'),
+    cutoff.lastIndexOf('?'),
+    cutoff.lastIndexOf('\n'),
+  );
+  if (lastPunct > maxLen * 0.5) {
+    return cutoff.slice(0, lastPunct + 1).trim();
+  }
+  // 找不到合适标点就在逗号处断
+  const lastComma = Math.max(
+    cutoff.lastIndexOf('，'),
+    cutoff.lastIndexOf(','),
+  );
+  if (lastComma > maxLen * 0.5) {
+    return cutoff.slice(0, lastComma).trim();
+  }
+  return cutoff.trim();
 }
 
 function deFormulaicOpening(text: string): string {
