@@ -1,10 +1,8 @@
 import { MessageSegment } from './types';
 
-/** 统一出口清理：允许emoji，但不发送笑哭类表情/文本。 */
+/** 统一出口清理：完全允许emoji，不做内容过滤；只做基础格式化。 */
 export function sanitizeOutgoingText(text: string): string {
   const cleaned = softenFormulaicOpening(text)
-    .replace(/[😂🤣]/g, '')
-    .replace(/笑哭/g, '')
     .replace(/[ \t]+\n/g, '\n')
     .replace(/[ \t]+$/gm, '');
   return cleaned.trim().length === 0 && text.trim().length > 0
@@ -20,14 +18,17 @@ function softenFormulaicOpening(text: string): string {
 
   const rest = match[1].trimStart();
   if (!rest) return text;
-  const usefulRest = rest.replace(/[😂🤣]/g, '').replace(/笑哭/g, '').replace(/[，,。!！?？\s]/g, '');
+  const usefulRest = rest.replace(/[，,。!！?？\s]/g, '');
   if (!usefulRest) return text;
   if (/^(?:你是不是|你是|我是|到底|bot|机器人|ai|AI)/.test(rest)) return text;
   if (/^(?:来了|收到|在|到|感谢|谢谢)/.test(rest)) return text;
 
+  // 30%概率删除公式化开头让回复更自然
   const sum = Array.from(rest.slice(0, 16)).reduce((acc, ch) => acc + ch.charCodeAt(0), 0);
-  const replacements = ['等一下，', '这个不太对，', '先别急，', '', ''];
-  return `${leading}${replacements[sum % replacements.length]}${rest}`.trimStart();
+  if (sum % 10 < 3) {
+    return `${leading}${rest}`.trimStart();
+  }
+  return text;
 }
 
 export function sanitizeOutgoingMessage(message: string | MessageSegment[]): string | MessageSegment[] {

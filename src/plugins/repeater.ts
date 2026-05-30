@@ -75,13 +75,31 @@ export const repeaterPlugin: Plugin = {
     state.count++;
     state.updatedAt = Date.now();
 
-    // 3人复读后，bot跟着复读一次（只复读一次）
-    if (state.count >= 3 && !state.hasRepeated) {
+    // 2人复读就跟（之前是3人才跟）
+    if (state.count >= 2 && !state.hasRepeated) {
       state.hasRepeated = true;
-      ctx.reply(ctx.rawText);
+      // 30%概率给复读加点东西，模拟真人会变形
+      const variant = maybeVariantRepeat(ctx.rawText);
+      ctx.reply(variant);
       return true;
     }
 
     return false;
   },
 };
+
+/** 偶尔给复读加变形，模拟真人 */
+function maybeVariantRepeat(text: string): string {
+  const r = Math.random();
+  // 70%直接复读
+  if (r < 0.7) return text;
+  // 15%加感叹号/问号
+  if (r < 0.85) {
+    if (text.endsWith('?') || text.endsWith('？')) return text + '?';
+    if (!/[!！?？.。]$/.test(text)) return text + '!';
+    return text + '!';
+  }
+  // 15%加前缀
+  const prefixes = ['+1 ', '确实 ', '同感 ', ''];
+  return prefixes[Math.floor(Math.random() * prefixes.length)] + text;
+}

@@ -2546,14 +2546,16 @@ export const aiChatPlugin: Plugin = {
           if (dataUrls.length > 0) {
             const parts: MessageContent[] = [{ type: 'text', text: targetText }];
             for (const dataUrl of dataUrls) {
-              parts.push({ type: 'image_url', image_url: { url: dataUrl, detail: 'low' } });
+              parts.push({ type: 'image_url', image_url: { url: dataUrl, detail: 'high' } });
             }
             apiCurrentMessage = { role: 'user', content: parts };
             usesVisionPayload = true;
             patchReplyTrace(job.messageId, { visionPayload: true });
+            console.log(`[Vision] 群${job.chatId} 成功加载${dataUrls.length}张图(high detail)`);
           } else {
             const imageStats = getImageCacheStats();
             if (imageStats.lastError) patchReplyTrace(job.messageId, { visionError: imageStats.lastError });
+            console.error(`[Vision] 群${job.chatId} 图片下载失败 url数=${job.imageUrls.length} 最后错误=${imageStats.lastError}`);
             targetText += '\n注意：当前消息含图片，但图片下载或缓存失败，模型实际上看不到图。不要编造图片细节，可以让对方重发或补充文字。';
             apiCurrentMessage = { role: 'user', content: targetText };
           }
