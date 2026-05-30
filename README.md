@@ -140,14 +140,51 @@ nano config.json
 
 推荐不要把真实密钥写进 `config.json`。程序会按下面顺序读取密钥：
 
-1. `WANJIER_API_KEY`
+1. `WANJIER_API_KEY`（推荐）
 2. `OPENAI_API_KEY`
 3. `config.json` 里的 `ai.api_key`
 
-VPS 上建议这样注入，命令里的值替换成你自己的真实密钥：
+### 推荐方式：用 `.env` 文件（启动时自动加载）
+
+```bash
+cp .env.example .env
+nano .env
+# 填入 WANJIER_API_KEY 和 WANJIER_ADMIN_QQ
+pm2 restart wanjier --update-env
+```
+
+`.env` 在 `.gitignore` 里，不会被 `git pull` 覆盖，每次更新代码不用再改 config.json。
+
+支持的环境变量（看 `.env.example` 全部）：
+- `WANJIER_API_KEY` 必填
+- `WANJIER_ADMIN_QQ` 管理员QQ（多个用逗号分隔）
+- `WANJIER_AGGRESSION` 攻击力（low/medium/high）
+- `WANJIER_TRIGGER_PROBABILITY` 随机触发概率
+- `WANJIER_MAX_TOKENS` 最大输出
+- `WANJIER_TEMPERATURE` AI温度
+- `WANJIER_TTS_PROBABILITY` 语音概率
+- `WANJIER_ENABLE_TTS` / `WANJIER_ENABLE_VISION` 开关功能
+
+---
+
+### 老方式（也可用）：
 
 ```bash
 export WANJIER_API_KEY='替换成你的真实API密钥'
+pm2 restart wanjier --update-env
+```
+
+VPS 上建议这样注入（一次性），命令里的值替换成你自己的真实密钥：
+
+```bash
+export WANJIER_API_KEY='替换成你的真实API密钥'
+pm2 restart wanjier --update-env
+```
+
+或者更推荐——直接写到 `.env` 文件里，每次更新代码不用重新设置：
+
+```bash
+echo 'WANJIER_API_KEY=替换成你的真实API密钥' >> /opt/wanjier-bot/.env
 pm2 restart wanjier --update-env
 ```
 
