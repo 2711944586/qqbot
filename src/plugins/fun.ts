@@ -564,6 +564,36 @@ export const funPlugin: Plugin = {
       return true;
     }
 
+    // ===== /match 实时比赛 =====
+    if (ctx.command === 'match' || ctx.command === 'matches' || ctx.command === '比赛') {
+      try {
+        const result = await webSearch('CS2 ongoing matches today HLTV', 3000);
+        if (result) {
+          ctx.reply(`🎮 当前比赛:\n${result.slice(0, 800)}`);
+        } else {
+          ctx.reply('搜不到正在打的比赛 可能赛程间隙');
+        }
+      } catch {
+        ctx.reply('搜不到 网络可能挂了');
+      }
+      return true;
+    }
+
+    // ===== /ranking 当前排名 =====
+    if (ctx.command === 'ranking' || ctx.command === 'rank' || ctx.command === '排名') {
+      try {
+        const result = await webSearch('HLTV CS2 team ranking 2026 top10', 3000);
+        if (result) {
+          ctx.reply(`🏆 CS2 排名:\n${result.slice(0, 800)}`);
+        } else {
+          ctx.reply('搜不到排名信息');
+        }
+      } catch {
+        ctx.reply('搜不到 网络可能挂了');
+      }
+      return true;
+    }
+
     // ===== /quote 经典语录 =====
     if (ctx.command === 'quote') {
       const tag = ctx.args.join(' ').trim();

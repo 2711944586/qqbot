@@ -54,6 +54,49 @@ function fallbackPokeReply(): string {
   return randomPick(randomPick(pokeReplyGroups));
 }
 
+// 连续戳的升级回复
+const escalatingReplies = [
+  // 戳1次
+  ['?', '在', '说', '怎么了'],
+  // 戳2次
+  ['说事', '别戳了 直接打字', '在呢 你说', '我看着呢'],
+  // 戳3次
+  ['你够了啊', '一直戳是吧', '你这戳上瘾了', '差不多得了'],
+  // 戳4次以上
+  ['再戳我真不理你了', '行 你赢了', '我服了 戳到我自闭', '别戳了 戳麻了'],
+];
+
+// 用户连续戳计数 (groupId+userId -> count)
+const pokeStreak: Map<string, { count: number; lastAt: number }> = new Map();
+
+function getEscalatingReply(groupId: number, userId: number): string {
+  const key = `${groupId}_${userId}`;
+  const now = Date.now();
+  let state = pokeStreak.get(key);
+
+  // 超过5分钟重置
+  if (state && now - state.lastAt > 5 * 60 * 1000) {
+    state = undefined;
+  }
+
+  if (!state) {
+    state = { count: 0, lastAt: now };
+  }
+
+  state.count++;
+  state.lastAt = now;
+  pokeStreak.set(key, state);
+
+  // 限制Map大小
+  if (pokeStreak.size > 200) {
+    const oldest = [...pokeStreak.entries()].sort((a, b) => a[1].lastAt - b[1].lastAt)[0];
+    if (oldest) pokeStreak.delete(oldest[0]);
+  }
+
+  const tier = Math.min(state.count - 1, escalatingReplies.length - 1);
+  return randomPick(escalatingReplies[tier]);
+}
+
 function isGoodPokeLine(line: string): boolean {
   return (
     line.length >= 4 &&
@@ -95,10 +138,18 @@ export function registerPokeListener(bot: Bot): void {
     const probability = Math.max(0, Math.min(config.ai?.poke_reply_probability ?? 1, 1));
     if (Math.random() > probability) return;
 
-    const reply = Math.random() < 0.35
-      ? (shortKnowledgeReply() || fallbackPokeReply())
-      : fallbackPokeReply();
     const userId = notice.user_id;
+
+    // 连续戳的逐级回应
+    let reply: string;
+    if (userId && Math.random() < 0.5) {
+      reply = getEscalatingReply(groupId, userId);
+    } else {
+      reply = Math.random() < 0.3
+        ? (shortKnowledgeReply() || fallbackPokeReply())
+        : fallbackPokeReply();
+    }
+
     const message = userId
       ? [
         { type: 'at' as const, data: { qq: String(userId) } },
