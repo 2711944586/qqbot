@@ -25,22 +25,27 @@
 - NapCat 只给语音 `file` 不给 `url` 时，会自动调用 OneBot `get_record`，按 `stt_record_format` 转成 mp3/wav/amr/m4a 后再听写。
 - TTS 语音缓存：语音输出缓存到 `voice_cache/`，支持 API、本地授权语音引擎、自动兜底三种模式；有授权样本时可尝试供应商 voiceclone。
 - Docker NapCat 默认用 `base64://` 发送 TTS 语音，避免容器读不到宿主机 `voice_cache/` 文件。
-- 统一发送出口允许 emoji，但会过滤 `😂`、`🤣` 和“笑哭”，避免回复里出现固定笑哭表情。
+- 统一发送出口完全允许 emoji，包括 😂🤣，无过滤限制。
 - `/status`、`/diag` 和 `/maint` 提供队列、缓存、知识库、并发、内存、配置漂移和清理维护能力。
 
 ## 项目结构
 
 ```text
 src/
-  index.ts                 启动入口，注册插件和事件监听
+  index.ts                 启动入口，注册插件和事件监听 + 内存监控
   bot.ts                   WebSocket 连接、API 调用、心跳和重连
   handler.ts               群聊/私聊消息路由、命令解析、引用回复、@检测
-  message-sanitize.ts      统一发送出口过滤规则
-  config.ts                config.json 解析、默认值和字段归一化
+  message-sanitize.ts      统一发送出口过滤规则（emoji全放行）
+  config.ts                config.json 解析、默认值、字段归一化、自动迁移
+  logger.ts                统一日志（带时间戳/分级/彩色）
   types.ts                 OneBot 和配置类型
   plugins/
-    ai-chat.ts             核心 AI、队列、上下文、知识注入、搜索、识图、STT、TTS
-    knowledge-base.ts      Markdown 知识库、候选、主库分层自动写入、回滚、审计
+    ai-chat.ts             核心 AI 入口（上下文、知识注入、搜索、识图、STT、TTS 调度）
+    ai-context.ts          上下文管理器（内存+磁盘双层、按需加载、压缩摘要）
+    llm-api.ts             LLM HTTP 调用、续写、视觉模式自动重试、重试机制
+    media-utils.ts         图片/语音 URL 提取、OneBot 媒体解析、base64 封装
+    reply-postprocess.ts   AI 回复后处理、长度截断、格式清理、公式化开头去除
+    knowledge-base.ts      Markdown 知识库、候选、自动写入、回滚、审计
     web-search.ts          联网搜索、single-flight、正/负缓存
     concurrency.ts         全局并发闸门
     context-store.ts       上下文持久化
@@ -53,12 +58,14 @@ src/
     admin.ts               reload/maint/ban/unban/kick/title
     help.ts ping.ts stats.ts time.ts poke.ts recall.ts repeater.ts welcome.ts
 knowledge/
-  wanjier.md               主知识库
+  wanjier.md               主知识库（含玩机器经典名场面、2026选手梗、地图池）
   sources.json             联网刷新来源配置
   inbox/                   本地转写/笔记导入目录
   quarantine/              旧版本遗留目录；当前不再写入
 scripts/
   smoke.js                 构建后 smoke test
+  recover.sh               一键诊断+恢复
+  doctor.js                配置检查
 ```
 
 ## 环境要求
