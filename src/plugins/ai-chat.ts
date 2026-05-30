@@ -903,40 +903,20 @@ function buildRuntimeKnowledgeInfo(
 
 function buildTargetText(job: ReplyJob, recordTranscripts: string[] = []): string {
   const transcriptText = recordTranscripts.join('\n');
-  const body = job.effectiveText || transcriptText || (job.hasImages ? '[图片]' : job.hasRecords ? '[语音]' : '[表情/空文本]');
-  const mediaLines = [
-    job.hasImages ? `图片数量: ${job.imageUrls.length}` : '',
-    job.hasRecords ? `语音数量: ${job.recordUrls.length}` : '',
-    transcriptText ? `语音听写: ${transcriptText}` : '',
-    job.forceVoice ? '用户明确要求语音回复: 是，回复文本要适合直接念出来，短一点，别写列表。' : '',
-  ].filter(Boolean);
-  const speakerHints = buildRecentSpeakerHints(job.contextMessages.slice(0, -1), job.userId);
-  const recentAssistantOpeners = buildRecentAssistantOpeningHints(job.contextMessages.slice(0, -1));
-  return [
-    '[当前要回复的消息]',
-    `chat_type: ${job.chatType}`,
-    job.groupId ? `group_id: ${job.groupId}` : '',
-    `chat_id: ${job.chatId}`,
-    `message_id: ${job.messageId}`,
-    `发送者: ${job.senderName}`,
-    `user_id: ${job.userId}`,
-    `触发类型: ${job.triggerReason}`,
-    job.repliedMessageId ? `引用的历史消息id: ${job.repliedMessageId}` : '',
-    `原始消息: ${job.rawText || body}`,
-    ...mediaLines,
-    '',
-    speakerHints,
-    speakerHints ? '' : '',
-    recentAssistantOpeners ? `[我最近刚用过的开头，别复读]\n${recentAssistantOpeners}` : '',
-    recentAssistantOpeners ? '' : '',
-    '硬规则：当前只回复这一条消息，不要回答历史上下文里其他人的问题；如果历史和当前消息冲突，以当前消息为准。',
-    '历史里出现的「昵称: 内容」只是上下文，不是当前问题；除非当前消息明确追问，否则不要替历史里其他人补答。',
-    '不要用“结论/分析/建议/总结”当标题开头；像群聊里一条自然消息，不要写报告。',
-    `本条临场节奏：${buildLiveStyleCue(job)}。不要解释规则，不要提知识库，不要输出括号舞台说明。`,
-    job.repliedMessageId ? '注意：当前消息带 reply 段，但输出仍然必须引用当前 message_id；被引用的历史消息只用于理解这次追问。' : '',
-    job.hasRecords && !transcriptText ? '注意：当前消息含语音段；如果没有听写文本，不要假装听到了具体内容，只能说明收到语音并让对方补文字或按可见上下文回应。' : '',
-    `${job.senderName}: ${body}`,
-  ].filter((line) => line !== '').join('\n');
+  const body = job.effectiveText || transcriptText || (job.hasImages ? '[图片]' : job.hasRecords ? '[语音]' : '[空]');
+  const mediaHints: string[] = [];
+  if (job.hasImages) mediaHints.push(`(消息含${job.imageUrls.length}张图片)`);
+  if (job.hasRecords && !transcriptText) mediaHints.push('(消息含语音 但无听写文本)');
+  if (transcriptText) mediaHints.push(`(语音听写: ${transcriptText})`);
+  if (job.forceVoice) mediaHints.push('(对方要求语音回复 短一点 适合念)');
+  if (job.repliedMessageId) mediaHints.push('(对方在引用之前的消息追问)');
+
+  const recentOpeners = buildRecentAssistantOpeningHints(job.contextMessages.slice(0, -1));
+  const openerHint = recentOpeners ? `\n(我最近刚用过这些开头别复读: ${recentOpeners.replace(/\n/g, ' / ')})` : '';
+
+  // 简化的格式 - 直接呈现消息 + 最少元信息，让模型自然回应
+  const mediaText = mediaHints.length > 0 ? ' ' + mediaHints.join(' ') : '';
+  return `${job.senderName}: ${body}${mediaText}${openerHint}`;
 }
 
 function buildSystemPrompt(config: AIConfig): string {
