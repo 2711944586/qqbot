@@ -1,6 +1,7 @@
 import { MessageSegment, Plugin } from '../types';
 import { getRandomKnowledgeLine } from './knowledge-base';
 import { getCacheStats, getImageDataUrl } from './image-cache';
+import { webSearch } from './web-search';
 
 /** 随机选择 */
 function randomPick(items: string[]): string {
@@ -548,7 +549,53 @@ export const funPlugin: Plugin = {
       return true;
     }
 
-    // ===== 每日CS选手 =====
+    // ===== /cs2news 实时CS新闻 =====
+    if (ctx.command === 'cs2news' || ctx.command === 'csnews') {
+      try {
+        const result = await webSearch('CS2 latest news 2026', 3000);
+        if (result) {
+          ctx.reply(`📰 CS2近况:\n${result.slice(0, 800)}`);
+        } else {
+          ctx.reply('搜不到啥新东西，可能是网络问题。');
+        }
+      } catch {
+        ctx.reply('搜不到 网络可能挂了');
+      }
+      return true;
+    }
+
+    // ===== /quote 经典语录 =====
+    if (ctx.command === 'quote') {
+      const tag = ctx.args.join(' ').trim();
+      const line = getRandomKnowledgeLine('quote', tag);
+      if (line) {
+        ctx.reply(line);
+      } else {
+        ctx.reply(tag ? `没找到「${tag}」相关的语录，换个词` : '语录库暂时没货');
+      }
+      return true;
+    }
+
+    // ===== /csmood 玩机器今日心情 =====
+    if (ctx.command === 'csmood' || ctx.command === 'mood') {
+      const moods = [
+        '今天状态嘎嘎好 弹幕来吧',
+        '今天有点累 不想接梗',
+        '今天解说情绪饱满 准备整活',
+        '今天有点上头 看比赛容易喷',
+        '今天网卡 别问我为什么不联机',
+        '今天嘴硬指数+10 别惹我',
+        '今天比较佛 你说啥都行',
+        '今天爱看Major精彩集锦',
+      ];
+      const today = new Date().toLocaleDateString('zh-CN', { timeZone: 'Asia/Shanghai' });
+      const seed = hashCode(`mood_${today}_${ctx.event.user_id}`);
+      const mood = moods[Math.abs(seed) % moods.length];
+      ctx.reply(`${today}\n${mood}`);
+      return true;
+    }
+
+
     if (isCsPlayerStatusRequest(ctx.command, ctx.args, raw)) {
       const stats = getCacheStats();
       ctx.reply([

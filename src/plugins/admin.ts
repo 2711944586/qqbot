@@ -33,6 +33,45 @@ export const adminPlugin: Plugin = {
     const config = ctx.bot.getConfig();
     const isAdmin = config.admin_qq.includes(ctx.event.user_id);
 
+    // ===== /mem 内存状态（任何人可查）=====
+    if (ctx.command === 'mem' || ctx.command === 'memory') {
+      const usage = process.memoryUsage();
+      const heapMB = Math.round(usage.heapUsed / 1024 / 1024);
+      const heapTotalMB = Math.round(usage.heapTotal / 1024 / 1024);
+      const rssMB = Math.round(usage.rss / 1024 / 1024);
+      const externalMB = Math.round(usage.external / 1024 / 1024);
+      const uptime = Math.floor(process.uptime());
+      const hours = Math.floor(uptime / 3600);
+      const mins = Math.floor((uptime % 3600) / 60);
+      ctx.reply([
+        '内存状态',
+        `堆使用: ${heapMB}/${heapTotalMB} MB`,
+        `RSS: ${rssMB} MB`,
+        `外部: ${externalMB} MB`,
+        `运行: ${hours}h ${mins}m`,
+        `Node: ${process.version}`,
+      ].join('\n'));
+      return true;
+    }
+
+    // ===== /gc 强制GC（管理员）=====
+    if (ctx.command === 'gc') {
+      if (!isAdmin) {
+        ctx.replyAt('⛔ 仅管理员可用');
+        return true;
+      }
+      const before = process.memoryUsage().heapUsed;
+      if (typeof global.gc === 'function') {
+        global.gc();
+        const after = process.memoryUsage().heapUsed;
+        const freedMB = Math.round((before - after) / 1024 / 1024);
+        ctx.reply(`GC完成 释放${freedMB}MB`);
+      } else {
+        ctx.reply('GC未启用 启动时需 --expose-gc');
+      }
+      return true;
+    }
+
     // ===== 重载配置 =====
     if (ctx.command === 'reload') {
       if (!isAdmin) {
