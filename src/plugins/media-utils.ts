@@ -26,7 +26,18 @@ export function uniqueNonEmpty(items: string[]): string[] {
 }
 
 export function isDirectMediaSource(input: string): boolean {
-  return /^(https?:\/\/|file:\/\/|data:|base64:\/\/)/i.test(input) || (!!input && fs.existsSync(input));
+  if (!input) return false;
+  // base64/data URI 总是直接源
+  if (/^(data:|base64:\/\/)/i.test(input)) return true;
+  // http/https 是远程源
+  if (/^https?:\/\//i.test(input)) return true;
+  // file:// 必须文件确实存在才算（容器路径在 bot 端看不到）
+  if (input.startsWith('file://')) {
+    const localPath = input.slice('file://'.length).replace(/^\/+([a-zA-Z]:)/, '$1');
+    return fs.existsSync(localPath);
+  }
+  // 本地绝对路径
+  return fs.existsSync(input);
 }
 
 function firstStringCandidate(items: unknown[]): string {

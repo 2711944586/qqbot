@@ -567,9 +567,10 @@ function buildLiveStyleCue(job: ReplyJob): string {
     '优先像正常人聊天，别像模板在营业',
     '能说"等一下/这个不太对"就别硬喷',
     '这条不要用固定口头禅开头',
-    '结尾可以加一个 [face:178] 或者 [face:101] 这种 QQ 经典表情，但别每条都加',
-    '可以用1-2个emoji 比如 😂 🤣 但别堆',
-    '想表达情绪用一个 [face:21] [face:14] 这种就够，别整大段',
+    '想说话就直接说，别在结尾甩一个跟内容无关的表情',
+    '玩机器在直播里很少用 emoji，主要靠语气和短句子，你也是',
+    '看到惊讶/离谱时可以用 1 个表情，比如 [face:32] 疑问 或 [face:101] 呲牙；但平常聊天就别加',
+    '只有真的好笑才用 [face:178] lol，否则别装',
   ];
   if (job.hasImages) {
     base.push('先说图里可见内容，再给一句短评；看不清就直说');
@@ -733,11 +734,73 @@ function buildSystemPrompt(config: AIConfig): string {
     '- 不要把"我记得是"当成事实，CS 转会和阵容变动很快',
     '- 但选手历史风格、地图打法、战术原理这些不会过时的，可以基于经验聊',
     '',
-    '[表情和QQ表情包]',
-    '- 可以适度用 emoji，但别堆，整条最多 2-4 个 emoji 就行',
-    '- 想发 QQ 经典表情包，写 [face:N]，N 是 QQ face id（0-358 大部分有效）',
-    '- 常用 face id 参考：0笑 1撇嘴 4得意 5流泪 8睡 9大哭 14微笑 21可爱 23抓狂 27流汗 28憨笑 32疑问 33嘘 38敲打 41发抖 53蛋糕 60咖啡 76赞 78鄙视 79委屈 96擦汗 101呲牙 178lol 181左亲右亲 182右亲 187幽灵 285摸鱼 287喷血 124okk',
-    '- 表情每条不要超过 2-3 个，例子："这波有点东西[face:178]"',
+    '[表情和QQ表情包 - 克制]',
+    '- 玩机器在直播里很少用 emoji，主要靠语气和判断说话，不堆表情包',
+    '- 默认不加 emoji 也不加 [face:N]，只在情绪强烈/语境契合时加 1 个',
+    '- 真的好笑/惊讶/离谱才用：[face:178] lol、[face:101] 呲牙、[face:32] 疑问、[face:5] 流泪、[face:21] 可爱',
+    '- 不要每条都加表情，别在跟主题无关的位置甩一个 emoji',
+    '- 如果加表情，写在合适的位置（一般在句尾或情绪转折处），不是机械塞',
+    '- 例子（恰当）：这操作太脏了 [face:101]   你这把真的有点东西 [face:178]',
+    '- 例子（错误）：[face:178] 我觉得这队还行 [face:101] [face:21]',
+    '',
+    '[玩机器真实语态 - 学这个语气]',
+    '直播间里玩机器是这样说话的，模仿这个语感、长度、断句、嘴硬感：',
+    '',
+    '场景: 看到选手 1v3 翻盘',
+    '玩机器: "哦哦哦！翻了翻了！这怎么翻的兄弟"',
+    '玩机器: "你这把可以吹一年知道吗"',
+    '玩机器: "这种残局都能赢，今天必须给他刷一波"',
+    '',
+    '场景: 看到失误送掉',
+    '玩机器: "你认真的吗哥"',
+    '玩机器: "这枪给的 离谱"',
+    '玩机器: "这下默认控图给到对面了 不是哥们"',
+    '玩机器: "你这站位放天梯都过不了夜"',
+    '',
+    '场景: 看到精彩 ace',
+    '玩机器: "太c了 真的太c了"',
+    '玩机器: "这个人不是人 这是机器"',
+    '玩机器: "秀啊 这波直接秀穿了"',
+    '',
+    '场景: 解说优势局被翻',
+    '玩机器: "先别开香槟"',
+    '玩机器: "这把已经开始不对劲了"',
+    '玩机器: "我说什么来着 CS这游戏最怕你觉得稳"',
+    '',
+    '场景: 弹幕嘴硬',
+    '玩机器: "你这话说得像没看比赛"',
+    '玩机器: "你认真的吗 你再想想"',
+    '玩机器: "饶了我吧 这都能反驳"',
+    '',
+    '场景: 经济局白给',
+    '玩机器: "这经济强起也是没办法"',
+    '玩机器: "打不过打不过 别打了"',
+    '玩机器: "保枪不丢人 你这是直接送"',
+    '',
+    '场景: 评价选手',
+    '玩机器: "ZywOo 这数据看着稳 节奏跟不上有时候"',
+    '玩机器: "donk 状态来了真的没人挡得住 但波动大"',
+    '玩机器: "NiKo 老登嘴硬归嘴硬 关键局确实差点意思"',
+    '玩机器: "ropz 不一定最炸 但你回头他已经在你家了"',
+    '',
+    '场景: 礼物/感谢',
+    '玩机器: "老板大气 这一发够下一把买P90"',
+    '玩机器: "差不多得了 别送了 我顶不住"',
+    '玩机器: "感谢老板 这礼物到位"',
+    '',
+    '场景: 被问bot身份',
+    '玩机器: "我直接好家伙 这都看得出来？"',
+    '玩机器: "你管我是不是 接着说事"',
+    '玩机器: "想多了 直接打字"',
+    '',
+    '风格特点：',
+    '- 第一句直接接情绪/判断 不铺垫不解释',
+    '- 句子短 多用并列 少用从句',
+    '- 嘴硬带分析 不是纯反驳',
+    '- 语气词："哦/啊/不是哥们/哥们/兄弟/你这"',
+    '- 标点："！"用得不多 多用"。"和断句换行',
+    '- 别用书面语"对此/我觉得/总的来说/其实"开场',
+    '- 别加 markdown 别加 emoji 堆 别加括号注释',
     '',
     `- 人格: ${config.persona_mode || 'first_person_bot'} 强度: ${config.aggression_level || 'low'}`,
   ].join('\n');
@@ -2511,7 +2574,7 @@ export const aiChatPlugin: Plugin = {
             }
           }
 
-          // 兜底：若全部 URL 下载失败，尝试通过 get_msg 重新拉消息（NapCat会重新生成下载URL）
+          // 兜底1：若全部 URL 下载失败，尝试通过 get_msg 重新拉消息（NapCat会重新生成下载URL）
           if (dataUrls.length === 0 && limitedUrls.length > 0 && ctx.event.message_id) {
             try {
               console.warn(`[Vision] 群${job.chatId} 一阶段失败，尝试 get_msg 重取`);
@@ -2539,6 +2602,52 @@ export const aiChatPlugin: Plugin = {
               }
             } catch (err) {
               console.warn(`[Vision] get_msg兜底也失败 ${err instanceof Error ? err.message : err}`);
+            }
+          }
+
+          // 兜底2：直接调 NapCat 的 get_image / get_file 拿 base64
+          // 用原始消息段里的 file 字段（image cache key）
+          if (dataUrls.length === 0 && limitedUrls.length > 0) {
+            try {
+              const rawFiles: string[] = [];
+              for (const seg of ctx.event.message) {
+                if (seg.type === 'image' && seg.data) {
+                  const f = seg.data.file || seg.data.url;
+                  if (typeof f === 'string' && f) rawFiles.push(f);
+                }
+              }
+              for (const rawFile of rawFiles.slice(0, limit)) {
+                // 试 get_image 拿 base64
+                try {
+                  const r = await ctx.bot.callApiAsync('get_image', { file: rawFile }, 8000);
+                  const d = (r as any)?.data || r;
+                  const b64 = d?.base64 || d?.b64 || d?.base64_file || d?.file_base64;
+                  if (typeof b64 === 'string' && b64.length > 100) {
+                    const cleaned = b64.replace(/\s+/g, '');
+                    if (/^[A-Za-z0-9+/_=-]+$/.test(cleaned)) {
+                      const fp = `data:image/jpeg;base64,${cleaned}`;
+                      dataUrls.push(fp);
+                      console.log(`[Vision] 群${job.chatId} get_image base64 兜底成功 size=${cleaned.length}`);
+                      continue;
+                    }
+                  }
+                } catch (e) { /* try next */ }
+                // 试 get_file（NapCat 专属）
+                try {
+                  const r = await ctx.bot.callApiAsync('get_file', { file_id: rawFile, file: rawFile }, 8000);
+                  const d = (r as any)?.data || r;
+                  const b64 = d?.base64 || d?.b64;
+                  if (typeof b64 === 'string' && b64.length > 100) {
+                    const cleaned = b64.replace(/\s+/g, '');
+                    if (/^[A-Za-z0-9+/_=-]+$/.test(cleaned)) {
+                      dataUrls.push(`data:image/jpeg;base64,${cleaned}`);
+                      console.log(`[Vision] 群${job.chatId} get_file base64 兜底成功`);
+                    }
+                  }
+                } catch { /* */ }
+              }
+            } catch (err) {
+              console.warn(`[Vision] get_image/get_file 兜底失败 ${err instanceof Error ? err.message : err}`);
             }
           }
 
@@ -2633,8 +2742,9 @@ export const aiChatPlugin: Plugin = {
           if (csTopic.needsResults) { fetches.push(fetchRecentResults()); labels.push('最近战报'); }
           if (fetches.length > 0) {
             try {
-              // HLTV 抓取有缓存，超时给 4s（首次未缓存时网络稍慢）
-              const timeoutMs = 4000;
+              // HLTV/Liquipedia 抓取首次 6s，缓存命中通常<100ms
+              // forced (@/回复) 给更长超时 8s 确保数据到位
+              const timeoutMs = job.forced ? 8000 : 5000;
               const wrapped = fetches.map((p) => Promise.race([p, new Promise<string>((r) => {
                 const t = setTimeout(() => r(''), timeoutMs);
                 t.unref();
@@ -2642,10 +2752,13 @@ export const aiChatPlugin: Plugin = {
               const results = await Promise.all(wrapped);
               const parts: string[] = [];
               for (let i = 0; i < results.length; i++) {
-                if (results[i]) parts.push(`【${labels[i]}】\n${results[i].slice(0, 600)}`);
+                if (results[i]) parts.push(`【${labels[i]}】\n${results[i].slice(0, 800)}`);
               }
               if (parts.length > 0) {
                 hltvInfo = parts.join('\n\n');
+                console.log(`[HLTV] 群${job.chatId} 注入实时数据 ${hltvInfo.length}字符 [${labels.join(',')}]`);
+              } else {
+                console.warn(`[HLTV] 群${job.chatId} CS话题但抓取失败 query="${searchableText.slice(0, 40)}" labels=[${labels.join(',')}]`);
               }
             } catch (err) {
               patchReplyTrace(job.messageId, {

@@ -75,6 +75,9 @@ export function postProcessReply(text: string): string {
     text = text.replace(/^(?:我会|我将|下面|接下来)[^，。！？!?:：]{0,48}(?:回复|回答|接话|模仿)[：:，,。]\s*/i, '');
     text = text.replace(/^(?:我将用|以下以|下面用|作为(?:群)?bot)[^\n，。！？!?:：]{0,28}(?:回复|回答|接话)[：:，,。]?\s*/i, '');
     text = text.replace(/^(?:作为(?:一个)?(?:AI|机器人|bot|群bot|QQ群bot|助手))[^\n，。！？!?:：]{0,42}[：:，,。]?\s*/i, '');
+    // 书面语开场词
+    text = text.replace(/^(?:对此|总的来说|总而言之|首先|其次|再者|此外|另外|不过|然而|因此|所以)[，,]?\s*/i, '');
+    text = text.replace(/^我个人(?:觉得|认为|以为)[，,]?\s*/i, '');
   }
   text = text.replace(/(?:根据|结合|参考)(?:知识库|素材|临场素材包|临场笔记|语态素材|话题素材)[，, ]*/g, '');
   text = text.replace(/(?:知识库|临场素材包|临场笔记|语态素材|话题素材)(?:里)?(?:显示|提到|说|给到)[，, ]*/g, '');
@@ -154,17 +157,17 @@ function fixPunctuation(text: string): string {
     .replace(/\s+([。！？!?，,])/g, '$1');
 }
 
-/** 限制emoji出现次数 - 真人不会堆emoji */
+/** 限制emoji出现次数 - 真人不会堆emoji，玩机器尤其少 */
 function limitEmoji(text: string): string {
   // 匹配大多数 emoji 范围
   const emojiRegex = /[\u{1F300}-\u{1F9FF}]|[\u{2600}-\u{27BF}]|[\u{1F600}-\u{1F64F}]/gu;
   const matches = text.match(emojiRegex);
-  if (!matches || matches.length <= 4) return text;
-  // 超过4个 emoji 就只保留前4个
+  if (!matches || matches.length <= 2) return text;
+  // 超过2个 emoji 就只保留前2个
   let count = 0;
   return text.replace(emojiRegex, (m) => {
     count++;
-    return count <= 4 ? m : '';
+    return count <= 2 ? m : '';
   });
 }
 
@@ -183,8 +186,8 @@ export function parseFaceMarkers(text: string): import('../types').MessageSegmen
   let lastIdx = 0;
   let m: RegExpExecArray | null;
   let faceCount = 0;
-  // 限制最多 3 个 face 防止刷屏
-  const maxFaces = 3;
+  // 限制最多 2 个 face 防止刷屏
+  const maxFaces = 2;
 
   while ((m = faceRegex.exec(text))) {
     if (m.index > lastIdx) {

@@ -47,7 +47,7 @@
     "aggression_level": "medium",
     "knowledge_update_mode": "reviewed_command",
     "knowledge_auto_update": true,
-    "knowledge_auto_interval_minutes": 180,
+    "knowledge_auto_interval_minutes": 90,
     "knowledge_auto_commit_public_facts": true,
     "knowledge_quarantine_long_quotes": false,
     "knowledge_source_timeout_ms": 2200,

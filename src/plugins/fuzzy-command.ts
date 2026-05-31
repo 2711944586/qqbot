@@ -264,6 +264,9 @@ export function detectCsTopicQuery(text: string): {
   const normalized = normalize(text);
   if (!normalized) return { needsMatches: false, needsRanking: false, needsResults: false };
 
+  // CS 上下文 - 包含选手名、队伍名、CS 关键词、选手昵称的小写都算
+  const csContext = /cs|csgo|cs2|玩机器|6657|major|战队|blast|iem|esl|epl|pgl|cct|vrs|valve|hltv|navi|vitality|spirit|faze|mouz|g2|falcons|astralis|liquid|furia|heroic|mongolz|tyloo|lynn|cloud9|complexity|virtuspro|ence|fnatic|3dmax|paIN|natusvincere|teamspirit|teamfalcons|teamvitality|teamliquid|zywoo|donk|niko|m0nesy|s1mple|ropz|sh1ro|magixx|jl|b1t|huNter|aleksib|karrigan|device|broky|frozen|apex|mezii|flamez|jimpphat|siuhy|kscerato|yuurih|cadian|aurora|忍者|玩处|玩神|玩÷/.test(normalized);
+
   // 关键词组：比赛/赛程
   const matchKeywords = [
     '比赛', '赛事', '战况', 'major', 'blast', 'iem', 'esl', 'pgl', 'cct',
@@ -271,27 +274,37 @@ export function detectCsTopicQuery(text: string): {
     '现在打', '正在打', '今天打', '明天打', '今晚打', '马上打', '即将开打',
     '赛程', '今晚比赛', '今天比赛', '明天比赛', '什么时候打',
     '打不打', '上场', '出战', '今天上谁', '今晚上谁',
+    '决赛', '半决赛', '小组赛', '淘汰赛', '直播间在播什么',
   ];
   const rankingKeywords = [
     '排名', '排行', 'top10', 'top战队', '世界第一', '当前最强',
     '战队榜', 'hltv榜', '强队', '哪些队厉害', '最强战队',
     'vrs', 'valve榜', '现在第一', '现在排第一', '第几名',
-    '第一是谁', '第一是哪', '现在前三', 'top3',
+    '第一是谁', '第一是哪', '现在前三', 'top3', 'top5', 'top20',
     '现在最强', '现在最厉害', '现在最猛', '哪个战队最强',
+    '哪个选手最强', 'top选手', '最佳选手',
+    '排名第一', '排名第几', '排第几', '第一是', '前几名',
+    '谁第一', '谁是第一', '谁最强', '谁最猛',
   ];
   const resultsKeywords = [
     '战报', '赛果', '比赛结果', '昨天结果', '最近结果',
     '昨天谁赢', '哪个队赢了', '谁拿冠军', '昨天打的怎么样',
     '昨天比赛', '昨晚比赛', '前天比赛', '上周比赛',
-    '谁赢了', '比分多少', '几比几', '打多少', '最终比分',
+    '谁赢了', '比分多少', '几比几', '打多少', '最终比分', '最近怎么样', '近期表现',
   ];
 
-  // 必须同时包含 CS 上下文 + 关键词
-  const csContext = /cs|csgo|cs2|玩机器|6657|major|战队|major|blast|iem|esl|pgl|cct|vrs|valve|navi|vitality|spirit|faze|mouz|g2|falcons|astralis|liquid|furia|heroic|mongolz|tyloo|lynn|cloud9/.test(normalized);
+  // 任何强烈 CS 上下文（含选手名、队伍名）都触发 matches 注入，让 AI 能看到当前赛程
+  const strongCsContext = /玩机器|6657|navi|vitality|spirit|faze|mouz|g2|falcons|astralis|liquid|furia|zywoo|donk|niko|m0nesy|s1mple|ropz|sh1ro/.test(normalized);
+
+  // 强烈 ranking 短语（即使没明确 CS 上下文，也认为是问 CS 排名）
+  const strongRankingPhrase = /(?:排名第[一二三四五六七八九十\d]+|hltv|top\d+|世界第一|现在第一|谁第一|谁是第一|谁最强|战队榜|战队排行|最强战队|最强队伍|最强选手)/.test(normalized);
 
   return {
-    needsMatches: matchKeywords.some((k) => normalized.includes(normalize(k))) && (csContext || /比赛|赛事|赛程/.test(normalized)),
-    needsRanking: rankingKeywords.some((k) => normalized.includes(normalize(k))) && csContext,
+    needsMatches: matchKeywords.some((k) => normalized.includes(normalize(k))) && (csContext || /比赛|赛事|赛程/.test(normalized))
+      || strongCsContext && /(最近|今天|昨天|现在|今晚|明天|怎么样|状态|表现)/.test(normalized),
+    needsRanking: rankingKeywords.some((k) => normalized.includes(normalize(k))) && csContext
+      || /(top|前几|第一|最强|排名|排行)/.test(normalized) && strongCsContext
+      || strongRankingPhrase,
     needsResults: resultsKeywords.some((k) => normalized.includes(normalize(k))) && (csContext || /战报|赛果/.test(normalized)),
   };
 }

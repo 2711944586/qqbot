@@ -1,13 +1,16 @@
 import * as https from 'https';
 import * as zlib from 'zlib';
+import { webSearch } from './web-search';
 
 /**
- * CS2 实时数据接口 - 基于 Liquipedia (HLTV 被 Cloudflare 强保护)
+ * CS2 实时数据接口 - 多层兜底
  *
- * 数据源：
- * - https://liquipedia.net/counterstrike/api.php (官方MediaWiki API，bot友好)
- * - User-Agent 必须包含项目标识 + 联系方式 (按 Liquipedia API ToS)
- * - 每个端点至少 2 秒间隔，5-30 分钟缓存
+ * 数据源优先级：
+ * 1. Liquipedia MediaWiki API (主数据源, bot友好)
+ * 2. webSearch 兜底 (DuckDuckGo/Bing) - 当 Liquipedia 限流时
+ * 3. 缓存命中（最长 12 小时）
+ *
+ * Liquipedia ToS: ≥2.5s 间隔，UA 带项目标识
  */
 
 interface CacheEntry {
@@ -36,6 +39,17 @@ async function getMatchesHtml(): Promise<string> {
     matchesHtmlCache = { html, expiresAt: Date.now() + MATCHES_HTML_TTL };
   }
   return html;
+}
+
+/** Liquipedia 失败时用 webSearch 兜底，返回简短摘要 */
+async function fallbackWebSearch(query: string): Promise<string> {
+  try {
+    const result = await webSearch(query, 4000, 600, 60);
+    if (!result) return '';
+    return result.slice(0, 600);
+  } catch {
+    return '';
+  }
 }
 
 function getCached(key: string): string | null {
@@ -250,7 +264,15 @@ export async function fetchOngoingMatches(): Promise<string> {
   if (cached) return cached;
 
   const html = await getMatchesHtml();
-  if (!html) return '';
+  if (!html) {
+    // Liquipedia 失败 → fallback 到 webSearch
+    const webResult = await fallbackWebSearch('CS2 ongoing matches today HLTV schedule');
+    if (webResult) {
+      setCached(cacheKey, webResult, 5 * 60 * 1000);
+      return webResult;
+    }
+    return '';
+  }
 
   const all = parseMatchBlocks(html);
   const now = Math.floor(Date.now() / 1000);
@@ -304,7 +326,14 @@ export async function fetchRecentResults(): Promise<string> {
   if (cached) return cached;
 
   const html = await getMatchesHtml();
-  if (!html) return '';
+  if (!html) {
+    const webResult = await fallbackWebSearch('CS2 recent match results yesterday HLTV scores');
+    if (webResult) {
+      setCached(cacheKey, webResult, 10 * 60 * 1000);
+      return webResult;
+    }
+    return '';
+  }
 
   const all = parseMatchBlocks(html);
   const now = Math.floor(Date.now() / 1000);
@@ -342,7 +371,14 @@ export async function fetchTeamRanking(): Promise<string> {
 
   // Valve VRS 是 Liquipedia 上目前最权威的全球积分榜
   const html = await fetchLiquipedia('Valve_Regional_Standings', 12000);
-  if (!html) return '';
+  if (!html) {
+    const webResult = await fallbackWebSearch('HLTV CS2 world ranking top 10 teams 2026');
+    if (webResult) {
+      setCached(cacheKey, webResult, 60 * 60 * 1000);
+      return webResult;
+    }
+    return '';
+  }
 
   const lines: string[] = [];
   // 取第一组 team-template-text 链接（即 Top 团队列表）
