@@ -54,6 +54,26 @@ export const adminPlugin: Plugin = {
       return true;
     }
 
+    // ===== /disk 磁盘状态 =====
+    if (ctx.command === 'disk') {
+      try {
+        const fs = require('fs') as typeof import('fs');
+        const cwd = process.cwd();
+        const stats = fs.statfsSync ? fs.statfsSync(cwd) : null;
+        if (stats) {
+          const totalGB = ((stats.blocks * stats.bsize) / 1024 / 1024 / 1024).toFixed(1);
+          const freeGB = ((stats.bavail * stats.bsize) / 1024 / 1024 / 1024).toFixed(1);
+          const usedPercent = ((1 - stats.bavail / stats.blocks) * 100).toFixed(1);
+          ctx.reply(`磁盘: ${freeGB}GB 空闲 / ${totalGB}GB 总量 (使用${usedPercent}%)`);
+        } else {
+          ctx.reply('系统不支持 statfs');
+        }
+      } catch (err) {
+        ctx.reply(`磁盘检查失败: ${err instanceof Error ? err.message : err}`);
+      }
+      return true;
+    }
+
     // ===== /gc 强制GC（管理员）=====
     if (ctx.command === 'gc') {
       if (!isAdmin) {

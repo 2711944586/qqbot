@@ -153,6 +153,25 @@ function main(): void {
   }, 5 * 60 * 1000);
   memMonitor.unref();
 
+  // 磁盘空间监控：每30分钟检查一次
+  const diskMonitor = setInterval(() => {
+    try {
+      const cwd = process.cwd();
+      const stats = fs.statfsSync ? fs.statfsSync(cwd) : null;
+      if (stats) {
+        const totalGB = Math.round((stats.blocks * stats.bsize) / 1024 / 1024 / 1024);
+        const freeGB = Math.round((stats.bavail * stats.bsize) / 1024 / 1024 / 1024);
+        const usedPercent = Math.round((1 - stats.bavail / stats.blocks) * 100);
+        if (usedPercent > 90) {
+          console.error(`[Disk] 磁盘使用${usedPercent}% 剩余${freeGB}GB/${totalGB}GB 接近上限`);
+        } else if (usedPercent > 80) {
+          console.warn(`[Disk] 磁盘使用${usedPercent}% 剩余${freeGB}GB/${totalGB}GB 接近警戒`);
+        }
+      }
+    } catch { /* statfs可能不可用 */ }
+  }, 30 * 60 * 1000);
+  diskMonitor.unref();
+
   const fatalShutdown = (label: string, reason: unknown) => {
     const message = reason instanceof Error
       ? (reason.stack || reason.message)
