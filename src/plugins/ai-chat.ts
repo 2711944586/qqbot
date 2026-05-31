@@ -1666,6 +1666,21 @@ function cleanReplyCache(): void {
       replyCache.delete(key);
     }
   }
+  // 清理一小时前的lastReplyAt
+  const oneHourAgo = now - 3600 * 1000;
+  for (const [key, ts] of lastReplyAt) {
+    if (ts < oneHourAgo) lastReplyAt.delete(key);
+  }
+  // 清理 sessionRecentOpeners 太长的记录
+  if (sessionRecentOpeners.size > 200) {
+    const keys = [...sessionRecentOpeners.keys()].slice(0, sessionRecentOpeners.size - 200);
+    for (const key of keys) sessionRecentOpeners.delete(key);
+  }
+  // 清理 groupQueueAges 太多
+  if (groupQueueAges.size > 200) {
+    const keys = [...groupQueueAges.keys()].slice(0, groupQueueAges.size - 200);
+    for (const key of keys) groupQueueAges.delete(key);
+  }
 }
 
 async function enqueueGroupTask(job: ReplyJob, task: () => Promise<void>): Promise<void> {
