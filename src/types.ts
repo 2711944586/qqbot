@@ -359,7 +359,7 @@ export interface PluginContext {
   /** 引用回复某条消息 */
   replyQuote: (message: string) => void;
   /** 按指定消息ID引用回复，失败时回退为@指定用户 */
-  replyQuoteTo: (messageId: number, userId: number, message: string) => void;
+  replyQuoteTo: (messageId: number, userId: number, message: string | MessageSegment[]) => void;
   bot: import('./bot').Bot;
 }
 

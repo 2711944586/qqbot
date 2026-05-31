@@ -241,16 +241,19 @@ export class MessageHandler {
           });
         });
       },
-      replyQuoteTo: (messageId: number, userId: number, message: string) => {
+      replyQuoteTo: (messageId: number, userId: number, message: string | MessageSegment[]) => {
         if (isPrivate) {
           void sendMessage(message, (id) => {
             this.trackBotMessage(id);
           });
           return;
         }
+        const messageSegs: MessageSegment[] = typeof message === 'string'
+          ? [{ type: 'text', data: { text: message } }]
+          : message;
         const quoteMsg: MessageSegment[] = [
           { type: 'reply', data: { id: String(messageId) } },
-          { type: 'text', data: { text: message } },
+          ...messageSegs,
         ];
         void sendMessage(quoteMsg, (id) => {
           this.trackBotMessage(id);
@@ -258,7 +261,8 @@ export class MessageHandler {
           if (sent) return;
           const fallbackMsg: MessageSegment[] = [
             { type: 'at', data: { qq: String(userId) } },
-            { type: 'text', data: { text: ' ' + message } },
+            { type: 'text', data: { text: ' ' } },
+            ...messageSegs,
           ];
           return sendMessage(fallbackMsg, (id) => {
             this.trackBotMessage(id);

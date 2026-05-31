@@ -108,7 +108,7 @@
     "tts_cache_max_mb": 400,
     "tts_cache_max_files": 1500,
     "tts_sample_max_mb": 8,
-    "tts_probability": 0.2,
+    "tts_probability": 0.4,
 
     "presets": {
       "wanjier": {

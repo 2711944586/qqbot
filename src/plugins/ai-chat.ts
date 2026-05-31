@@ -73,6 +73,7 @@ import {
   clampVoiceText,
   previewText,
   formatTime,
+  parseFaceMarkers,
 } from './reply-postprocess';
 import * as https from 'https';
 import * as http from 'http';
@@ -706,6 +707,12 @@ function buildSystemPrompt(config: AIConfig): string {
     '- 选手当前在哪队、哪个比赛打到几比几、谁是当前 Top1 这种问题：必须依据 [HLTV实时数据]，没数据就承认"我得查"',
     '- 不要把"我记得是"当成事实，CS 转会和阵容变动很快',
     '- 但选手历史风格、地图打法、战术原理这些不会过时的，可以基于经验聊',
+    '',
+    '[表情和QQ表情包]',
+    '- 可以适度用 emoji，但别堆，整条最多 2-4 个 emoji 就行',
+    '- 想发 QQ 经典表情包，写 [face:N]，N 是 QQ face id（0-358 大部分有效）',
+    '- 常用 face id 参考：0笑 1撇嘴 4得意 5流泪 8睡 9大哭 14微笑 21可爱 23抓狂 27流汗 28憨笑 32疑问 33嘘 38敲打 41发抖 53蛋糕 60咖啡 76赞 78鄙视 79委屈 96擦汗 101呲牙 178lol 181左亲右亲 182右亲 187幽灵 285摸鱼 287喷血 124okk',
+    '- 表情每条不要超过 2-3 个，例子："这波有点东西[face:178]"',
     '',
     `- 人格: ${config.persona_mode || 'first_person_bot'} 强度: ${config.aggression_level || 'low'}`,
   ].join('\n');
@@ -2673,7 +2680,16 @@ export const aiChatPlugin: Plugin = {
         const maxVoiceChars = config.tts_max_chars || 120;
         const finalText = job.forceVoice ? clampVoiceText(cleaned, maxVoiceChars) : cleaned;
         const voiceAllowed = !skipVoice && config.enable_tts && finalText.length >= 2 && finalText.length <= maxVoiceChars;
-        const shouldSendVoice = voiceAllowed && (job.forceVoice || (!job.forced && Math.random() < (config.tts_probability || 0.15)));
+        // forceVoice = 用户明确要求语音，必发语音
+        // forced = @/reply/私聊/命令，按 tts_probability 概率发语音
+        // 普通主动接话，按 tts_probability * 0.5 发（更克制）
+        const ttsProbability = config.tts_probability ?? 0.15;
+        const passiveVoiceProb = ttsProbability * 0.5;
+        const shouldSendVoice = voiceAllowed && (
+          job.forceVoice ||
+          (job.forced && Math.random() < ttsProbability) ||
+          (!job.forced && Math.random() < passiveVoiceProb)
+        );
         let voiceError = '';
         if (shouldSendVoice) {
           const voiceStatsBefore = getVoiceStats(config);
@@ -2721,10 +2737,12 @@ export const aiChatPlugin: Plugin = {
           if (job.forceVoice) {
             cleaned = `语音这下没生成出来 ${cleaned}`;
           }
+          // 解析 [face:N] 标记，转换成 QQ 表情段
+          const faceSegments = parseFaceMarkers(cleaned);
           if (useQuote) {
-            ctx.replyQuoteTo(job.messageId, job.userId, cleaned);
+            ctx.replyQuoteTo(job.messageId, job.userId, faceSegments || cleaned);
           } else {
-            ctx.reply(cleaned);
+            ctx.reply(faceSegments || cleaned);
           }
         }
         patchReplyTrace(job.messageId, {

@@ -159,18 +159,73 @@ function limitEmoji(text: string): string {
   // 匹配大多数 emoji 范围
   const emojiRegex = /[\u{1F300}-\u{1F9FF}]|[\u{2600}-\u{27BF}]|[\u{1F600}-\u{1F64F}]/gu;
   const matches = text.match(emojiRegex);
-  if (!matches || matches.length <= 2) return text;
-  // 超过2个 emoji 就只保留前2个
+  if (!matches || matches.length <= 4) return text;
+  // 超过4个 emoji 就只保留前4个
   let count = 0;
   return text.replace(emojiRegex, (m) => {
     count++;
-    return count <= 2 ? m : '';
+    return count <= 4 ? m : '';
   });
+}
+
+/**
+ * 把 AI 输出里的 [face:N] / [表情:N] / [emoji:N] 转成 QQ face segment
+ * 返回 null 表示没有需要转换的，使用纯字符串发送即可
+ */
+export function parseFaceMarkers(text: string): import('../types').MessageSegment[] | null {
+  if (!text) return null;
+  // 检测是否含 [face:N]
+  const faceRegex = /\[(?:face|表情|emoji|qq)[:：](\d{1,4})\]/gi;
+  if (!faceRegex.test(text)) return null;
+  faceRegex.lastIndex = 0;
+
+  const segments: import('../types').MessageSegment[] = [];
+  let lastIdx = 0;
+  let m: RegExpExecArray | null;
+  let faceCount = 0;
+  // 限制最多 3 个 face 防止刷屏
+  const maxFaces = 3;
+
+  while ((m = faceRegex.exec(text))) {
+    if (m.index > lastIdx) {
+      const chunk = text.slice(lastIdx, m.index);
+      if (chunk) segments.push({ type: 'text', data: { text: chunk } });
+    }
+    if (faceCount < maxFaces) {
+      const faceId = parseInt(m[1], 10);
+      // QQ 经典 face id 一般在 0-358 范围，超过的视为无效
+      if (!isNaN(faceId) && faceId >= 0 && faceId <= 600) {
+        segments.push({ type: 'face', data: { id: String(faceId) } });
+        faceCount++;
+      }
+    }
+    lastIdx = m.index + m[0].length;
+  }
+  if (lastIdx < text.length) {
+    const tail = text.slice(lastIdx);
+    if (tail) segments.push({ type: 'text', data: { text: tail } });
+  }
+
+  // 合并相邻 text，去除空 text
+  const merged: import('../types').MessageSegment[] = [];
+  for (const seg of segments) {
+    if (seg.type === 'text') {
+      if (!seg.data.text) continue;
+      const prev = merged[merged.length - 1];
+      if (prev && prev.type === 'text') {
+        prev.data.text += seg.data.text;
+        continue;
+      }
+    }
+    merged.push(seg);
+  }
+  return merged.length > 0 ? merged : null;
 }
 
 /** TTS 语音文本截断 — 控制在maxChars内，找完整句末截断 */
 export function clampVoiceText(text: string, maxChars: number): string {
   const cleaned = sanitizeOutgoingText(text)
+    .replace(/\[(?:face|表情|emoji|qq)[:：]\d+\]/gi, '') // 去掉 face 标记，TTS 不发音
     .replace(/\s+/g, ' ')
     .replace(/[#*_`>]/g, '')
     .trim();

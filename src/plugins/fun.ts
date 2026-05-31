@@ -4,6 +4,7 @@ import { getCacheStats, getImageDataUrl } from './image-cache';
 import { webSearch } from './web-search';
 import { fetchOngoingMatches, fetchTeamRanking, fetchRecentResults } from './hltv-api';
 import { detectFuzzyCommand } from './fuzzy-command';
+import { resolvePlayerImage } from './liquipedia-image';
 
 /** 随机选择 */
 function randomPick(items: string[]): string {
@@ -383,10 +384,31 @@ function buildImageFailureLine(): string {
   return stats.lastError ? `\n图片没发出来：${stats.lastError}` : '\n图片没发出来，先看文字签。';
 }
 
-async function imageSegmentOrNote(url?: string): Promise<MessageSegment[]> {
-  if (!url) return [];
-  const dataUrl = await imageDataUrlResolver(url);
-  if (dataUrl) return [{ type: 'image', data: { file: dataUrl.replace(/^data:image\/[^;]+;base64,/, 'base64://') } }];
+async function imageSegmentOrNote(url?: string, fallbackPlayerNick?: string): Promise<MessageSegment[]> {
+  if (!url && !fallbackPlayerNick) return [];
+
+  // 1. 先试硬编码的 URL
+  if (url) {
+    const dataUrl = await imageDataUrlResolver(url);
+    if (dataUrl) return [{ type: 'image', data: { file: dataUrl.replace(/^data:image\/[^;]+;base64,/, 'base64://') } }];
+  }
+
+  // 2. 硬编码失败 + 有选手名 → 用 Liquipedia API 动态查
+  if (fallbackPlayerNick) {
+    try {
+      const dynamicUrl = await resolvePlayerImage(fallbackPlayerNick);
+      if (dynamicUrl) {
+        const dataUrl = await imageDataUrlResolver(dynamicUrl);
+        if (dataUrl) {
+          console.log(`[fun] ${fallbackPlayerNick} 用Liquipedia动态查图成功`);
+          return [{ type: 'image', data: { file: dataUrl.replace(/^data:image\/[^;]+;base64,/, 'base64://') } }];
+        }
+      }
+    } catch (err) {
+      console.warn(`[fun] ${fallbackPlayerNick} Liquipedia动态查图失败:`, err instanceof Error ? err.message : err);
+    }
+  }
+
   return [{ type: 'text', data: { text: buildImageFailureLine() } }];
 }
 
@@ -407,7 +429,7 @@ async function buildCsPlayerMessage(userId: number, player: CSPlayer, score?: nu
     { type: 'at', data: { qq: String(userId) } },
     { type: 'text', data: { text: ` ${text}` } },
   ];
-  message.push(...await imageSegmentOrNote(player.image));
+  message.push(...await imageSegmentOrNote(player.image, player.nick));
   return message;
 }
 
