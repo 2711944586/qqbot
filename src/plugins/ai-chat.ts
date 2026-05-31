@@ -1063,6 +1063,8 @@ const groupQueues: Map<string, Promise<void>> = new Map();
 const groupQueueStats: Map<string, { pending: number; forced: number; oldestCreatedAt: number }> = new Map();
 const groupQueueAges: Map<string, number[]> = new Map();
 const lastReplyAt: Map<string, number> = new Map();
+/** 群最近消息时间戳列表（最多保留最近 60 秒内）- 用于"群聊正在快速对话"的检测 */
+const recentGroupMessages: Map<string, number[]> = new Map();
 const sessionRecentOpeners: Map<string, string[]> = new Map();
 const replyCache: Map<string, { value: string; expiresAt: number }> = new Map();
 let skippedPassiveReplies = 0;
@@ -1583,12 +1585,19 @@ function shouldReply(
   atBot: boolean,
   replyToBot: boolean,
   isPrivate: boolean = false,
+  groupChatBusy: boolean = false,
 ): { reply: boolean; forced: boolean } {
   const directCommand = !!command && directAiCommands.has(command);
   if (directCommand || atBot || replyToBot || isPrivate || isExplicitVoiceReplyRequest(text, command)) {
     return { reply: true, forced: true };
   }
   if (command) {
+    return { reply: false, forced: false };
+  }
+
+  // 群聊正在快速对话时（30秒内超过3条人工消息），不主动插话
+  // 仅 @/回复/私聊/命令/明确语音请求 这些 forced 场景才能突破这个限制（已在上面 return 了）
+  if (groupChatBusy) {
     return { reply: false, forced: false };
   }
 
@@ -1601,15 +1610,17 @@ function shouldReply(
     '6657',
   ]);
   if (styleKeywordHit) {
-    return { reply: Math.random() < 0.9, forced: false };
+    // 风格关键词（明确点名玩机器）：群聊忙时也不接话；不忙时降到 50%
+    return { reply: Math.random() < 0.5, forced: false };
   }
 
   const keywordHit = includesAnyKeyword(text, config.trigger_keywords);
   if (keywordHit || isKnowledgeTopic(text)) {
-    return { reply: Math.random() < (config.related_reply_probability ?? 0.65), forced: false };
+    // 普通CS/玩机器关键词：被动主动接话概率从 0.65 降到 0.15
+    return { reply: Math.random() < (config.related_reply_probability ?? 0.15), forced: false };
   }
   if (isCsDiscussionHint(text) && !isLowInformationPassiveText(text, config)) {
-    return { reply: Math.random() < (config.related_reply_probability ?? 0.65), forced: false };
+    return { reply: Math.random() < (config.related_reply_probability ?? 0.15), forced: false };
   }
 
   switch (config.trigger_mode) {
@@ -1619,6 +1630,7 @@ function shouldReply(
       if (isLowInformationPassiveText(text, config)) {
         return { reply: false, forced: false };
       }
+      // 完全无关键词的随机插话：默认极低（0.005）
       return { reply: Math.random() < (config.trigger_probability || 0), forced: false };
     }
     case 'at':
@@ -1626,6 +1638,25 @@ function shouldReply(
     default:
       return { reply: false, forced: false };
   }
+}
+
+/** 记录群消息时间，返回该群是否处于"快速对话中"状态 */
+function recordAndCheckBusy(sessionId: string, isPrivate: boolean): boolean {
+  if (isPrivate) return false;
+  const now = Date.now();
+  const window = 30_000; // 30秒窗口
+  const threshold = 3;   // 阈值：30秒内 >= 3 条人工消息 = 忙
+
+  const list = recentGroupMessages.get(sessionId) || [];
+  // 清理超出窗口的
+  while (list.length > 0 && now - list[0] > window) {
+    list.shift();
+  }
+  list.push(now);
+  // 防止内存爆涨
+  if (list.length > 50) list.splice(0, list.length - 50);
+  recentGroupMessages.set(sessionId, list);
+  return list.length >= threshold;
 }
 
 function getQueueStats(sessionId: string): { pending: number; forced: number; oldestCreatedAt: number } {
@@ -1689,6 +1720,11 @@ function cleanReplyCache(): void {
   const oneHourAgo = now - 3600 * 1000;
   for (const [key, ts] of lastReplyAt) {
     if (ts < oneHourAgo) lastReplyAt.delete(key);
+  }
+  // 清理 recentGroupMessages 中过期/空的会话
+  for (const [key, list] of recentGroupMessages) {
+    while (list.length > 0 && now - list[0] > 60_000) list.shift();
+    if (list.length === 0) recentGroupMessages.delete(key);
   }
   // 清理 sessionRecentOpeners 太长的记录
   if (sessionRecentOpeners.size > 200) {
@@ -2211,9 +2247,12 @@ export const aiChatPlugin: Plugin = {
       return true;
     }
 
+    // 记录群消息频率，判断"群里正在快速对话中"
+    const groupChatBusy = recordAndCheckBusy(sessionId, ctx.isPrivate);
+
     const trigger = forceVoice
       ? { reply: true, forced: true }
-      : shouldReply(config, effectiveText, ctx.command, atBot, ctx.isReplyToBot, ctx.isPrivate);
+      : shouldReply(config, effectiveText, ctx.command, atBot, ctx.isReplyToBot, ctx.isPrivate, groupChatBusy);
 
     const storedBaseText = effectiveText
       ? `[mid=${ctx.event.message_id} uid=${ctx.event.user_id}] ${senderName}: ${effectiveText}`
