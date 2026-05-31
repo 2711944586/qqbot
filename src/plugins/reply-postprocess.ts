@@ -107,6 +107,9 @@ export function postProcessReply(text: string): string {
   // 修复标点 — 中英文标点混乱
   text = fixPunctuation(text);
 
+  // 限制emoji数量 — 真人不会一句话堆10个emoji
+  text = limitEmoji(text);
+
   return sanitizeOutgoingText(text).trim();
 }
 
@@ -149,6 +152,20 @@ function fixPunctuation(text: string): string {
     .replace(/  +/g, ' ')
     // 句末多余的空格
     .replace(/\s+([。！？!?，,])/g, '$1');
+}
+
+/** 限制emoji出现次数 - 真人不会堆emoji */
+function limitEmoji(text: string): string {
+  // 匹配大多数 emoji 范围
+  const emojiRegex = /[\u{1F300}-\u{1F9FF}]|[\u{2600}-\u{27BF}]|[\u{1F600}-\u{1F64F}]/gu;
+  const matches = text.match(emojiRegex);
+  if (!matches || matches.length <= 2) return text;
+  // 超过2个 emoji 就只保留前2个
+  let count = 0;
+  return text.replace(emojiRegex, (m) => {
+    count++;
+    return count <= 2 ? m : '';
+  });
 }
 
 /** TTS 语音文本截断 — 控制在maxChars内，找完整句末截断 */

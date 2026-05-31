@@ -530,6 +530,39 @@ export const funPlugin: Plugin = {
       return true;
     }
 
+    // ===== /forecast 综合每日运势 =====
+    if (ctx.command === 'forecast' || ctx.command === '运势' || ctx.command === '今日运势') {
+      const today = new Date().toLocaleDateString('zh-CN', { timeZone: 'Asia/Shanghai' });
+      const seed = hashCode(`forecast_${today}_${ctx.event.user_id}`);
+      const rp = Math.abs(seed) % 101;
+      const scopeId = ctx.groupId || 0;
+
+      const player = dailyPlayerFor(ctx.event.user_id, scopeId);
+      const team = dailyCardFor('csteam', ctx.event.user_id, scopeId, csTeams);
+      const map = dailyCardFor('csmap', ctx.event.user_id, scopeId, csMaps);
+
+      let mood: string;
+      if (rp >= 80) mood = '今日大吉 - 状态拉满，主动找机会';
+      else if (rp >= 60) mood = '今日吉 - 稳一点打，别上头';
+      else if (rp >= 40) mood = '今日平 - 默认控图，看机会';
+      else if (rp >= 20) mood = '今日小凶 - 收着点，别第一身位';
+      else mood = '今日大凶 - 保枪 ECO 别硬起';
+
+      ctx.replyAt([
+        `🔮 ${today} 玩机器今日运势`,
+        '',
+        `人品: ${rp}/100`,
+        mood,
+        '',
+        `今日选手: ${player.nick} (${player.team})`,
+        `今日队伍: ${team.name}`,
+        `今日地图: ${map.name}`,
+        '',
+        `${player.note || '稳一点打。'}`,
+      ].join('\n'));
+      return true;
+    }
+
     // ===== 今日人品 =====
     if (ctx.command === 'jrrp' || ctx.command === 'rp') {
       // 基于日期+QQ号的伪随机，同一天结果固定
@@ -587,6 +620,21 @@ export const funPlugin: Plugin = {
           ctx.reply(`🏆 CS2 排名:\n${result.slice(0, 800)}`);
         } else {
           ctx.reply('搜不到排名信息');
+        }
+      } catch {
+        ctx.reply('搜不到 网络可能挂了');
+      }
+      return true;
+    }
+
+    // ===== /cs2live CS2直播查询 =====
+    if (ctx.command === 'cs2live' || ctx.command === 'live') {
+      try {
+        const result = await webSearch('CS2 douyu twitch streaming live now 玩机器', 3000);
+        if (result) {
+          ctx.reply(`🎬 CS2直播:\n${result.slice(0, 700)}`);
+        } else {
+          ctx.reply('没搜到正在直播的 玩机器可能没开');
         }
       } catch {
         ctx.reply('搜不到 网络可能挂了');

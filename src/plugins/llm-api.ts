@@ -58,6 +58,9 @@ export function postLLMOnce(config: AIConfig, messages: ChatMessage[], useVision
       max_tokens: config.max_tokens,
       temperature: config.temperature,
       stream: false,
+      // 减少重复 + 增加多样性
+      frequency_penalty: 0.5,
+      presence_penalty: 0.3,
     };
 
     const body = JSON.stringify(requestBody);
