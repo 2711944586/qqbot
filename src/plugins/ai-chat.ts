@@ -2949,7 +2949,22 @@ export const aiChatPlugin: Plugin = {
         }
 
         if (!cleaned) {
-          // 无论forced与否 空回复就不发 消息已存上下文 下次自然带上
+          // 空回复
+          // - 普通主动接话: 直接吞掉，下次触发时 AI 自然带上上下文
+          // - forced (@bot/回复/私聊/命令): 必须给出回复，用 forcedFallbackReply 兜底
+          if (job.forced) {
+            const fb = forcedFallbackReply(job, recordTranscripts);
+            if (fb) {
+              const useQuoteFb = config.forced_reply_quote !== false;
+              if (useQuoteFb) ctx.replyQuoteTo(job.messageId, job.userId, fb);
+              else ctx.reply(fb);
+            }
+            patchReplyTrace(job.messageId, {
+              sent: 'fallback',
+              error: 'AI returned empty, used fallback',
+              replyLength: fb.length,
+            });
+          }
           return;
         }
         const openerResult = dedupeSessionOpener(job.sessionId, cleaned);
@@ -3086,7 +3101,11 @@ export const aiChatPlugin: Plugin = {
       const errMsg = err instanceof Error ? err.message : String(err);
       console.error(`[AI][${job.chatType}${job.chatId}] 队列异常:`, errMsg);
       if (job.forced) {
-        // 不回复 消息已在上下文里 下次触发时AI自然能看到
+        // 队列层异常 forced 必须给个回复
+        try {
+          const fb = forcedFallbackReply(job, []);
+          if (fb) ctx.replyQuoteTo(job.messageId, job.userId, fb);
+        } catch { /* */ }
       }
     });
 
