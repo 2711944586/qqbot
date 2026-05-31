@@ -41,6 +41,7 @@ import { pingPlugin } from './plugins/ping';
 import { statusPlugin } from './plugins/status';
 import { timePlugin } from './plugins/time';
 import { funPlugin } from './plugins/fun';
+import { stickersPlugin } from './plugins/stickers';
 import { diagPlugin } from './plugins/diag';
 import { statsPlugin } from './plugins/stats';
 import { adminPlugin } from './plugins/admin';
@@ -96,6 +97,7 @@ function main(): void {
   handler.use(diagPlugin);
   handler.use(timePlugin);
   handler.use(funPlugin);
+  handler.use(stickersPlugin);
   handler.use(aiChatPlugin);    // AI 放最后
 
   // 注册非消息事件监听器

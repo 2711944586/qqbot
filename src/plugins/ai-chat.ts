@@ -76,6 +76,7 @@ import {
   formatTime,
   parseFaceMarkers,
 } from './reply-postprocess';
+import { parseStickerMarkers } from './sticker-pack';
 import * as https from 'https';
 import * as http from 'http';
 import * as crypto from 'crypto';
@@ -570,8 +571,9 @@ function buildLiveStyleCue(job: ReplyJob): string {
     '这条不要用固定口头禅开头',
     '想说话就直接说，别在结尾甩一个跟内容无关的表情',
     '玩机器在直播里很少用 emoji，主要靠语气和短句子，你也是',
-    '看到惊讶/离谱时可以用 1 个表情，比如 [face:32] 疑问 或 [face:101] 呲牙；但平常聊天就别加',
-    '只有真的好笑才用 [face:178] lol，否则别装',
+    '看到惊讶/离谱时可以用 1 个表情，比如 [思考] [呲牙] [笑哭]；但平常聊天就别加',
+    '只有真的好笑才用 [笑哭] 或 [lol]，否则别装',
+    '真不知道答案就用 [思考] 或 [疑问]，别装懂',
   ];
   if (job.hasImages) {
     base.push('先说图里可见内容，再给一句短评；看不清就直说');
@@ -751,14 +753,26 @@ function buildSystemPrompt(config: AIConfig): string {
     '- 时效性强 → "这种最近的事 你直接查官方/HLTV"',
     '- 千万不要凭借模糊记忆给出具体的人/数字/日期',
     '',
-    '[表情和QQ表情包 - 克制]',
+    '[表情和QQ表情包 - 克制 + 用名字]',
     '- 玩机器在直播里很少用 emoji，主要靠语气和判断说话，不堆表情包',
     '- 默认不加 emoji 也不加 [face:N]，只在情绪强烈/语境契合时加 1 个',
-    '- 真的好笑/惊讶/离谱才用：[face:178] lol、[face:101] 呲牙、[face:32] 疑问、[face:5] 流泪、[face:21] 可爱',
-    '- 不要每条都加表情，别在跟主题无关的位置甩一个 emoji',
+    '- 用中文/英文名字直接写：[呲牙] [笑哭] [喷血] [思考] [鄙视] [吃瓜] [666] [打脸]',
+    '  也可用经典数字：[face:178] [face:101] [face:32]',
+    '- 真的好笑/惊讶/离谱才用，每条最多 1-2 个',
+    '- 不要每条都加表情，别在跟主题无关的位置甩一个',
     '- 如果加表情，写在合适的位置（一般在句尾或情绪转折处），不是机械塞',
-    '- 例子（恰当）：这操作太脏了 [face:101]   你这把真的有点东西 [face:178]',
-    '- 例子（错误）：[face:178] 我觉得这队还行 [face:101] [face:21]',
+    '',
+    '- 例子（恰当）：',
+    '    "这操作太脏了 [呲牙]"',
+    '    "你这把真的有点东西 [笑哭]"',
+    '    "这都能赢? [思考]"',
+    '    "别开香槟 [让我看看]"',
+    '- 例子（错误）：',
+    '    "[呲牙] 我觉得这队还行 [笑哭] [666]"  ← 塞太多',
+    '    "[摸鱼] 你说得对"  ← 跟主题不合',
+    '    每句结尾都自动塞一个 emoji ← 公式化',
+    '',
+    '- 常用名字: 呲牙 微笑 笑哭 哈哈 思考 疑问 吃瓜 让我看看 666 OK 强 喷血 打脸 摸鱼 抓狂 晕 流泪 坏笑 可爱 酷 尴尬 调皮 鼓掌 加油 柠檬精 我酸了 鄙视 委屈 阴险 亲亲',
     '',
     '[玩机器真实语态 - 学这个语气]',
     '直播间里玩机器是这样说话的，模仿这个语感、长度、断句、嘴硬感：',
@@ -3038,8 +3052,9 @@ export const aiChatPlugin: Plugin = {
           if (job.forceVoice) {
             cleaned = `语音这下没生成出来 ${cleaned}`;
           }
-          // 解析 [face:N] 标记，转换成 QQ 表情段
-          const faceSegments = parseFaceMarkers(cleaned);
+          // 解析 [face:N] / 命名表情 / [sticker:N] 标记，转换成 QQ 表情段
+          // parseStickerMarkers 是更全面的（含命名表情和本地表情包），parseFaceMarkers 只支持数字
+          const faceSegments = parseStickerMarkers(cleaned) || parseFaceMarkers(cleaned);
           if (useQuote) {
             ctx.replyQuoteTo(job.messageId, job.userId, faceSegments || cleaned);
           } else {

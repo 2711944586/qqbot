@@ -11,6 +11,10 @@ image_cache/
 context_store/
 search_cache/
 
+# 贴纸目录里的图片不入仓（README.md 仍然入仓）
+stickers/*
+!stickers/README.md
+
 # 用户敏感数据
 voice_sample.mp3
 local-tts.sh

@@ -398,5 +398,45 @@
     "trusted": true,
     "autoCommitEligible": true,
     "intervalMinutes": 240
+  },
+  {
+    "id": "cs2-todays-matches",
+    "query": "CS2 today matches results live HLTV 2026",
+    "sourceType": "public_fact",
+    "trusted": true,
+    "autoCommitEligible": true,
+    "intervalMinutes": 60
+  },
+  {
+    "id": "cs2-roster-recent-news",
+    "query": "CS2 player transfer roster change news 2026",
+    "sourceType": "public_fact",
+    "trusted": true,
+    "autoCommitEligible": true,
+    "intervalMinutes": 240
+  },
+  {
+    "id": "cs2-tier1-active-roster",
+    "query": "NAVI Vitality Spirit FaZe MOUZ G2 Falcons current active roster 2026",
+    "sourceType": "public_fact",
+    "trusted": true,
+    "autoCommitEligible": true,
+    "intervalMinutes": 1440
+  },
+  {
+    "id": "cs2-major-2026-active",
+    "query": "IEM Cologne Major 2026 standings results playoffs schedule",
+    "sourceType": "public_fact",
+    "trusted": true,
+    "autoCommitEligible": true,
+    "intervalMinutes": 120
+  },
+  {
+    "id": "cs2-update-meta",
+    "query": "CS2 latest update patch notes weapon changes balance 2026",
+    "sourceType": "public_fact",
+    "trusted": true,
+    "autoCommitEligible": true,
+    "intervalMinutes": 2880
   }
 ]

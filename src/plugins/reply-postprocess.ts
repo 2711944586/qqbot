@@ -229,6 +229,8 @@ export function parseFaceMarkers(text: string): import('../types').MessageSegmen
 export function clampVoiceText(text: string, maxChars: number): string {
   const cleaned = sanitizeOutgoingText(text)
     .replace(/\[(?:face|表情|emoji|qq)[:：]\d+\]/gi, '') // 去掉 face 标记，TTS 不发音
+    .replace(/\[sticker[:：]\s*[\w.-]+\]/gi, '') // 贴纸 不发音
+    .replace(/\[(?:[\u4e00-\u9fa5]{1,8}|[a-zA-Z\d!?]{2,16})\]/g, '') // 命名表情 不发音
     .replace(/\s+/g, ' ')
     .replace(/[#*_`>]/g, '')
     .trim();
