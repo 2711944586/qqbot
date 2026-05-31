@@ -268,7 +268,7 @@ function downloadAndCache(url: string, redirectCount: number = 0, cacheKeyUrl: s
       downloadFailures++;
       safeResolve(null);
     });
-    req.setTimeout(8000, () => {
+    req.setTimeout(15000, () => {
       setImageError('download timeout');
       downloadFailures++;
       safeResolve(null);
