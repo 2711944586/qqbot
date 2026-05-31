@@ -69,7 +69,7 @@
     "vision_payload_mode": "auto",
     "vision_max_images": 2,
     "image_cache_max_mb": 200,
-    "image_cache_max_file_mb": 2,
+    "image_cache_max_file_mb": 8,
     "image_cache_max_age_hours": 48,
     "image_download_max_redirects": 3,
     "image_cache_cleanup_interval_minutes": 30,

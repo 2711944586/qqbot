@@ -96,11 +96,21 @@ export async function resolveOneBotImageSources(
       resolved.push(source);
       continue;
     }
+    // 尝试get_image拿真实URL
     try {
-      const res = await ctx.bot.callApiAsync('get_image', { file: source }, 3000);
-      const next = firstMediaString((res as any)?.data || res, 'image/jpeg');
-      resolved.push(next || source);
-    } catch {
+      const res = await ctx.bot.callApiAsync('get_image', { file: source }, 5000);
+      const data = (res as any)?.data || res;
+      const next = firstMediaString(data, 'image/jpeg');
+      if (next) {
+        resolved.push(next);
+      } else {
+        // get_image没拿到 但source可能仍可下载，记录原始source
+        console.warn(`[Vision] get_image返回空 source=${source.slice(0, 80)} keys=${data ? Object.keys(data).join(',') : 'null'}`);
+        resolved.push(source);
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn(`[Vision] get_image失败 source=${source.slice(0, 80)} err=${msg}`);
       resolved.push(source);
     }
   }

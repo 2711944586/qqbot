@@ -630,11 +630,11 @@ function buildTargetText(job: ReplyJob, recordTranscripts: string[] = []): strin
   if (job.repliedMessageId) mediaHints.push('(对方在引用之前的消息追问)');
 
   const recentOpeners = buildRecentAssistantOpeningHints(job.contextMessages.slice(0, -1));
-  const openerHint = recentOpeners ? `\n(我最近刚用过这些开头别复读: ${recentOpeners.replace(/\n/g, ' / ')})` : '';
+  const openerHint = recentOpeners ? `\n【提示】别复读这些开头: ${recentOpeners.replace(/\n/g, ' / ')}` : '';
 
-  // 简化的格式 - 直接呈现消息 + 最少元信息，让模型自然回应
+  // 用清晰的标记包裹当前消息让模型不混淆
   const mediaText = mediaHints.length > 0 ? ' ' + mediaHints.join(' ') : '';
-  return `${job.senderName}: ${body}${mediaText}${openerHint}`;
+  return `===现在你要回复这一条===\n${job.senderName}: ${body}${mediaText}\n===\n只回应这个人这句话 不要替历史里其他人补答${openerHint}`;
 }
 
 function buildSystemPrompt(config: AIConfig): string {
@@ -2304,7 +2304,13 @@ export const aiChatPlugin: Plugin = {
         // ===== 构建发给API的消息 =====
         // 注意：history是除当前消息外的历史（当前已经append了，需要排除最后一条）
         const sendLimit = config.context_send_messages || 25;
-        const history = job.contextMessages.slice(0, -1).slice(-sendLimit); // 排除刚刚追加的当前消息纯文字版
+        const rawHistory = job.contextMessages.slice(0, -1).slice(-sendLimit);
+        // 清理history里的 [mid=X uid=Y] 元数据前缀，让模型看到干净的对话
+        const history: ChatMessage[] = rawHistory.map((msg) => {
+          if (msg.role !== 'user' || typeof msg.content !== 'string') return msg;
+          const cleaned = msg.content.replace(/^\[mid=\d+\s+uid=\d+\]\s*/, '');
+          return { role: msg.role, content: cleaned };
+        });
         const systemPrompt = buildSystemPrompt(config);
 
         const apiMessages = buildApiMessages(systemPrompt, job.contextSummary, history, apiCurrentMessage, searchInfo, knowledgeInfo);

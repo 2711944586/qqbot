@@ -101,7 +101,54 @@ export function postProcessReply(text: string): string {
     text = naturalLengthTrim(text, 350);
   }
 
+  // 去除重复 — 模型有时会把一句话说两遍
+  text = removeDuplicates(text);
+
+  // 修复标点 — 中英文标点混乱
+  text = fixPunctuation(text);
+
   return sanitizeOutgoingText(text).trim();
+}
+
+/** 去除内部重复段落（同一句话连续出现） */
+function removeDuplicates(text: string): string {
+  // 切分成句
+  const parts = text.split(/([。！？!?\n]+)/);
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (let i = 0; i < parts.length; i += 2) {
+    const sentence = parts[i];
+    const punct = parts[i + 1] || '';
+    if (!sentence.trim()) {
+      result.push(sentence + punct);
+      continue;
+    }
+    const normalized = sentence.trim().toLowerCase();
+    // 太短的不算重复（"在""嗯""草"这种）
+    if (normalized.length < 4) {
+      result.push(sentence + punct);
+      continue;
+    }
+    if (seen.has(normalized)) continue; // 跳过重复句
+    seen.add(normalized);
+    result.push(sentence + punct);
+  }
+  return result.join('');
+}
+
+/** 修复标点问题 */
+function fixPunctuation(text: string): string {
+  return text
+    // 多个标点合并
+    .replace(/[。.]{2,}/g, '。')
+    .replace(/[!！]{3,}/g, '!!')
+    .replace(/[?？]{3,}/g, '??')
+    // 中英文标点混用 - 中文文字后用中文标点
+    .replace(/([\u4e00-\u9fa5]),([\u4e00-\u9fa5])/g, '$1，$2')
+    // 多余空格
+    .replace(/  +/g, ' ')
+    // 句末多余的空格
+    .replace(/\s+([。！？!?，,])/g, '$1');
 }
 
 /** TTS 语音文本截断 — 控制在maxChars内，找完整句末截断 */

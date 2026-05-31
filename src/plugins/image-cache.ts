@@ -15,7 +15,7 @@ import type { AIConfig } from '../types';
 
 const CACHE_DIR = path.resolve(__dirname, '..', '..', 'image_cache');
 let maxCacheSizeMB = 100;
-let maxFileSizeBytes = 1 * 1024 * 1024;
+let maxFileSizeBytes = 8 * 1024 * 1024;
 let maxCacheAgeHours = 24;
 let maxRedirects = 3;
 let cleanupIntervalMinutes = 30;
@@ -169,7 +169,11 @@ function downloadAndCache(url: string, redirectCount: number = 0, cacheKeyUrl: s
       hostname: parsedUrl.hostname,
       port: parsedUrl.port || (isHttps ? 443 : 80),
       path: parsedUrl.pathname + parsedUrl.search,
-      headers: { 'User-Agent': 'Mozilla/5.0' },
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) QQ/9.0.0.0 Safari/537.36',
+        'Accept': 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
+        'Accept-Language': 'zh-CN,zh;q=0.9',
+      },
     }, (res) => {
       const statusCode = res.statusCode || 0;
       if ([301, 302, 303, 307, 308].includes(statusCode) && res.headers.location) {
@@ -424,7 +428,7 @@ export function getCacheStats(): {
 
 export function configureImageCache(config?: Pick<AIConfig, 'image_cache_max_mb' | 'image_cache_max_file_mb' | 'image_cache_max_age_hours' | 'image_download_max_redirects' | 'image_cache_cleanup_interval_minutes' | 'image_cache_max_files'>): void {
   const nextCacheSizeMB = Math.max(20, Math.min(Math.floor(Number(config?.image_cache_max_mb) || 100), 4096));
-  const maxFileMB = Math.max(0.5, Math.min(Number(config?.image_cache_max_file_mb) || 1, 8));
+  const maxFileMB = Math.max(0.5, Math.min(Number(config?.image_cache_max_file_mb) || 8, 32));
   const nextFileSizeBytes = Math.floor(maxFileMB * 1024 * 1024);
   const nextCacheAgeHours = Math.max(1, Math.min(Math.floor(Number(config?.image_cache_max_age_hours) || 24), 720));
   const nextRedirects = Math.max(0, Math.min(Math.floor(Number(config?.image_download_max_redirects) || 3), 10));
