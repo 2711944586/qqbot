@@ -72,6 +72,7 @@ export const helpPlugin: Plugin = {
         '  /tune <项> <值> - 快速调参(trigger/related/tts/poke/temp/maxtokens/minchars/cooldown)',
         '  /maint status|login|config|clean - 维护面板',
         '  /gc - 强制GC',
+        '  /csprewarm - 预下载所有选手图(慢，受限流影响)',
         '  /ban /unban /kick /title',
         '  /kb preview / ingest / list / show / commit / drop',
         '',

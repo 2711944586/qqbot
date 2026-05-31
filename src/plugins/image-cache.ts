@@ -46,6 +46,8 @@ const memIndex: Map<string, CacheEntry> = new Map();
 let cacheHits = 0;
 let cacheMisses = 0;
 const downloadInFlight: Map<string, Promise<CacheEntry | null>> = new Map();
+/** 主机级限流冷却（429/503 后） */
+const rateLimitedHosts: Map<string, number> = new Map();
 
 function setImageError(message: string): void {
   lastImageError = message.slice(0, 160);
@@ -174,28 +176,57 @@ function downloadAndCache(url: string, redirectCount: number = 0, cacheKeyUrl: s
       return;
     }
 
+    // 主机级限流冷却中？跳过
+    const cooldown = rateLimitedHosts.get(parsedUrl.hostname);
+    if (cooldown && cooldown > Date.now()) {
+      setImageError(`host ${parsedUrl.hostname} 在 429 冷却期 (剩余${Math.round((cooldown - Date.now()) / 60000)}分钟)`);
+      downloadFailures++;
+      safeResolve(null);
+      return;
+    } else if (cooldown) {
+      rateLimitedHosts.delete(parsedUrl.hostname);
+    }
+
     const isHttps = parsedUrl.protocol === 'https:';
     const transport = isHttps ? https : http;
+    const hostname = parsedUrl.hostname.toLowerCase();
+    const isQqCdn = /qq\.com|qpic\.cn|gtimg\.cn/.test(hostname);
+    const isLiquipedia = /liquipedia\.net|wikimedia\.org/.test(hostname);
 
-    // 多 UA 重试 - QQ CDN 对不同 UA 反应不一样
-    const userAgents = [
+    // 多 UA 重试 - 不同站点对 UA 偏好不同
+    const qqUserAgents = [
       'Mozilla/5.0 (Linux; Android 12; PCRT00) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/107.0.5304.141 Mobile Safari/537.36 V1_AND_SQ_9.0.10_5395_YYB_D A_9001000 QQ/9.0.10.18435 NetType/WIFI WebP/0.4.1 AppId/537230910',
       'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) QQ/9.0.0.0 Safari/537.36',
       'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 QQ/9.0.0',
       'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
     ];
+    const genericUserAgents = [
+      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:124.0) Gecko/20100101 Firefox/124.0',
+      'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+      'wanjier-bot/1.0 (https://github.com/2711944586/qqbot)',
+    ];
+    const userAgents = isQqCdn ? qqUserAgents : genericUserAgents;
     const ua = userAgents[uaIndex % userAgents.length];
+
+    // Referer 仅 QQ CDN 用 im.qq.com；其他站点用对应主页或不用
+    const headers: Record<string, string> = {
+      'User-Agent': ua,
+      'Accept': 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
+      'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+    };
+    if (isQqCdn) {
+      headers['Referer'] = 'https://im.qq.com/';
+    } else if (isLiquipedia) {
+      // Liquipedia 接受空 Referer 或自家 Referer，绝对不能用 QQ 的
+      headers['Referer'] = 'https://liquipedia.net/';
+    }
 
     const req = transport.get({
       hostname: parsedUrl.hostname,
       port: parsedUrl.port || (isHttps ? 443 : 80),
       path: parsedUrl.pathname + parsedUrl.search,
-      headers: {
-        'User-Agent': ua,
-        'Accept': 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
-        'Accept-Language': 'zh-CN,zh;q=0.9',
-        'Referer': 'https://im.qq.com/',
-      },
+      headers,
     }, (res) => {
       const statusCode = res.statusCode || 0;
       if ([301, 302, 303, 307, 308].includes(statusCode) && res.headers.location) {
@@ -223,6 +254,17 @@ function downloadAndCache(url: string, redirectCount: number = 0, cacheKeyUrl: s
 
       // 非 200 状态：如果是 403/404 且还有 UA 可换，自动换 UA 重试
       if (statusCode !== 200) {
+        // 429/503 = 限流，记录冷却期，避免短期重试
+        if (statusCode === 429 || statusCode === 503) {
+          const hostKey = `__rate__${parsedUrl.hostname}`;
+          // 把同 hostname 的所有图片暂存为已知失败10分钟，省 API 调用
+          rateLimitedHosts.set(parsedUrl.hostname, Date.now() + 10 * 60 * 1000);
+          setImageError(`HTTP ${statusCode} 限流 host=${parsedUrl.hostname}，10分钟内不再尝试同host`);
+          downloadFailures++;
+          safeResolve(null);
+          res.resume();
+          return;
+        }
         if ((statusCode === 403 || statusCode === 401) && uaIndex < userAgents.length - 1) {
           res.resume();
           console.warn(`[ImageCache] HTTP ${statusCode} ua=${uaIndex}，换UA重试 url=${url.slice(0, 80)}`);

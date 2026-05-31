@@ -73,7 +73,7 @@
     "vision_max_images": 2,
     "image_cache_max_mb": 400,
     "image_cache_max_file_mb": 8,
-    "image_cache_max_age_hours": 72,
+    "image_cache_max_age_hours": 720,
     "image_download_max_redirects": 3,
     "image_cache_cleanup_interval_minutes": 30,
     "image_cache_max_files": 2000,

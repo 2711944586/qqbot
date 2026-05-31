@@ -387,16 +387,19 @@ function buildImageFailureLine(): string {
 async function imageSegmentOrNote(url?: string, fallbackPlayerNick?: string): Promise<MessageSegment[]> {
   if (!url && !fallbackPlayerNick) return [];
 
-  // 1. 先试硬编码的 URL
+  // 1. 先试硬编码的 URL（通常是 Liquipedia 或 Wikimedia）
   if (url) {
     const dataUrl = await imageDataUrlResolver(url);
     if (dataUrl) return [{ type: 'image', data: { file: dataUrl.replace(/^data:image\/[^;]+;base64,/, 'base64://') } }];
   }
 
-  // 2. 硬编码失败 + 有选手名 → 用 Liquipedia API 动态查
+  // 2. 硬编码失败 + 有选手名 → 用 Liquipedia API 动态查（可能被同一限流影响，所以快速失败）
   if (fallbackPlayerNick) {
     try {
-      const dynamicUrl = await resolvePlayerImage(fallbackPlayerNick);
+      const dynamicUrl = await Promise.race([
+        resolvePlayerImage(fallbackPlayerNick),
+        new Promise<null>((r) => setTimeout(() => r(null), 5000)), // 5秒不出结果就放弃
+      ]);
       if (dynamicUrl) {
         const dataUrl = await imageDataUrlResolver(dynamicUrl);
         if (dataUrl) {
@@ -407,6 +410,24 @@ async function imageSegmentOrNote(url?: string, fallbackPlayerNick?: string): Pr
     } catch (err) {
       console.warn(`[fun] ${fallbackPlayerNick} Liquipedia动态查图失败:`, err instanceof Error ? err.message : err);
     }
+  }
+
+  // 3. 最终兜底：用 webSearch 找一个图片 URL
+  if (fallbackPlayerNick) {
+    try {
+      const query = `${fallbackPlayerNick} CS2 player photo site:wikipedia.org OR site:wikimedia.org`;
+      const result = await webSearch(query, 3000, 600, 60);
+      if (result) {
+        const imgMatch = result.match(/https?:\/\/upload\.wikimedia\.org\/[^\s)"<>]+\.(?:jpg|jpeg|png|webp)/i);
+        if (imgMatch) {
+          const dataUrl = await imageDataUrlResolver(imgMatch[0]);
+          if (dataUrl) {
+            console.log(`[fun] ${fallbackPlayerNick} 用webSearch找图成功`);
+            return [{ type: 'image', data: { file: dataUrl.replace(/^data:image\/[^;]+;base64,/, 'base64://') } }];
+          }
+        }
+      }
+    } catch (err) { /* */ }
   }
 
   return [{ type: 'text', data: { text: buildImageFailureLine() } }];
@@ -730,7 +751,38 @@ export const funPlugin: Plugin = {
         `图片缓存: ${stats.count}/${stats.maxFiles}张 ${stats.sizeMB}/${stats.maxSizeMB}MB`,
         `图片命中: ${stats.hits}/${stats.misses} 失败${stats.downloadFailures} 飞行${stats.inFlight}`,
         ...(stats.lastError ? [`最近图片错误: ${stats.lastError}`] : []),
+        '',
+        'admin: /csprewarm 预下载所有选手图(慢，受限流影响)',
       ].join('\n'));
+      return true;
+    }
+
+    // ===== /csprewarm 预下载所有选手图（admin） =====
+    if (ctx.command === 'csprewarm') {
+      const config = ctx.bot.getConfig();
+      if (!config.admin_qq.includes(ctx.event.user_id)) {
+        ctx.replyAt('⛔ 仅管理员可用');
+        return true;
+      }
+      ctx.reply(`开始预下载 ${csPlayers.length} 张选手图，每张间隔 5 秒，预计 ${Math.round(csPlayers.length * 5 / 60)} 分钟。完成后会通知。`);
+      // 后台异步执行
+      void (async () => {
+        let success = 0;
+        let failed = 0;
+        for (let i = 0; i < csPlayers.length; i++) {
+          const player = csPlayers[i];
+          try {
+            const dataUrl = await imageDataUrlResolver(player.image);
+            if (dataUrl) success++; else failed++;
+          } catch { failed++; }
+          // 5 秒间隔，避免被限流
+          await new Promise((r) => setTimeout(r, 5000));
+        }
+        const target = ctx.groupId
+          ? () => ctx.bot.sendGroupMessage(ctx.groupId!, `预下载完成：成功 ${success} 失败 ${failed}`)
+          : () => ctx.bot.sendPrivateMessage(ctx.event.user_id, `预下载完成：成功 ${success} 失败 ${failed}`);
+        try { await target(); } catch { /* */ }
+      })();
       return true;
     }
     if (isCsPlayerDrawRequest(ctx.command, raw)) {
