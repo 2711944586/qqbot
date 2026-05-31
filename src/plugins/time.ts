@@ -1,10 +1,13 @@
 import { Plugin } from '../types';
+import { detectFuzzyCommand } from './fuzzy-command';
 
 export const timePlugin: Plugin = {
   name: 'time',
   description: '查看当前时间',
   handler: (ctx) => {
-    if (ctx.command === 'time') {
+    // 中文模糊：现在几点 / 几号 / 今天星期几
+    const fuzzy = ctx.command ? null : detectFuzzyCommand(ctx.rawText.trim());
+    if (ctx.command === 'time' || ctx.command === '时间' || fuzzy === 'time') {
       const now = new Date();
       const timeStr = now.toLocaleString('zh-CN', {
         timeZone: 'Asia/Shanghai',

@@ -662,6 +662,22 @@ function buildSystemPrompt(config: AIConfig): string {
         ? '可以重嘴硬，毒舌上限高，像直播间跟弹幕对喷的程度。但底线是不搞真人身攻击和歧视。'
         : '轻嘴硬但不咬人，调侃点到为止，优先把话说准；不要动不动喷人。';
 
+  // ===== 当前时间锚点（每条消息都注入） =====
+  const now = new Date();
+  // 北京时间
+  const cstOffset = 8 * 60 * 60 * 1000;
+  const cst = new Date(now.getTime() + cstOffset);
+  const year = cst.getUTCFullYear();
+  const month = cst.getUTCMonth() + 1;
+  const day = cst.getUTCDate();
+  const weekdays = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
+  const weekday = weekdays[cst.getUTCDay()];
+  const hh = String(cst.getUTCHours()).padStart(2, '0');
+  const mm = String(cst.getUTCMinutes()).padStart(2, '0');
+  const season = month >= 3 && month <= 5 ? '春季' : month >= 6 && month <= 8 ? '夏季' : month >= 9 && month <= 11 ? '秋季' : '冬季';
+  const timeOfDay = cst.getUTCHours() < 6 ? '凌晨' : cst.getUTCHours() < 12 ? '上午' : cst.getUTCHours() < 14 ? '中午' : cst.getUTCHours() < 18 ? '下午' : cst.getUTCHours() < 23 ? '晚上' : '深夜';
+  const timeAnchor = `当前时间：${year}年${month}月${day}日 ${weekday} ${hh}:${mm} (${timeOfDay}, ${season}, 北京时间)`;
+
   // 随机选一个反公式化提示，每次回复看到不同的，避免模型陷入套路
   const antiFormulaicHints = [
     '这条不要用任何固定开场白，直接说事',
@@ -686,6 +702,12 @@ function buildSystemPrompt(config: AIConfig): string {
 
   return [
     base,
+    '',
+    `[现实时间锚点 - 这是当前真实时间]`,
+    `- ${timeAnchor}`,
+    `- 你的训练数据停在某个时间点，但现实时间就是上面这个，别说"现在是2024年"或"我不知道现在几点"`,
+    `- 被问"今天几号/现在几点/今天星期几/现在是几月"等时间问题：直接用上面的真实时间回答`,
+    `- 别根据训练数据猜年份，年份就是 ${year} 年`,
     '',
     '[本条节奏提示]',
     `- ${hint}`,
@@ -1496,6 +1518,21 @@ function ensureMaintenanceTimer(): void {
 export function startAiChatBackgroundTasks(config: AIConfig): void {
   ensureKnowledgeAutoTimer(config);
   ensureMaintenanceTimer();
+
+  // 启动后延迟 90 秒做一次知识库刷新，确保 bot 拿到的数据相对新
+  // (避免和 NapCat 重连竞争资源，所以延迟 90s)
+  if (config.knowledge_auto_update !== false && isKnowledgeAutoEnabled()) {
+    setTimeout(() => {
+      if (knowledgeAutoRunning) return;
+      knowledgeAutoRunning = true;
+      runKnowledgeRefresh(config, '', true)
+        .then((summary) => console.log(`[KnowledgeAuto] 启动后首次刷新\n${summary}`))
+        .catch((err) => console.error('[KnowledgeAuto] 启动刷新失败:', err instanceof Error ? err.message : err))
+        .finally(() => {
+          knowledgeAutoRunning = false;
+        });
+    }, 90 * 1000).unref();
+  }
 }
 
 function includesAnyKeyword(text: string, keywords: string[] = []): boolean {
@@ -2697,7 +2734,9 @@ export const aiChatPlugin: Plugin = {
         const apiMessages = buildApiMessages(systemPrompt, job.contextSummary, history, apiCurrentMessage, searchInfo, knowledgeInfo, similarMemories);
 
         // ===== 调用 AI =====
-        const canUseReplyCache = !job.forced && !job.hasImages && !job.hasRecords && !searchInfo && !!job.effectiveText && (config.ai_reply_cache_seconds ?? 180) > 0;
+        // 时间/日期类问题永远不缓存（因为答案随时间变化）
+        const isTimeSensitive = /(?:今天|今日|现在|当前|此刻|此时|目前|今晚|今早|今夜|刚才|几号|几点|几月|星期|周[一二三四五六日天])/.test(job.effectiveText || '');
+        const canUseReplyCache = !job.forced && !job.hasImages && !job.hasRecords && !searchInfo && !!job.effectiveText && !isTimeSensitive && (config.ai_reply_cache_seconds ?? 180) > 0;
         const replyCacheKey = canUseReplyCache ? makeReplyCacheKey(config, job.effectiveText, knowledgeInfo) : '';
         let cleaned = replyCacheKey ? getCachedReply(replyCacheKey) : null;
         const cacheHit = !!cleaned;

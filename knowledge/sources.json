@@ -334,5 +334,45 @@
     "trusted": false,
     "autoCommitEligible": false,
     "intervalMinutes": 1440
+  },
+  {
+    "id": "hltv-top20-2026-may",
+    "query": "HLTV top 20 players 2026 May ZywOo donk ropz NiKo m0NESY",
+    "sourceType": "public_fact",
+    "trusted": true,
+    "autoCommitEligible": true,
+    "intervalMinutes": 1440
+  },
+  {
+    "id": "cs2-major-2026-current",
+    "query": "IEM Cologne 2026 Major CS2 schedule playoffs",
+    "sourceType": "public_fact",
+    "trusted": true,
+    "autoCommitEligible": true,
+    "intervalMinutes": 720
+  },
+  {
+    "id": "cs2-roster-changes-2026",
+    "query": "CS2 roster changes 2026 transfers Vitality NAVI Spirit FaZe MOUZ Falcons",
+    "sourceType": "public_fact",
+    "trusted": true,
+    "autoCommitEligible": true,
+    "intervalMinutes": 1440
+  },
+  {
+    "id": "wanjier-recent-broadcast-2026",
+    "query": "玩机器 6657 2026 最新 直播 解说 切片",
+    "sourceType": "public_summary",
+    "trusted": false,
+    "autoCommitEligible": false,
+    "intervalMinutes": 1440
+  },
+  {
+    "id": "cs2-meta-2026",
+    "query": "CS2 2026 update patch meta map pool changes",
+    "sourceType": "public_fact",
+    "trusted": true,
+    "autoCommitEligible": true,
+    "intervalMinutes": 2880
   }
 ]
