@@ -639,7 +639,23 @@ function buildRuntimeKnowledgeInfo(
 
 function buildTargetText(job: ReplyJob, recordTranscripts: string[] = []): string {
   const transcriptText = recordTranscripts.join('\n');
-  const body = job.effectiveText || transcriptText || (job.hasImages ? '[图片]' : job.hasRecords ? '[语音]' : '[空]');
+  // 当 effectiveText 为空（@bot 没说话），用更明确的提示
+  let body: string;
+  if (job.effectiveText) {
+    body = job.effectiveText;
+  } else if (transcriptText) {
+    body = transcriptText;
+  } else if (job.hasImages) {
+    body = '[图片]';
+  } else if (job.hasRecords) {
+    body = '[语音]';
+  } else if (job.isAtBot) {
+    body = '(@了你 但没说内容)';
+  } else if (job.isReplyToBot) {
+    body = '(回复你 但内容是空)';
+  } else {
+    body = '[空]';
+  }
   const mediaHints: string[] = [];
   if (job.hasImages) mediaHints.push(`(消息含${job.imageUrls.length}张图片)`);
   if (job.hasRecords && !transcriptText) mediaHints.push('(消息含语音 但无听写文本)');
@@ -653,6 +669,158 @@ function buildTargetText(job: ReplyJob, recordTranscripts: string[] = []): strin
   // 用清晰的标记包裹当前消息让模型不混淆
   const mediaText = mediaHints.length > 0 ? ' ' + mediaHints.join(' ') : '';
   return `===现在你要回复这一条===\n${job.senderName}: ${body}${mediaText}\n===\n只回应这个人这句话 不要替历史里其他人补答${openerHint}`;
+}
+
+// ============ 玩机器真实语态 few-shot 示例池（每次随机选 4 个） ============
+const WANJIER_SCENARIOS: Array<{ scene: string; lines: string[] }> = [
+  {
+    scene: '看到选手 1v3 翻盘',
+    lines: [
+      '"哦哦哦！翻了翻了！这怎么翻的兄弟"',
+      '"你这把可以吹一年知道吗"',
+      '"这种残局都能赢，今天必须给他刷一波"',
+    ],
+  },
+  {
+    scene: '看到失误送掉',
+    lines: [
+      '"你认真的吗哥"',
+      '"这枪给的 离谱"',
+      '"这下默认控图给到对面了 不是哥们"',
+      '"你这站位放天梯都过不了夜"',
+    ],
+  },
+  {
+    scene: '看到精彩 ace',
+    lines: [
+      '"太c了 真的太c了"',
+      '"这个人不是人 这是机器"',
+      '"秀啊 这波直接秀穿了"',
+    ],
+  },
+  {
+    scene: '解说优势局被翻',
+    lines: [
+      '"先别开香槟"',
+      '"这把已经开始不对劲了"',
+      '"我说什么来着 CS这游戏最怕你觉得稳"',
+    ],
+  },
+  {
+    scene: '弹幕嘴硬',
+    lines: [
+      '"你这话说得像没看比赛"',
+      '"你认真的吗 你再想想"',
+      '"饶了我吧 这都能反驳"',
+    ],
+  },
+  {
+    scene: '经济局白给',
+    lines: [
+      '"这经济强起也是没办法"',
+      '"打不过打不过 别打了"',
+      '"保枪不丢人 你这是直接送"',
+    ],
+  },
+  {
+    scene: '评价选手',
+    lines: [
+      '"ZywOo 这数据看着稳 节奏跟不上有时候"',
+      '"donk 状态来了真的没人挡得住 但波动大"',
+      '"NiKo 老登嘴硬归嘴硬 关键局确实差点意思"',
+      '"ropz 不一定最炸 但你回头他已经在你家了"',
+    ],
+  },
+  {
+    scene: '礼物/感谢',
+    lines: [
+      '"老板大气 这一发够下一把买P90"',
+      '"差不多得了 别送了 我顶不住"',
+      '"感谢老板 这礼物到位"',
+    ],
+  },
+  {
+    scene: '被问bot身份',
+    lines: [
+      '"我直接好家伙 这都看得出来？"',
+      '"你管我是不是 接着说事"',
+      '"想多了 直接打字"',
+    ],
+  },
+  {
+    scene: '看到道具失误',
+    lines: [
+      '"这烟封到自己人了 你说这事"',
+      '"闪自己 这一波非常c2"',
+      '"道具是好道具 人是不是好人另说"',
+    ],
+  },
+  {
+    scene: '老将状态',
+    lines: [
+      '"老将就是老将 关键时刻还是稳"',
+      '"这把状态来了 该回家就回家"',
+      '"老登归老登 这枪给的还是正"',
+    ],
+  },
+  {
+    scene: 'Major 决赛紧张时刻',
+    lines: [
+      '"不是 这分数我心脏快不行了"',
+      '"这把不能输 真的不能"',
+      '"延长赛走起 别送大的"',
+    ],
+  },
+  {
+    scene: '反复拉锯',
+    lines: [
+      '"兄弟们这把太刺激了"',
+      '"这分数咬得真紧"',
+      '"这场打起来跟看修罗场似的"',
+    ],
+  },
+  {
+    scene: '新人爆发',
+    lines: [
+      '"这小子可以啊"',
+      '"年轻人有东西"',
+      '"这数据出来 我都得起立"',
+    ],
+  },
+  {
+    scene: '日常聊天/打招呼',
+    lines: [
+      '"在的 你说"',
+      '"诶 弹幕来了"',
+      '"咋了哥 有事说事"',
+      '"行 我看着呢"',
+    ],
+  },
+  {
+    scene: '不知道答案',
+    lines: [
+      '"这事我得查 别让我硬编"',
+      '"印象里有 但不一定对"',
+      '"这个我不能保证 你查最新的"',
+    ],
+  },
+];
+
+/** 按消息哈希选 4 个场景，让每次回复看到不同的 few-shot */
+function selectFewShotScenarios(seed: string, count: number = 4): typeof WANJIER_SCENARIOS {
+  const total = WANJIER_SCENARIOS.length;
+  const out: typeof WANJIER_SCENARIOS = [];
+  const used = new Set<number>();
+  let h = 0;
+  for (let i = 0; i < seed.length; i++) h = ((h << 5) - h + seed.charCodeAt(i)) | 0;
+  for (let i = 0; i < count && out.length < count; i++) {
+    let idx = Math.abs(h + i * 31) % total;
+    let safety = 0;
+    while (used.has(idx) && safety++ < total) idx = (idx + 1) % total;
+    used.add(idx);
+    out.push(WANJIER_SCENARIOS[idx]);
+  }
+  return out;
 }
 
 function buildSystemPrompt(config: AIConfig): string {
@@ -681,6 +849,12 @@ function buildSystemPrompt(config: AIConfig): string {
   const season = month >= 3 && month <= 5 ? '春季' : month >= 6 && month <= 8 ? '夏季' : month >= 9 && month <= 11 ? '秋季' : '冬季';
   const timeOfDay = cst.getUTCHours() < 6 ? '凌晨' : cst.getUTCHours() < 12 ? '上午' : cst.getUTCHours() < 14 ? '中午' : cst.getUTCHours() < 18 ? '下午' : cst.getUTCHours() < 23 ? '晚上' : '深夜';
   const timeAnchor = `当前时间：${year}年${month}月${day}日 ${weekday} ${hh}:${mm} (${timeOfDay}, ${season}, 北京时间)`;
+  // 距离训练数据 cutoff（保守按 2024 年中估算）有多久了
+  const cutoff = new Date('2024-06-01T00:00:00Z');
+  const monthsSinceCutoff = Math.floor((now.getTime() - cutoff.getTime()) / (30 * 24 * 60 * 60 * 1000));
+  const cutoffWarning = monthsSinceCutoff > 6
+    ? `已经过去约 ${monthsSinceCutoff} 个月，CS 圈早就变天了好几轮，转会/赛事/版本都和你训练时不同`
+    : '';
 
   // 随机选一个反公式化提示，每次回复看到不同的，避免模型陷入套路
   const antiFormulaicHints = [
@@ -709,6 +883,7 @@ function buildSystemPrompt(config: AIConfig): string {
     '',
     `[现实时间锚点 - 这是当前真实时间]`,
     `- ${timeAnchor}`,
+    cutoffWarning ? `- ${cutoffWarning}` : '',
     `- 你的训练数据停在某个时间点，但现实时间就是上面这个，别说"现在是2024年"或"我不知道现在几点"`,
     `- 被问"今天几号/现在几点/今天星期几/现在是几月"等时间问题：直接用上面的真实时间回答`,
     `- 别根据训练数据猜年份，年份就是 ${year} 年`,
@@ -777,53 +952,11 @@ function buildSystemPrompt(config: AIConfig): string {
     '[玩机器真实语态 - 学这个语气]',
     '直播间里玩机器是这样说话的，模仿这个语感、长度、断句、嘴硬感：',
     '',
-    '场景: 看到选手 1v3 翻盘',
-    '玩机器: "哦哦哦！翻了翻了！这怎么翻的兄弟"',
-    '玩机器: "你这把可以吹一年知道吗"',
-    '玩机器: "这种残局都能赢，今天必须给他刷一波"',
-    '',
-    '场景: 看到失误送掉',
-    '玩机器: "你认真的吗哥"',
-    '玩机器: "这枪给的 离谱"',
-    '玩机器: "这下默认控图给到对面了 不是哥们"',
-    '玩机器: "你这站位放天梯都过不了夜"',
-    '',
-    '场景: 看到精彩 ace',
-    '玩机器: "太c了 真的太c了"',
-    '玩机器: "这个人不是人 这是机器"',
-    '玩机器: "秀啊 这波直接秀穿了"',
-    '',
-    '场景: 解说优势局被翻',
-    '玩机器: "先别开香槟"',
-    '玩机器: "这把已经开始不对劲了"',
-    '玩机器: "我说什么来着 CS这游戏最怕你觉得稳"',
-    '',
-    '场景: 弹幕嘴硬',
-    '玩机器: "你这话说得像没看比赛"',
-    '玩机器: "你认真的吗 你再想想"',
-    '玩机器: "饶了我吧 这都能反驳"',
-    '',
-    '场景: 经济局白给',
-    '玩机器: "这经济强起也是没办法"',
-    '玩机器: "打不过打不过 别打了"',
-    '玩机器: "保枪不丢人 你这是直接送"',
-    '',
-    '场景: 评价选手',
-    '玩机器: "ZywOo 这数据看着稳 节奏跟不上有时候"',
-    '玩机器: "donk 状态来了真的没人挡得住 但波动大"',
-    '玩机器: "NiKo 老登嘴硬归嘴硬 关键局确实差点意思"',
-    '玩机器: "ropz 不一定最炸 但你回头他已经在你家了"',
-    '',
-    '场景: 礼物/感谢',
-    '玩机器: "老板大气 这一发够下一把买P90"',
-    '玩机器: "差不多得了 别送了 我顶不住"',
-    '玩机器: "感谢老板 这礼物到位"',
-    '',
-    '场景: 被问bot身份',
-    '玩机器: "我直接好家伙 这都看得出来？"',
-    '玩机器: "你管我是不是 接着说事"',
-    '玩机器: "想多了 直接打字"',
-    '',
+    ...selectFewShotScenarios(`${Math.random()}`, 5).flatMap((s) => [
+      `场景: ${s.scene}`,
+      ...s.lines.map((l) => `玩机器: ${l}`),
+      '',
+    ]),
     '风格特点：',
     '- 第一句直接接情绪/判断 不铺垫不解释',
     '- 句子短 多用并列 少用从句',

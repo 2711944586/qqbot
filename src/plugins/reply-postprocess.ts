@@ -113,6 +113,10 @@ export function postProcessReply(text: string): string {
   // 限制emoji数量 — 真人不会一句话堆10个emoji
   text = limitEmoji(text);
 
+  // 把常见 emoji 转成 QQ 经典表情标签 (😂→[face:178] 等)
+  // 让回复在 QQ 端显示原生黄脸表情，更有 QQ 风
+  text = emojiToFaceMarkers(text);
+
   return sanitizeOutgoingText(text).trim();
 }
 
@@ -155,6 +159,66 @@ function fixPunctuation(text: string): string {
     .replace(/  +/g, ' ')
     // 句末多余的空格
     .replace(/\s+([。！？!?，,])/g, '$1');
+}
+
+/** Unicode emoji → QQ face id 映射（让 AI 输出的 emoji 自动转成 QQ 经典表情） */
+const EMOJI_TO_FACE: Record<string, number> = {
+  '😂': 178, '🤣': 178,
+  '😄': 14, '😀': 14, '🙂': 14,
+  '😆': 28, '😏': 4,
+  '😢': 5, '😭': 9,
+  '😍': 21, '🥰': 21,
+  '😎': 16,
+  '😡': 11, '🤬': 11, '😠': 11,
+  '🤔': 32, '😕': 32,
+  '😴': 8,
+  '😵': 34, '😵‍💫': 34,
+  '🤯': 287,
+  '👍': 76, '👍🏻': 76, '👍🏼': 76, '👍🏽': 76,
+  '👎': 77,
+  '👌': 124,
+  '🙏': 67, '🤝': 65,
+  '✌': 66, '✌️': 66,
+  '🌹': 79,
+  '☀': 81, '☀️': 81,
+  '🌙': 82,
+  '💀': 37,
+  '🎂': 53,
+  '☕': 60, '☕️': 60,
+  '💩': 59,
+  '😋': 13, '😛': 13,
+  '😉': 0,
+  '😱': 26,
+  '😅': 27,
+  '🥲': 105,
+  '😘': 108,
+  '🤐': 7,
+  '🤡': 22,
+  '🤤': 2,
+  '🥺': 110,
+  '🤓': 100,
+  '🫡': 67,
+};
+
+/**
+ * 把 AI 输出里的 unicode emoji 替换为 [face:N] 标签，让 QQ 显示原生经典表情
+ * 仅替换有映射的，未映射的 emoji 原样保留（让 limitEmoji 控制数量）
+ */
+export function emojiToFaceMarkers(text: string): string {
+  if (!text) return text;
+  let count = 0;
+  const max = 2;
+  return text.replace(
+    /[\u{1F300}-\u{1F9FF}]|[\u{2600}-\u{27BF}]|[\u{1F600}-\u{1F64F}]/gu,
+    (m) => {
+      const id = EMOJI_TO_FACE[m];
+      if (id !== undefined && count < max) {
+        count++;
+        return `[face:${id}]`;
+      }
+      return m;
+    },
+  );
 }
 
 /** 限制emoji出现次数 - 真人不会堆emoji，玩机器尤其少 */
