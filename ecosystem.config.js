@@ -31,10 +31,10 @@ module.exports = {
   apps: [{
     name: 'wanjier',
     script: 'dist/index.js',
-    // 单进程运行：1核机器不要开 cluster
-    node_args: '--max-old-space-size=768 --expose-gc',
-    // RSS 超过约 1.1GB 自动重启
-    max_memory_restart: '1100M',
+    // 2G/1C 服务器：bot 给 1.2G 堆 + 余量给 NapCat 和系统
+    node_args: '--max-old-space-size=1200 --expose-gc',
+    // RSS 超过 1.4G 自动重启
+    max_memory_restart: '1400M',
     autorestart: true,
     min_uptime: 5000,
     restart_delay: 3000,

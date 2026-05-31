@@ -156,8 +156,8 @@ export class ContextManager {
     this.flushDirtyToDisk();
     const now = Date.now();
     for (const [id, session] of this.sessions) {
-      // 15分钟没活跃就从内存里清出去
-      if (now - session.lastActiveTime > 15 * 60 * 1000) {
+      // 30分钟没活跃就从内存里清出去（2G服务器不用太激进）
+      if (now - session.lastActiveTime > 30 * 60 * 1000) {
         this.sessions.delete(id);
       }
     }
