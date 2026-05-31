@@ -1,4 +1,5 @@
 import { Plugin } from '../types';
+import { detectFuzzyCommand } from './fuzzy-command';
 
 // ============ 消息统计 ============
 interface UserDetail {
@@ -203,13 +204,16 @@ export const statsPlugin: Plugin = {
     const nickname = ctx.event.sender.card || ctx.event.sender.nickname;
     statsManager.record(ctx.groupId, ctx.event.user_id, nickname);
 
+    // 中文模糊命令分发（仅当不是显式 /xxx 命令时）
+    const fuzzy = ctx.command ? null : detectFuzzyCommand(ctx.rawText.trim());
+
     // 只处理命令
-    if (ctx.command === 'stats' || ctx.command === 'stat') {
+    if (ctx.command === 'stats' || ctx.command === 'stat' || fuzzy === 'stats') {
       ctx.reply(statsManager.getSummary(ctx.groupId));
       return true;
     }
 
-    if (ctx.command === 'me' || ctx.command === '我') {
+    if (ctx.command === 'me' || ctx.command === '我' || fuzzy === 'me') {
       const result = statsManager.getUserStats(ctx.groupId, ctx.event.user_id);
       if (result) {
         ctx.replyAt(result);

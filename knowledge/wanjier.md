@@ -247,6 +247,9 @@
 
 ## 当前梯队（CS2 2026 春季后）
 
+> 这部分是历史快照，**实时排名一律以 HLTV 实时数据 / VRS 为准**。
+> bot 收到 `[HLTV实时数据]` 系统消息时，必须以那里的数据回答，不要用本节内容当事实。
+
 - T0：Vitality（ZywOo+flameZ+mezii+ropz+apEX 的轮换体系还是最稳）
 - T0.5：Spirit（donk+sh1ro+chopper+zont1x+magixx 状态回来时无敌 但波动大）
 - T1：MOUZ、NAVI、G2、Falcons（轮流抓菜，看哪个状态在线）
@@ -276,6 +279,7 @@
 ## 2025-2026 CS2 圈最新梗 / 名场面索引
 
 > 这些是公开 B 站/HLTV 都能查到的事件，知识库以事实+短摘要形式记录。
+> **比赛实时进展、当前阵容、最新 Top 1 等问题：必须以 [HLTV实时数据] 系统消息为准，不要直接用本节作答。**
 
 - ZywOo 在 2025 Cologne 决赛 Vitality vs MOUZ 1v3 翻盘，被解说称为「最稳的最稳」
 - donk 在 Spirit 2024 上海 Major 拿 MVP，大家叫他「天龙人」「来自俄罗斯的暴君」

@@ -1,10 +1,12 @@
 import { Plugin } from '../types';
+import { detectFuzzyCommand } from './fuzzy-command';
 
 export const helpPlugin: Plugin = {
   name: 'help',
   description: '显示帮助信息',
   handler: (ctx) => {
-    if (ctx.command === 'help') {
+    const fuzzy = ctx.command ? null : detectFuzzyCommand(ctx.rawText.trim());
+    if (ctx.command === 'help' || fuzzy === 'help') {
       const helpText = [
         '玩机器 命令列表',
         '',
@@ -77,6 +79,19 @@ export const helpPlugin: Plugin = {
         '  复读2次我会跟',
         '  CS2/玩机器相关话题会主动接',
         '  支持emoji 包括 😂🤣',
+        '',
+        '🔥 中文模糊触发 (不需要 / 前缀，自然语言)：',
+        '  我多活跃 / 看看我 / 我的活跃度 → /me',
+        '  群统计 / 话痨排行 → /stats',
+        '  今天有什么比赛 / 现在打谁 → /match',
+        '  hltv排名 / 现在第一是谁 → /ranking',
+        '  最近战报 / 昨天比赛结果 → /cs2news',
+        '  cs直播 / 玩机器开播了吗 → /cs2live',
+        '  玩机器今天什么状态 → /csmood',
+        '  今日运势 → /forecast',
+        '  学一下我的声音 → /voice clone',
+        '  内存状态 → /mem',
+        '  帮助 / 怎么用 / 功能列表 → /help',
       ].join('\n');
 
       ctx.reply(helpText);

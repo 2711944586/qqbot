@@ -6,6 +6,7 @@ import { auditKnowledge, getKnowledgeStats, pruneKnowledgeAutoLog } from './know
 import { cleanSttCache, getSttStats } from './stt';
 import { cleanVoiceCache, getVoiceStats } from './tts';
 import { cleanSearchCache, getSearchStats } from './web-search';
+import { detectFuzzyCommand } from './fuzzy-command';
 
 function formatDate(timestamp: number): string {
   if (!timestamp) return '无';
@@ -33,8 +34,11 @@ export const adminPlugin: Plugin = {
     const config = ctx.bot.getConfig();
     const isAdmin = config.admin_qq.includes(ctx.event.user_id);
 
+    // 中文模糊命令分发
+    const fuzzy = ctx.command ? null : detectFuzzyCommand(ctx.rawText.trim());
+
     // ===== /mem 内存状态（任何人可查）=====
-    if (ctx.command === 'mem' || ctx.command === 'memory') {
+    if (ctx.command === 'mem' || ctx.command === 'memory' || fuzzy === 'mem') {
       const usage = process.memoryUsage();
       const heapMB = Math.round(usage.heapUsed / 1024 / 1024);
       const heapTotalMB = Math.round(usage.heapTotal / 1024 / 1024);

@@ -7,6 +7,8 @@ import { cleanSttCache, getSttStats, transcribeRecords } from './stt';
 import { cleanupCache as cleanImageCache, configureImageCache, getCacheStats as getImageCacheStats, getImageDataUrl } from './image-cache';
 import { configureGates, getGateStats, withGate } from './concurrency';
 import { sanitizeOutgoingText } from '../message-sanitize';
+import { detectFuzzyCommand, detectCsTopicQuery } from './fuzzy-command';
+import { fetchOngoingMatches, fetchTeamRanking, fetchRecentResults } from './hltv-api';
 import {
   directTtsCommands,
   extractVerbatimVoiceText,
@@ -137,6 +139,9 @@ interface ReplyTrace {
   sttError?: string;
   visionError?: string;
   searchError?: string;
+  hltvUsed?: boolean;
+  hltvChars?: number;
+  hltvError?: string;
   visionPayload: boolean;
   voiceRequested: boolean;
   voiceMode: 'none' | 'direct-verbatim' | 'ai-voice' | 'passive-voice';
@@ -693,6 +698,15 @@ function buildSystemPrompt(config: AIConfig): string {
     '- 不要标题式开头（结论/原因/建议/分析）',
     '- 输出就是QQ消息 不用Markdown',
     '- 不要括号舞台说明（如"（玩机器风格）"）',
+    '',
+    '[实时数据铁律 - 重要]',
+    '- 你的训练数据可能停在某个时间点，CS圈日新月异，今年的事你可能不知道',
+    '- 如果消息里出现 [HLTV实时数据] 或 [实时参考] 块：以这些数据为准，覆盖你脑子里的旧印象',
+    '- 比赛/比分/赛程/排名/转会/阵容这些实时信息：除非有 [HLTV实时数据] 提供，否则不要瞎编具体数据；可以说"等我查一下"或"你查最新的"',
+    '- 选手当前在哪队、哪个比赛打到几比几、谁是当前 Top1 这种问题：必须依据 [HLTV实时数据]，没数据就承认"我得查"',
+    '- 不要把"我记得是"当成事实，CS 转会和阵容变动很快',
+    '- 但选手历史风格、地图打法、战术原理这些不会过时的，可以基于经验聊',
+    '',
     `- 人格: ${config.persona_mode || 'first_person_bot'} 强度: ${config.aggression_level || 'low'}`,
   ].join('\n');
 }
@@ -1811,6 +1825,68 @@ export const aiChatPlugin: Plugin = {
       ? `private_${ctx.event.user_id}`
       : `group_${ctx.groupId}`;
 
+    // ===== 中文模糊命令分发 - 仅当不是显式 /xxx 命令时 =====
+    const fuzzyCmd = ctx.command ? null : detectFuzzyCommand(ctx.rawText.trim());
+
+    // ===== Voice Clone 模糊触发 =====
+    if (fuzzyCmd === 'voice_clone' || fuzzyCmd === 'voice_clone_status' || fuzzyCmd === 'voice_clone_reset') {
+      // 状态查询
+      if (fuzzyCmd === 'voice_clone_status') {
+        const stats = getVoiceStats(config);
+        if (stats.cloneReady) {
+          ctx.replyAt([
+            '🎤 Voice Clone 已学好',
+            `样本大小: ${stats.sampleSizeMB}MB`,
+            '想换 → 直接发语音 + 学一下我的声音',
+            '想清空 → 不用我的声音了 (需 admin)',
+          ].join('\n'));
+        } else {
+          ctx.replyAt([
+            '🎤 还没学过声音',
+            `状态: ${stats.sampleReason || '未配置'}`,
+            '发一段10-30秒的语音 + "学一下我的声音" 即可训练',
+          ].join('\n'));
+        }
+        return true;
+      }
+
+      // 重置
+      if (fuzzyCmd === 'voice_clone_reset') {
+        if (!isAdmin(ctx)) {
+          ctx.replyAt('⛔ 这操作只 admin 能用');
+          return true;
+        }
+        const ok = removeVoiceSample(config);
+        ctx.replyAt(ok ? '✅ 已清空 voice sample，回到默认 TTS' : '清空失败，可能没有样本');
+        return true;
+      }
+
+      // 训练
+      const recordSources = await resolveOneBotRecordSources(ctx, config, ctx.event.message);
+      if (recordSources.length === 0) {
+        ctx.replyAt([
+          '🎤 想让我学你的声音？',
+          '发一段10-30秒的清晰语音，然后说 "学一下我的声音"',
+          '建议是干净的人声，背景别太吵',
+        ].join('\n'));
+        return true;
+      }
+      ctx.replyAt('🎤 在下载学习中，稍等...');
+      const result = await installVoiceSample(config, recordSources[0]);
+      if (result.ok) {
+        const sizeMB = ((result.size || 0) / 1024 / 1024).toFixed(2);
+        ctx.replyAt([
+          `✅ 学好了 你的声音 ${sizeMB}MB`,
+          `格式: ${result.mime}`,
+          '试试 /voice test 兄弟们好',
+          '想换样本就再发一遍 + "学一下我的声音"',
+        ].join('\n'));
+      } else {
+        ctx.replyAt(`❌ 学习失败: ${result.reason || '未知'}`);
+      }
+      return true;
+    }
+
     // ===== 管理命令 =====
     if (ctx.command === 'reset' || ctx.command === 'clear') {
       cm.clearSession(sessionId);
@@ -2357,6 +2433,52 @@ export const aiChatPlugin: Plugin = {
           searchUsed: !!searchInfo,
           searchChars: searchInfo.length,
         });
+
+        // ===== HLTV 实时数据注入（CS 话题强增强） =====
+        // 当用户问到比赛/排名/战报时，主动抓 HLTV 注入到 searchInfo 里，覆盖训练数据老旧的问题
+        let hltvInfo = '';
+        if (!skipHeavyEnhancements && searchableText) {
+          const csTopic = detectCsTopicQuery(searchableText);
+          const fetches: Promise<string>[] = [];
+          const labels: string[] = [];
+          if (csTopic.needsMatches) { fetches.push(fetchOngoingMatches()); labels.push('当前比赛'); }
+          if (csTopic.needsRanking) { fetches.push(fetchTeamRanking()); labels.push('HLTV排名'); }
+          if (csTopic.needsResults) { fetches.push(fetchRecentResults()); labels.push('最近战报'); }
+          if (fetches.length > 0) {
+            try {
+              // HLTV 抓取有缓存，超时给 4s（首次未缓存时网络稍慢）
+              const timeoutMs = 4000;
+              const wrapped = fetches.map((p) => Promise.race([p, new Promise<string>((r) => {
+                const t = setTimeout(() => r(''), timeoutMs);
+                t.unref();
+              })]));
+              const results = await Promise.all(wrapped);
+              const parts: string[] = [];
+              for (let i = 0; i < results.length; i++) {
+                if (results[i]) parts.push(`【${labels[i]}】\n${results[i].slice(0, 600)}`);
+              }
+              if (parts.length > 0) {
+                hltvInfo = parts.join('\n\n');
+              }
+            } catch (err) {
+              patchReplyTrace(job.messageId, {
+                hltvError: err instanceof Error ? err.message.slice(0, 120) : String(err).slice(0, 120),
+              });
+            }
+          }
+        }
+        patchReplyTrace(job.messageId, {
+          hltvUsed: !!hltvInfo,
+          hltvChars: hltvInfo.length,
+        });
+
+        // 把 HLTV 数据合并进 searchInfo（前置，权重更高）
+        if (hltvInfo) {
+          searchInfo = searchInfo
+            ? `[HLTV实时数据]\n${hltvInfo}\n\n[联网补充]\n${searchInfo}`
+            : `[HLTV实时数据]\n${hltvInfo}`;
+        }
+
 
         const knowledgeQuery = [
           job.effectiveText,

@@ -3,6 +3,7 @@ import { getRandomKnowledgeLine } from './knowledge-base';
 import { getCacheStats, getImageDataUrl } from './image-cache';
 import { webSearch } from './web-search';
 import { fetchOngoingMatches, fetchTeamRanking, fetchRecentResults } from './hltv-api';
+import { detectFuzzyCommand } from './fuzzy-command';
 
 /** 随机选择 */
 function randomPick(items: string[]): string {
@@ -461,6 +462,11 @@ export const funPlugin: Plugin = {
 
   handler: async (ctx) => {
     const raw = ctx.rawText.trim();
+
+    // ===== 中文模糊命令分发：在群聊普通消息中识别 =====
+    // 仅当 ctx.command 为空（不是 /xxx 显式命令）时才走模糊匹配，避免冲突
+    const fuzzy = ctx.command ? null : detectFuzzyCommand(raw);
+
     // ===== 掷骰子 =====
     if (ctx.command === 'roll' || ctx.command === 'dice') {
       const input = ctx.args[0] || '100';
@@ -532,7 +538,7 @@ export const funPlugin: Plugin = {
     }
 
     // ===== /forecast 综合每日运势 =====
-    if (ctx.command === 'forecast' || ctx.command === '运势' || ctx.command === '今日运势') {
+    if (ctx.command === 'forecast' || ctx.command === '运势' || ctx.command === '今日运势' || fuzzy === 'forecast') {
       const today = new Date().toLocaleDateString('zh-CN', { timeZone: 'Asia/Shanghai' });
       const seed = hashCode(`forecast_${today}_${ctx.event.user_id}`);
       const rp = Math.abs(seed) % 101;
@@ -565,7 +571,7 @@ export const funPlugin: Plugin = {
     }
 
     // ===== 今日人品 =====
-    if (ctx.command === 'jrrp' || ctx.command === 'rp') {
+    if (ctx.command === 'jrrp' || ctx.command === 'rp' || fuzzy === 'jrrp') {
       // 基于日期+QQ号的伪随机，同一天结果固定
       const today = new Date().toLocaleDateString('zh-CN', { timeZone: 'Asia/Shanghai' });
       const seed = hashCode(`${today}_${ctx.event.user_id}`);
@@ -584,7 +590,7 @@ export const funPlugin: Plugin = {
     }
 
     // ===== /cs2news 实时CS新闻 =====
-    if (ctx.command === 'cs2news' || ctx.command === 'csnews') {
+    if (ctx.command === 'cs2news' || ctx.command === 'csnews' || fuzzy === 'cs2news') {
       try {
         // 优先用HLTV最近结果
         const results = await fetchRecentResults();
@@ -605,7 +611,7 @@ export const funPlugin: Plugin = {
     }
 
     // ===== /match 实时比赛 =====
-    if (ctx.command === 'match' || ctx.command === 'matches' || ctx.command === '比赛') {
+    if (ctx.command === 'match' || ctx.command === 'matches' || ctx.command === '比赛' || fuzzy === 'match') {
       try {
         // 优先用 HLTV 抓取
         const matches = await fetchOngoingMatches();
@@ -626,7 +632,7 @@ export const funPlugin: Plugin = {
     }
 
     // ===== /ranking 当前排名 =====
-    if (ctx.command === 'ranking' || ctx.command === 'rank' || ctx.command === '排名') {
+    if (ctx.command === 'ranking' || ctx.command === 'rank' || ctx.command === '排名' || fuzzy === 'ranking') {
       try {
         // 优先用 HLTV 抓取
         const ranking = await fetchTeamRanking();
@@ -647,7 +653,7 @@ export const funPlugin: Plugin = {
     }
 
     // ===== /cs2live CS2直播查询 =====
-    if (ctx.command === 'cs2live' || ctx.command === 'live') {
+    if (ctx.command === 'cs2live' || ctx.command === 'live' || fuzzy === 'cs2live') {
       try {
         const result = await webSearch('CS2 douyu twitch streaming live now 玩机器', 3000);
         if (result) {
@@ -674,7 +680,7 @@ export const funPlugin: Plugin = {
     }
 
     // ===== /csmood 玩机器今日心情 =====
-    if (ctx.command === 'csmood' || ctx.command === 'mood') {
+    if (ctx.command === 'csmood' || ctx.command === 'mood' || fuzzy === 'csmood') {
       const moods = [
         '今天状态嘎嘎好 弹幕来吧',
         '今天有点累 不想接梗',
