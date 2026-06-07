@@ -158,6 +158,8 @@ export function hasUsableApiKey(apiKey: string | undefined | null): boolean {
   const key = (apiKey || '').trim();
   if (key.length < 8) return false;
   const lower = key.toLowerCase();
+  if (/^(?:tp|sk|ak|pk)-?x{8,}$/i.test(key)) return false;
+  if (/^x{8,}$/i.test(lower.replace(/[-_\s]/g, ''))) return false;
   const placeholderFragments = [
     '在这里填入',
     '你的api',

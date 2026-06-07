@@ -44,6 +44,48 @@ echo "目标分支: origin/main"
 echo "当前目录: $ROOT_DIR"
 echo "更新前提交: $(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
 
+load_env_file() {
+  if [ ! -f ".env" ]; then
+    return 0
+  fi
+  set -a
+  # shellcheck disable=SC1091
+  . ./.env
+  set +a
+  echo "  已加载 .env 环境变量"
+}
+
+assert_chat_api_ready() {
+  node - <<'NODE'
+const fs = require('fs');
+const { hasUsableApiKey } = require('./dist/config');
+
+let config = {};
+try {
+  config = JSON.parse(fs.readFileSync('config.json', 'utf-8'));
+} catch {}
+
+const ai = config.ai || {};
+const apiKey = process.env.WANJIER_API_KEY || process.env.OPENAI_API_KEY || ai.api_key || '';
+const apiUrl = process.env.WANJIER_API_URL || ai.api_url || '';
+const model = process.env.WANJIER_MODEL || ai.model || '';
+
+const missing = [];
+if (!apiUrl) missing.push('api_url / WANJIER_API_URL');
+if (!model) missing.push('model / WANJIER_MODEL');
+if (!hasUsableApiKey(apiKey)) missing.push('真实 API key / WANJIER_API_KEY');
+
+if (missing.length > 0) {
+  console.error('[update] 聊天链路未就绪，缺少: ' + missing.join(', '));
+  console.error('[update] 修改 /opt/wanjier-bot/.env 或 config.json 后重新运行。');
+  console.error('[update] 示例: echo "WANJIER_API_KEY=你的真实key" >> .env');
+  process.exit(3);
+}
+
+console.log('[update] 聊天 API 配置看起来已就绪');
+NODE
+}
+
 backup_file() {
   local file="$1"
   if [ -f "$file" ]; then
@@ -101,12 +143,14 @@ fi
 if [ -f scripts/sync-config.js ]; then
   node scripts/sync-config.js --apply
 fi
+load_env_file
 
 echo "[5/8] 安装依赖..."
 npm ci
 
 echo "[6/8] 构建与自检..."
 npm run build
+assert_chat_api_ready
 npm run doctor
 if npm run | grep -q "data:test"; then
   npm run data:test

@@ -59,8 +59,8 @@ async function testBotMediaBatching() {
   const config = readConfig();
   const bot = new Bot(config);
   const calls = [];
-  bot.callApiAsync = async (action, params) => {
-    calls.push({ action, params });
+  bot.callApiAsync = async (action, params, timeoutMs) => {
+    calls.push({ action, params, timeoutMs });
     return { retcode: 0, data: { message_id: 100_000 + calls.length } };
   };
 
@@ -83,6 +83,53 @@ async function testBotMediaBatching() {
     ['record'],
   ]);
   assert.deepStrictEqual(tracked, [100_001, 100_002, 100_003, 100_004], 'all sent batch message ids should be trackable');
+}
+
+async function testBotSendRetriesAndMediaFailureNotice() {
+  const config = readConfig();
+  const bot = new Bot(config);
+  const quoteCalls = [];
+  bot.callApiAsync = async (action, params, timeoutMs) => {
+    quoteCalls.push({ action, params, timeoutMs });
+    if (quoteCalls.length === 1) {
+      throw new Error('Timeout: NTEvent serviceCmdMethod:NodeIKernelMsgService/sendMsg');
+    }
+    return { retcode: 0, data: { message_id: 110_000 + quoteCalls.length } };
+  };
+
+  const quoteOk = await bot.sendGroupMessage(6657, [
+    { type: 'reply', data: { id: '42' } },
+    { type: 'text', data: { text: ' 锐评一下Niko' } },
+  ]);
+  assert.strictEqual(quoteOk, true, 'text reply should retry without quote when NapCat sendMsg times out');
+  assert.strictEqual(quoteCalls.length, 2, 'reply send should be retried once');
+  assert.ok(quoteCalls[0].params.message.some((seg) => seg.type === 'reply'), 'first try should include quote');
+  assert.ok(!quoteCalls[1].params.message.some((seg) => seg.type === 'reply'), 'retry should drop quote segment');
+  assert.strictEqual(quoteCalls[0].timeoutMs, 30000, 'text send timeout should be longer than old default');
+
+  const mediaCalls = [];
+  bot.callApiAsync = async (action, params, timeoutMs) => {
+    mediaCalls.push({ action, params, timeoutMs });
+    if (params.message.some((seg) => seg.type === 'image')) {
+      throw new Error('Timeout: NTEvent serviceCmdMethod:NodeIKernelMsgService/sendMsg');
+    }
+    return { retcode: 0, data: { message_id: 120_000 + mediaCalls.length } };
+  };
+
+  const mediaOk = await bot.sendGroupMessage(6657, [
+    { type: 'at', data: { qq: '61' } },
+    { type: 'text', data: { text: ' 今日CS队伍' } },
+    { type: 'image', data: { file: 'base64://abc' } },
+  ]);
+  assert.strictEqual(mediaOk, true, 'daily CS text should still be sent when image send fails');
+  assert.strictEqual(mediaCalls.length, 4, 'media failure should try text, image, image retry, visible notice');
+  assert.deepStrictEqual(
+    mediaCalls.map((call) => call.params.message.map((seg) => seg.type)),
+    [['at', 'text'], ['image'], ['image'], ['text']],
+    'image failure should add a text notice after retry',
+  );
+  assert.strictEqual(mediaCalls[1].timeoutMs, 45000, 'image send timeout should be extended');
+  assert.ok(firstText(mediaCalls[3].params.message).includes('图这下没发出去'), 'media failure notice should be visible');
 }
 
 async function testBotLoginStatusStrictness() {
@@ -205,6 +252,7 @@ async function testConfig() {
   assert.ok(config.ai.trigger_keywords.includes('抽道具'), 'example trigger keywords should include daily CS utility');
   assert.ok(config.ai.trigger_keywords.includes('今日套餐'), 'example trigger keywords should include daily CS loadout');
   assert.strictEqual(hasUsableApiKey('在这里填入你的API密钥'), false, 'example placeholder key should not be treated as usable');
+  assert.strictEqual(hasUsableApiKey('tp-xxxxxxxxxxxxxxxx'), false, 'masked placeholder key should not be treated as usable');
   assert.strictEqual(hasUsableApiKey('sk-live-test-key-1234567890'), true, 'real-looking key should be treated as usable');
 }
 
@@ -1697,6 +1745,7 @@ async function testCrossGroupAiConcurrency() {
 async function main() {
   await testOutgoingSanitize();
   await testBotMediaBatching();
+  await testBotSendRetriesAndMediaFailureNotice();
   await testBotLoginStatusStrictness();
   await testConfig();
   await testDoctorScript();

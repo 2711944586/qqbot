@@ -39,6 +39,8 @@ function hasUsableApiKey(apiKey) {
   const key = String(apiKey || '').trim();
   if (key.length < 8) return false;
   const lower = key.toLowerCase();
+  if (/^(?:tp|sk|ak|pk)-?x{8,}$/i.test(key)) return false;
+  if (/^x{8,}$/i.test(lower.replace(/[-_\s]/g, ''))) return false;
   return ![
     '在这里填入',
     '你的api',

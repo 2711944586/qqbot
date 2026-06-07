@@ -29,6 +29,10 @@ function readyStateName(state: number | undefined): string {
   }
 }
 
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 export class Bot {
   private ws: WebSocket | null = null;
   private config: BotConfig;
@@ -406,18 +410,33 @@ export class Bot {
       const ok = await this.sendGroupMessageBatch(groupId, batch, onMessageId);
       sentAny = sentAny || ok;
       failed = failed || !ok;
+      if (!ok && this.isMediaBatch(batch)) {
+        const noteOk = await this.sendGroupMessageBatch(groupId, this.mediaFailureNotice(batch));
+        sentAny = sentAny || noteOk;
+      }
     }
     return sentAny || !failed;
   }
 
   private sendGroupMessageBatch(groupId: number, msg: MessageSegment[], onMessageId?: (id: number) => void): Promise<boolean> {
+    return this.sendGroupMessageBatchOnce(groupId, msg, onMessageId).then(async (ok) => {
+      if (ok) return true;
+      const retryMsg = this.retryableMessage(msg);
+      if (!retryMsg) return false;
+      console.warn(`[Bot] 群${groupId} 消息发送失败，重试: ${this.describeMessage(msg)} -> ${this.describeMessage(retryMsg)}`);
+      await delay(700);
+      return this.sendGroupMessageBatchOnce(groupId, retryMsg, onMessageId);
+    });
+  }
+
+  private sendGroupMessageBatchOnce(groupId: number, msg: MessageSegment[], onMessageId?: (id: number) => void): Promise<boolean> {
     return this.callApiAsync('send_group_msg', {
       group_id: groupId,
       message: msg,
-    }).then((res: any) => {
+    }, this.sendTimeoutMs(msg)).then((res: any) => {
       if (typeof res?.retcode === 'number' && res.retcode !== 0) {
         this.groupSendFailures++;
-        console.error(`[Bot] 发送群消息失败: 群${groupId} retcode=${res.retcode} ${res.message || res.wording || ''}`);
+        console.error(`[Bot] 发送群消息失败: 群${groupId} ${this.describeMessage(msg)} retcode=${res.retcode} ${res.message || res.wording || ''}`);
         return false;
       }
 
@@ -429,7 +448,7 @@ export class Bot {
     }).catch((err) => {
       this.groupSendFailures++;
       const errMsg = err instanceof Error ? err.message : String(err);
-      console.error(`[Bot] 发送群消息异常: 群${groupId} ${errMsg}`);
+      console.error(`[Bot] 发送群消息异常: 群${groupId} ${this.describeMessage(msg)} ${errMsg}`);
       return false;
     });
   }
@@ -446,18 +465,33 @@ export class Bot {
       const ok = await this.sendPrivateMessageBatch(userId, batch, onMessageId);
       sentAny = sentAny || ok;
       failed = failed || !ok;
+      if (!ok && this.isMediaBatch(batch)) {
+        const noteOk = await this.sendPrivateMessageBatch(userId, this.mediaFailureNotice(batch));
+        sentAny = sentAny || noteOk;
+      }
     }
     return sentAny || !failed;
   }
 
   private sendPrivateMessageBatch(userId: number, msg: MessageSegment[], onMessageId?: (id: number) => void): Promise<boolean> {
+    return this.sendPrivateMessageBatchOnce(userId, msg, onMessageId).then(async (ok) => {
+      if (ok) return true;
+      const retryMsg = this.retryableMessage(msg);
+      if (!retryMsg) return false;
+      console.warn(`[Bot] 私聊${userId} 消息发送失败，重试: ${this.describeMessage(msg)} -> ${this.describeMessage(retryMsg)}`);
+      await delay(700);
+      return this.sendPrivateMessageBatchOnce(userId, retryMsg, onMessageId);
+    });
+  }
+
+  private sendPrivateMessageBatchOnce(userId: number, msg: MessageSegment[], onMessageId?: (id: number) => void): Promise<boolean> {
     return this.callApiAsync('send_private_msg', {
       user_id: userId,
       message: msg,
-    }).then((res: any) => {
+    }, this.sendTimeoutMs(msg)).then((res: any) => {
       if (typeof res?.retcode === 'number' && res.retcode !== 0) {
         this.privateSendFailures++;
-        console.error(`[Bot] 发送私聊消息失败: QQ${userId} retcode=${res.retcode} ${res.message || res.wording || ''}`);
+        console.error(`[Bot] 发送私聊消息失败: QQ${userId} ${this.describeMessage(msg)} retcode=${res.retcode} ${res.message || res.wording || ''}`);
         return false;
       }
 
@@ -469,7 +503,7 @@ export class Bot {
     }).catch((err) => {
       this.privateSendFailures++;
       const errMsg = err instanceof Error ? err.message : String(err);
-      console.error(`[Bot] 发送私聊消息异常: QQ${userId} ${errMsg}`);
+      console.error(`[Bot] 发送私聊消息异常: QQ${userId} ${this.describeMessage(msg)} ${errMsg}`);
       return false;
     });
   }
@@ -511,6 +545,47 @@ export class Bot {
     }
     flush();
     return batches.length > 0 ? batches : [message];
+  }
+
+  private sendTimeoutMs(message: MessageSegment[]): number {
+    if (message.some((seg) => seg.type === 'image')) return 45000;
+    if (message.some((seg) => seg.type === 'record')) return 45000;
+    return 30000;
+  }
+
+  private retryableMessage(message: MessageSegment[]): MessageSegment[] | null {
+    const withoutReply = message.filter((seg) => seg.type !== 'reply');
+    if (withoutReply.length !== message.length && withoutReply.length > 0) return withoutReply;
+    if (this.isMediaBatch(message)) return message;
+    return null;
+  }
+
+  private isMediaBatch(message: MessageSegment[]): boolean {
+    return message.some((seg) => seg.type === 'image' || seg.type === 'record');
+  }
+
+  private mediaFailureNotice(message: MessageSegment[]): MessageSegment[] {
+    const hasImage = message.some((seg) => seg.type === 'image');
+    const hasRecord = message.some((seg) => seg.type === 'record');
+    const text = hasImage
+      ? '图这下没发出去，文字先看着。管理员看 /status 和 NapCat 日志。'
+      : hasRecord
+        ? '语音这下没发出去，文字先顶一下。管理员看 /voice last 和 NapCat 日志。'
+        : '媒体消息这下没发出去。';
+    return [{ type: 'text', data: { text } }];
+  }
+
+  private describeMessage(message: MessageSegment[]): string {
+    return message.map((seg) => {
+      if (seg.type === 'text') return `text:${seg.data.text.length}`;
+      if (seg.type === 'image' || seg.type === 'record') {
+        const file = seg.data.file || '';
+        return `${seg.type}:${file.startsWith('base64://') ? `base64:${Math.round(file.length / 1024)}KB` : file.slice(0, 48)}`;
+      }
+      if (seg.type === 'reply') return `reply:${seg.data.id}`;
+      if (seg.type === 'at') return `at:${seg.data.qq}`;
+      return seg.type;
+    }).join(',');
   }
 
   /** 调用 OneBot API（带回调） */
