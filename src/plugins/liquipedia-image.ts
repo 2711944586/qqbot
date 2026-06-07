@@ -5,7 +5,7 @@ import * as zlib from 'zlib';
  * Liquipedia 图片智能解析
  *
  * 用途：CS 选手/队伍头像 URL 经常因为 Liquipedia 文件改名/换图变成 404。
- * 这里通过 MediaWiki API 按选手页面查询当前实际的图片 URL，并缓存。
+ * 这里通过 MediaWiki API 按页面查询当前实际的图片 URL，并缓存。
  *
  * 实现：
  * 1. action=parse&page=PlayerName&prop=images → 拿到该页面引用的所有图片名
@@ -80,30 +80,82 @@ async function fetchJson(url: string, timeoutMs: number = 8000): Promise<any> {
   });
 }
 
-/** 获取选手页面引用的最相关图片名 */
-async function findPlayerImageName(nickname: string): Promise<string | null> {
-  const j = await fetchJson(`https://liquipedia.net/counterstrike/api.php?action=parse&page=${encodeURIComponent(nickname)}&prop=images&format=json`);
+function keepImageFile(name: string): boolean {
+  return /\.(?:png|jpe?g|webp)$/i.test(name);
+}
+
+function normalizedTokens(input: string): string[] {
+  return input
+    .toLowerCase()
+    .replace(/['`]/g, '')
+    .split(/[^a-z0-9]+/)
+    .filter((item) => item.length >= 2);
+}
+
+async function findImageName(page: string, selector: (images: string[]) => string | null): Promise<string | null> {
+  const j = await fetchJson(`https://liquipedia.net/counterstrike/api.php?action=parse&page=${encodeURIComponent(page)}&prop=images&format=json`);
   const images: string[] = j?.parse?.images || [];
   if (images.length === 0) return null;
+  return selector(images.filter(keepImageFile));
+}
 
-  // 名字匹配优先级：包含 nickname > 包含 player > 包含 portrait > 第一张
-  const lower = nickname.toLowerCase();
-  // 跳过明显不是头像的（队标、地图、icon 等）
-  const skipPatterns = /(_lightmode|_darkmode|_allmode|_logo|_icon|_squad|_roster|major|ranking|map_|_map|trophy|medal|gold|silver|bronze|filler\.png)/i;
-  const candidates = images.filter((name) => {
-    const n = name.toLowerCase();
-    if (skipPatterns.test(n)) return false;
-    return n.includes(lower) || /player|portrait|profile/i.test(n);
+/** 获取选手页面引用的最相关图片名 */
+async function findPlayerImageName(nickname: string): Promise<string | null> {
+  return findImageName(nickname, (images) => {
+    if (images.length === 0) return null;
+
+    // 名字匹配优先级：包含 nickname > 包含 player > 包含 portrait > 第一张
+    const lower = nickname.toLowerCase();
+    // 跳过明显不是头像的（队标、地图、icon 等）
+    const skipPatterns = /(_lightmode|_darkmode|_allmode|_logo|_icon|_squad|_roster|major|ranking|map_|_map|trophy|medal|gold|silver|bronze|filler\.png)/i;
+    const candidates = images.filter((name) => {
+      const n = name.toLowerCase();
+      if (skipPatterns.test(n)) return false;
+      return n.includes(lower) || /player|portrait|profile/i.test(n);
+    });
+
+    // 含 nickname 的优先
+    candidates.sort((a, b) => {
+      const aHas = a.toLowerCase().includes(lower) ? 1 : 0;
+      const bHas = b.toLowerCase().includes(lower) ? 1 : 0;
+      return bHas - aHas;
+    });
+
+    return candidates[0] || null;
   });
+}
 
-  // 含 nickname 的优先
-  candidates.sort((a, b) => {
-    const aHas = a.toLowerCase().includes(lower) ? 1 : 0;
-    const bHas = b.toLowerCase().includes(lower) ? 1 : 0;
-    return bHas - aHas;
+/** 获取队伍页面当前最合适的真实队伍图：优先近期合影，其次当前 full/allmode 队标 */
+async function findTeamImageName(page: string, teamName: string): Promise<string | null> {
+  const tokens = normalizedTokens(teamName || page);
+  const currentYear = new Date().getFullYear();
+  return findImageName(page, (images) => {
+    if (images.length === 0) return null;
+
+    const skipPatterns = /(academy|junior|youth|_lightmode|_darkmode|_icon|gameicon|_hd\.png|flag|trophy|medal|ranking|filler|small)/i;
+    const scored = images
+      .filter((name) => !skipPatterns.test(name))
+      .map((name) => {
+        const lower = name.toLowerCase();
+        let score = 0;
+        for (const token of tokens) {
+          if (lower.includes(token)) score += token.length >= 4 ? 10 : 5;
+        }
+        if (/\bat\b|_at_|@/.test(lower)) score += 35; // 真实现场合影
+        if (/full_allmode|_full_|allmode/.test(lower)) score += 12;
+        if (/\.(jpe?g|webp)$/i.test(name)) score += 8;
+        const years = [...lower.matchAll(/\b(20\d{2})\b/g)].map((m) => Number(m[1]));
+        if (years.length) {
+          const bestYear = Math.max(...years);
+          score += Math.max(0, 20 - Math.min(Math.abs(currentYear - bestYear), 10) * 2);
+        }
+        return { name, score };
+      })
+      .filter((item) => item.score > 0)
+      .sort((a, b) => b.score - a.score);
+
+    return scored[0]?.name || null;
   });
-
-  return candidates[0] || null;
 }
 
 /** 把图片名查实际 URL */
@@ -141,6 +193,35 @@ export async function resolvePlayerImage(nickname: string): Promise<string | nul
   });
 
   // 限制缓存大小
+  if (cache.size > 200) {
+    const sorted = [...cache.entries()].sort((a, b) => a[1].expiresAt - b[1].expiresAt);
+    for (const [k] of sorted.slice(0, 30)) cache.delete(k);
+  }
+
+  return url || null;
+}
+
+/** 按 Liquipedia 队伍页面返回当前队伍实图/队标 URL */
+export async function resolveTeamImage(page: string, teamName: string = page): Promise<string | null> {
+  const key = `team:${page.toLowerCase()}:${teamName.toLowerCase()}`;
+  const cached = cache.get(key);
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.url || null;
+  }
+
+  let url = '';
+  try {
+    const filename = await findTeamImageName(page, teamName);
+    if (filename) {
+      url = (await resolveImageUrl(filename)) || '';
+    }
+  } catch { /* */ }
+
+  cache.set(key, {
+    url,
+    expiresAt: Date.now() + (url ? POSITIVE_TTL : NEGATIVE_TTL),
+  });
+
   if (cache.size > 200) {
     const sorted = [...cache.entries()].sort((a, b) => a[1].expiresAt - b[1].expiresAt);
     for (const [k] of sorted.slice(0, 30)) cache.delete(k);
