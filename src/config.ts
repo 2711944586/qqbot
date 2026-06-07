@@ -3,7 +3,7 @@ import * as path from 'path';
 import { AIConfig, BotConfig, PresetConfig } from './types';
 
 export const CONFIG_PATH = path.resolve(__dirname, '..', 'config.json');
-export const CONFIG_VERSION = 20260607;
+export const CONFIG_VERSION = 20260608;
 
 type PlainObject = Record<string, unknown>;
 

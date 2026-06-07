@@ -7,6 +7,7 @@ import { getSearchStats, webSearch } from './web-search';
 import { getSttStats } from './stt';
 import { getVoiceStats } from './tts';
 import { checkCsDataHealth } from './hltv-api';
+import { callLLMWithRetry } from './llm-api';
 import * as fs from 'fs';
 
 export const diagPlugin: Plugin = {
@@ -155,6 +156,29 @@ export const diagPlugin: Plugin = {
         hard.push(`QQ登录号不匹配: config.bot_qq=${config.bot_qq}，NapCat实际登录=${runtime.lastLoginUserId}`);
       }
       liveLines.push(`live登录态: ${runtime.lastLoginOk ? `OK QQ${runtime.lastLoginUserId || '-'} ${runtime.lastLoginNickname || ''}` : `异常 ${runtime.lastLoginError || 'unknown'}`}`);
+      if (hasUsableApiKey(ai.api_key) && ai.api_url && ai.model) {
+        try {
+          const probeConfig = {
+            ...ai,
+            api_timeout_ms: Math.min(Math.max(ai.api_timeout_ms || 6000, 3000), 8000),
+            max_tokens: Math.min(Math.max(ai.max_tokens || 32, 16), 64),
+            temperature: 0.1,
+          };
+          const started = Date.now();
+          const probeReply = await callLLMWithRetry(probeConfig, [
+            { role: 'system', content: '你是接口健康检查。只回复 OK。' },
+            { role: 'user', content: 'ping' },
+          ], false, 1);
+          liveLines.push(`liveLLM: OK ${Date.now() - started}ms ${probeReply.slice(0, 40)}`);
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          hard.push(`LLM接口实测失败: ${message.slice(0, 180)}`);
+          liveLines.push(`liveLLM: FAIL ${message.slice(0, 120)}`);
+        }
+      } else {
+        hard.push('LLM接口实测跳过: api_url/model/api_key 不完整');
+        liveLines.push('liveLLM: SKIP api_url/model/api_key 不完整');
+      }
       const liveSearch = await webSearch(
         '玩机器Machine 萌娘百科 6657',
         Math.max(ai.knowledge_source_timeout_ms || ai.search_timeout_ms || 1800, 1200),

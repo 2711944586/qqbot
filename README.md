@@ -194,7 +194,7 @@ pm2 restart wanjier --update-env
 
 ```json
 {
-  "config_version": 20260607,
+  "config_version": 20260608,
   "ai": {
     "api_url": "https://token-plan-cn.xiaomimimo.com/v1/chat/completions",
     "api_key": "在这里填入你的API密钥",
@@ -261,7 +261,7 @@ pm2 restart wanjier --update-env
 }
 ```
 
-`config_version` 不是功能开关，但它很有用：升级后 `npm run doctor`、`/maint status`、`/maint config` 会拿它和当前示例配置比对。如果 VPS 的 `config.json` 没有这个字段，或者小于 `20260607`，说明你大概率还没同步最新字段和 prompt。
+`config_version` 不是功能开关，但它很有用：升级后 `npm run doctor`、`/maint status`、`/maint config` 会拿它和当前示例配置比对。如果 VPS 的 `config.json` 没有这个字段，或者小于 `20260608`，说明你大概率还没同步最新字段和 prompt。
 
 当前 `wanjier` 预设提示词在 `config.example.json` 的 `ai.presets.wanjier.system_prompt`，核心要求是：
 
@@ -668,7 +668,7 @@ pm2 restart wanjier
 
 | 字段 | 说明 |
 |---|---|
-| `config_version` | 配置模板版本，当前为 `20260607`；`npm run doctor` 和 `/maint config` 会用它判断 VPS 配置是否落后 |
+| `config_version` | 配置模板版本，当前为 `20260608`；`npm run doctor` 和 `/maint config` 会用它判断 VPS 配置是否落后 |
 | `ws_url` | OneBot WebSocket 地址，通常是 `ws://127.0.0.1:3001` |
 | `login_check_interval_seconds` | QQ 登录态主动检查间隔，推荐 `60`；`0` 表示关闭 |
 | `login_check_api_timeout_ms` | 登录态检查调用 `get_login_info` 的超时，推荐 `5000` |
@@ -1202,7 +1202,7 @@ apt install -y ffmpeg
 | `/whoami` | 查看当前 bot self_id、配置 bot_qq、群号、消息 ID |
 | `/status` | 运行状态 |
 | `/diag` | 快速严格自检，不消耗 AI token |
-| `/diag live` | 管理员真实联网/写盘自检 |
+| `/diag live` | 管理员真实联网/写盘/LLM API 探针自检 |
 | `/maint status` | 管理员维护面板：配置版本、队列、缓存、知识库、闸门、内存 |
 | `/maint login` | 管理员立即检查 OneBot 连接和 QQ 登录态 |
 | `/maint config` | 管理员查看关键运行配置和配置漂移 |
@@ -2093,7 +2093,7 @@ npm run config:sync -- --apply
 
 ```json
 {
-  "config_version": 20260607,
+  "config_version": 20260608,
   "login_check_interval_seconds": 60,
   "login_check_api_timeout_ms": 5000,
   "ai": {

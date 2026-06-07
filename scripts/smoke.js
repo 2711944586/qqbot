@@ -127,15 +127,15 @@ async function withPreservedFile(filepath, fn) {
 
 async function testConfig() {
   const config = readConfig();
-  assert.strictEqual(config.config_version, 20260607);
+  assert.strictEqual(config.config_version, 20260608);
   assert.strictEqual(config.login_check_interval_seconds, 30);
   assert.strictEqual(config.login_check_api_timeout_ms, 8000);
-  assert.strictEqual(config.ai.trigger_probability, 0.005);
-  assert.strictEqual(config.ai.passive_random_min_chars, 12);
+  assert.strictEqual(config.ai.trigger_probability, 0.08);
+  assert.strictEqual(config.ai.passive_random_min_chars, 4);
   assert.strictEqual(config.ai.passive_random_allow_numeric, false);
   assert.strictEqual(config.ai.knowledge_max_chars, 2600);
   assert.strictEqual(config.ai.knowledge_force_style, true);
-  assert.strictEqual(config.ai.related_reply_probability, 0.15);
+  assert.strictEqual(config.ai.related_reply_probability, 0.65);
   assert.strictEqual(config.ai.aggression_level, 'medium');
   assert.strictEqual(config.ai.poke_reply_probability, 1);
   assert.strictEqual(config.ai.ai_global_concurrency, 2);
@@ -282,8 +282,11 @@ async function testConfigSyncScript() {
     });
     assert.strictEqual(applied.status, 0, `sync apply should pass: ${applied.stdout}\n${applied.stderr}`);
     const synced = JSON.parse(fs.readFileSync(tmpConfig, 'utf-8'));
-    assert.strictEqual(synced.config_version, 20260607);
+    assert.strictEqual(synced.config_version, 20260608);
     assert.strictEqual(synced.ai.api_key, 'sk-real-user-key-should-stay', 'sync must not overwrite user api key');
+    assert.strictEqual(synced.ai.trigger_probability, 0.08, 'sync should migrate old too-quiet passive trigger probability');
+    assert.strictEqual(synced.ai.related_reply_probability, 0.65, 'sync should migrate old too-quiet related reply probability');
+    assert.strictEqual(synced.ai.passive_random_min_chars, 4, 'sync should migrate old passive min chars');
     assert.strictEqual(synced.ai.enable_memory_retrieval, true);
     assert.strictEqual(synced.ai.memory_top_k, 4);
     assert.notStrictEqual(synced.ai.presets.wanjier.system_prompt, 'old prompt', 'old built-in preset prompt should refresh on version lag');
@@ -941,19 +944,24 @@ async function testMessageReplyTargeting() {
   const handler = new MessageHandler(bot);
   handler.use(aiChat.aiChatPlugin);
   const prompts = [];
+  let inactiveAttempts = 0;
 
   aiChat.__setLLMCallerForTests(async (_config, messages) => {
-    const current = messages[messages.length - 1];
-    const content = typeof current.content === 'string'
-      ? current.content
-      : current.content.map((item) => item.text || '').join('\n');
+    const content = messages.map((message) => typeof message.content === 'string'
+      ? message.content
+      : message.content.map((item) => item.text || '').join('\n')).join('\n');
     prompts.push(content);
-    const id = (content.match(/message_id: (\d+)/) || [])[1] || 'unknown';
+    const matches = [...content.matchAll(/message_id: (\d+)/g)];
+    const id = matches.length > 0 ? matches.at(-1)[1] : 'unknown';
     if (id === '104') return '（直播口吻接弹幕）不是哥们 这个括号真不能有';
     if (id === '105') return '';
     if (id === '106') return '长回复'.repeat(120);
     if (id === '107') return '收到语音了';
     if (id === '108') return '6';
+    if (id === '109') {
+      inactiveAttempts++;
+      return inactiveAttempts === 1 ? '未激活回答' : '这下接住了';
+    }
     return `reply-${id}`;
   });
 
@@ -1013,6 +1021,20 @@ async function testMessageReplyTargeting() {
     await waitFor(() => sent.length === beforeNumeric + 1, 'numeric output rewrite');
     const numericText = sent.at(-1).message.find((seg) => seg.type === 'text')?.data.text;
     assert.ok(numericText && !/^[\d\s.,，。!！?？]+$/.test(numericText), 'numeric-only LLM output should be rewritten');
+
+    const beforeInactive = sent.length;
+    handler.handleEvent(makeEvent(109, 19, ' 你别再未激活了'));
+    await waitFor(() => sent.length === beforeInactive + 1, 'inactive activation retry reply');
+    assert.strictEqual(inactiveAttempts, 2, 'inactive activation output should be retried once');
+    assert.strictEqual(
+      sent.at(-1).message.find((seg) => seg.type === 'text')?.data.text,
+      '这下接住了',
+      'inactive activation output should not be sent to the group',
+    );
+
+    handler.handleEvent(makePlainEvent(909, 19, '/trace last'));
+    await waitFor(() => sent.length === beforeInactive + 2, 'trace after inactive retry');
+    assert.ok(firstText(sent.at(-1).message).includes('修复: inactive activation reply retried'), 'trace should show inactive activation repair');
 
     const before = sent.length;
     handler.handleEvent(makeEvent(201, 21, ' 回复旧消息', [{ type: 'reply', data: { id: '77777' } }]));
@@ -1249,8 +1271,8 @@ async function testKnowledgeInjectionAndHumanizedPostprocess() {
 
 async function testPassiveTriggerFiltering() {
   const config = makeConfigForHandler();
-  config.ai.trigger_probability = 1;
-  config.ai.related_reply_probability = 1;
+  config.ai.trigger_probability = 0;
+  config.ai.related_reply_probability = 0;
   config.ai.passive_random_min_chars = 4;
   config.ai.passive_random_allow_numeric = false;
   config.ai.enable_search = false;
@@ -1283,18 +1305,29 @@ async function testPassiveTriggerFiltering() {
     await new Promise((resolve) => setTimeout(resolve, 150));
     assert.strictEqual(sent.length, 0, 'low-information passive numeric text should not trigger AI');
 
-    handler.handleEvent(makePlainEvent(402, 42, '今天CS2这队伍怎么打'));
-    await waitFor(() => sent.length === 1, 'keyword passive reply');
+    handler.handleEvent(makePlainEvent(404, 44, '玩机器你在吗', [], 6659));
+    await waitFor(() => sent.length === 1, 'direct chat cue passive reply');
     assert.strictEqual(
       firstText(sent[0].message),
+      'passive-404',
+      'direct chat cue should trigger ordinary AI chat without @ even when passive probabilities are zero',
+    );
+
+    config.ai.trigger_probability = 1;
+    config.ai.related_reply_probability = 1;
+
+    handler.handleEvent(makePlainEvent(402, 42, '今天CS2这队伍怎么打'));
+    await waitFor(() => sent.length === 2, 'keyword passive reply');
+    assert.strictEqual(
+      firstText(sent[1].message),
       'passive-402',
       'keyword ordinary messages should trigger AI without @',
     );
 
     handler.handleEvent(makePlainEvent(403, 43, '这把经济怎么又崩了，回防一点道具没有', [], 6658));
-    await waitFor(() => sent.length === 2, 'soft CS discussion passive reply');
+    await waitFor(() => sent.length === 3, 'soft CS discussion passive reply');
     assert.strictEqual(
-      firstText(sent[1].message),
+      firstText(sent[2].message),
       'passive-403',
       'soft CS discussion should trigger at related reply probability even without explicit CS2 keyword',
     );

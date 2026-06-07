@@ -159,6 +159,7 @@ interface ReplyTrace {
   sent: 'queued' | 'text' | 'voice' | 'voice+text-fallback' | 'fallback' | 'skipped';
   cacheHit: boolean;
   replyLength: number;
+  outputRepair?: string;
   error?: string;
 }
 
@@ -1191,17 +1192,57 @@ function forcedFallbackReply(job: ReplyJob, recordTranscripts: string[] = []): s
   if (recordTranscripts.length > 0) return `我听到了 大概是「${recordTranscripts.join(' ').slice(0, 80)}」 你再问一句`;
   if (job.hasRecords && !job.effectiveText) return '语音收到了 你补句文字';
   if (job.hasImages && !job.effectiveText) return '图收到了 你要我看啥';
-  // API失败但用户是@/回复/私聊时，给个有人味的延迟回复，不要消失
-  // 但不要每次都说同一句，避免用户觉得是模板
   const fallbacks = [
-    '我这卡了一下 你再说一遍',
-    '诶 网络有点抽 重新发一下',
     '等等 我刚才没接住',
     '哥们 我顿了一下 你那条是啥',
     '稍等 我现在脑子不太转',
     '我看了一眼 你那条没看清 你重发',
   ];
   return fallbacks[Math.floor(Math.random() * fallbacks.length)];
+}
+
+function forcedApiFailureReply(job: ReplyJob, errMsg: string, recordTranscripts: string[] = []): string {
+  if (recordTranscripts.length > 0) return forcedFallbackReply(job, recordTranscripts);
+  if (job.hasRecords && !job.effectiveText) return forcedFallbackReply(job, recordTranscripts);
+  if (job.hasImages && !job.effectiveText) return forcedFallbackReply(job, recordTranscripts);
+  const normalized = errMsg.toLowerCase();
+  if (/401|403|unauthorized|forbidden|api key|invalid[_\s-]?key|鉴权|认证|密钥|key/.test(normalized)) {
+    return 'AI接口没打通 像是key或权限问题 管理员看 /trace last';
+  }
+  if (/quota|余额|额度|insufficient|payment|billing/.test(normalized)) {
+    return 'AI接口没回 像是额度问题 管理员看 /trace last';
+  }
+  if (/timeout|超时|timed out|etimedout|econnreset|socket|network|网络/.test(normalized)) {
+    return 'AI接口超时了 管理员看 /trace last';
+  }
+  if (/无内容|empty|returned empty|no content/.test(normalized)) {
+    return 'AI接口返回空了 管理员看 /trace last';
+  }
+  return 'AI接口这下没回 管理员看 /trace last';
+}
+
+function looksLikeInactiveActivationReply(text: string): boolean {
+  const compact = text.replace(/\s+/g, '').toLowerCase();
+  if (!compact) return false;
+  if (compact.length > 180 && !/(未激活|未触发|不需要回复|无需回复|没有被激活|notactivated|inactive)/i.test(compact)) {
+    return false;
+  }
+  return /未激活回答|未激活回复|未触发|未被触发|没有被激活|当前消息未激活|不需要回复|无需回复|不予回复|notactivated|inactive/.test(compact);
+}
+
+function buildInactiveActivationRetryMessages(messages: ChatMessage[], badReply: string): ChatMessage[] {
+  return [
+    ...messages,
+    { role: 'assistant', content: badReply || '未激活回答' },
+    {
+      role: 'user',
+      content: [
+        '纠正：你已经被当前这条消息触发了，必须正常接话。',
+        '不要再说“未激活回答/未触发/无需回复/不需要回复”。',
+        '直接按当前消息和上下文回复，短一点，像直播间接弹幕。',
+      ].join('\n'),
+    },
+  ];
 }
 
 function handlePresetCommand(
@@ -1646,6 +1687,7 @@ function formatReplyTrace(trace: ReplyTrace | null): string {
     trace.searchError ? `搜索错误: ${trace.searchError}` : '',
     `语音: ${trace.voiceMode} requested=${trace.voiceRequested} parts=${trace.voiceParts}`,
     `发送: ${trace.sent} cacheHit=${trace.cacheHit} replyLen=${trace.replyLength}`,
+    trace.outputRepair ? `修复: ${trace.outputRepair}` : '',
     trace.error ? `错误: ${trace.error}` : '',
   ].filter(Boolean).join('\n');
 }
@@ -2065,6 +2107,18 @@ function isCsDiscussionHint(text: string): boolean {
   return false;
 }
 
+function isDirectChatCue(text: string): boolean {
+  const normalized = normalizePassiveText(text).toLowerCase();
+  if (!normalized || normalized.length > 80) return false;
+  const names = ['玩机器', '机器', 'machinewjq', 'machine', '6657'];
+  const hasName = names.some((name) => normalized.includes(name.toLowerCase()));
+  const cuePattern = /(?:在吗|在不在|你在|出来|说句话|聊聊|你怎么看|怎么看|咋看|怎么说|评价|锐评|帮我|帮忙|想想|看看|能不能|可以不|懂不懂|你好|hello|hi|哥们)/i;
+  if (hasName) return true;
+  if (normalized.length <= 12 && /^(?:你好|hi|hello|在吗|在不在|出来|说句话|聊聊)$/.test(normalized)) return true;
+  if (/^(?:你怎么看|怎么看|咋看|怎么说|帮我|帮忙|想想|看看|评价|锐评)/.test(normalized)) return true;
+  return cuePattern.test(normalized) && /(你|bot|机器人|ai|机器|玩机器|6657)/i.test(normalized);
+}
+
 function shouldSearch(config: AIConfig, text: string): boolean {
   if (!config.enable_search || text.length <= 3) return false;
 
@@ -2180,14 +2234,9 @@ function shouldReply(
     return { reply: false, forced: false };
   }
 
-  // 群聊正在快速对话时（30秒内超过3条人工消息），不主动插话
-  // 仅 @/回复/私聊/命令/明确语音请求 这些 forced 场景才能突破这个限制（已在上面 return 了）
-  if (groupChatBusy) {
-    return { reply: false, forced: false };
-  }
-
-  // bot 自己刚回过话 30s 内：被动接话概率打 5 折
+  // bot 自己刚回过话 30s 内：被动接话概率打 5 折；忙群只降低概率，不直接吞掉明显聊天。
   const selfCoolMultiplier = selfRecentlyReplied ? 0.5 : 1.0;
+  const busyMultiplier = groupChatBusy ? 0.35 : 1.0;
 
   const styleKeywordHit = includesAnyKeyword(text, [
     config.active_preset,
@@ -2197,18 +2246,17 @@ function shouldReply(
     'Machine',
     '6657',
   ]);
-  if (styleKeywordHit) {
-    // 风格关键词（明确点名玩机器）：群聊忙时也不接话；不忙时降到 50%
-    return { reply: Math.random() < 0.5 * selfCoolMultiplier, forced: false };
+  const directChatCue = isDirectChatCue(text);
+  if (styleKeywordHit || directChatCue) {
+    return { reply: true, forced: false };
   }
 
   const keywordHit = includesAnyKeyword(text, config.trigger_keywords);
   if (keywordHit || isKnowledgeTopic(text)) {
-    // 普通CS/玩机器关键词：被动主动接话概率从 0.65 降到 0.15
-    return { reply: Math.random() < (config.related_reply_probability ?? 0.15) * selfCoolMultiplier, forced: false };
+    return { reply: Math.random() < (config.related_reply_probability ?? 0.65) * selfCoolMultiplier * busyMultiplier, forced: false };
   }
   if (isCsDiscussionHint(text) && !isLowInformationPassiveText(text, config)) {
-    return { reply: Math.random() < (config.related_reply_probability ?? 0.15) * selfCoolMultiplier, forced: false };
+    return { reply: Math.random() < (config.related_reply_probability ?? 0.65) * selfCoolMultiplier * busyMultiplier, forced: false };
   }
 
   switch (config.trigger_mode) {
@@ -2218,8 +2266,7 @@ function shouldReply(
       if (isLowInformationPassiveText(text, config)) {
         return { reply: false, forced: false };
       }
-      // 完全无关键词的随机插话：默认极低（0.005）
-      return { reply: Math.random() < (config.trigger_probability || 0) * selfCoolMultiplier, forced: false };
+      return { reply: Math.random() < (config.trigger_probability || 0) * selfCoolMultiplier * busyMultiplier, forced: false };
     }
     case 'at':
     case 'command':
@@ -3343,12 +3390,38 @@ export const aiChatPlugin: Plugin = {
         const canUseReplyCache = !job.forced && !job.hasImages && !job.hasRecords && !searchInfo && !!job.effectiveText && !isTimeSensitive && (config.ai_reply_cache_seconds ?? 180) > 0;
         const replyCacheKey = canUseReplyCache ? makeReplyCacheKey(config, job.effectiveText, knowledgeInfo) : '';
         let cleaned = replyCacheKey ? getCachedReply(replyCacheKey) : null;
-        const cacheHit = !!cleaned;
+        let cacheHit = !!cleaned;
+        if (cleaned && looksLikeInactiveActivationReply(cleaned)) {
+          if (replyCacheKey) replyCache.delete(replyCacheKey);
+          cleaned = null;
+          cacheHit = false;
+          patchReplyTrace(job.messageId, {
+            error: 'cached inactive activation reply discarded',
+          });
+        }
         if (!cleaned) {
           if (replyCacheKey) replyCacheMisses++;
           const maxAttempts = job.forced ? 4 : 2;
           const reply = await withGate('ai', () => callLLMWithRetry(config, apiMessages, usesVisionPayload, maxAttempts), job.forced);
           cleaned = postProcessReply(reply);
+          if (looksLikeInactiveActivationReply(cleaned)) {
+            const badReply = cleaned;
+            try {
+              const retryMessages = buildInactiveActivationRetryMessages(apiMessages, badReply);
+              const retryReply = await withGate('ai', () => callLLMWithRetry(config, retryMessages, usesVisionPayload, 1), job.forced);
+              const retryCleaned = postProcessReply(retryReply);
+              cleaned = retryCleaned && !looksLikeInactiveActivationReply(retryCleaned) ? retryCleaned : '';
+              patchReplyTrace(job.messageId, {
+                outputRepair: cleaned ? 'inactive activation reply retried' : 'inactive activation retry still invalid',
+              });
+            } catch (err) {
+              const retryError = err instanceof Error ? err.message : String(err);
+              cleaned = '';
+              patchReplyTrace(job.messageId, {
+                error: `inactive activation retry failed: ${retryError.slice(0, 120)}`,
+              });
+            }
+          }
           // 反幻觉：如果没有实时数据，但 AI 给出了具体的"现在 X 在 Y 队"这种断言，加上不确定后缀
           const hasRealtimeData = !!hltvInfo || !!searchInfo;
           cleaned = softenUnverifiedClaims(cleaned, hasRealtimeData);
@@ -3362,7 +3435,7 @@ export const aiChatPlugin: Plugin = {
           // - 普通主动接话: 直接吞掉，下次触发时 AI 自然带上上下文
           // - forced (@bot/回复/私聊/命令): 必须给出回复，用 forcedFallbackReply 兜底
           if (job.forced) {
-            const fb = forcedFallbackReply(job, recordTranscripts);
+            const fb = forcedApiFailureReply(job, 'AI returned empty', recordTranscripts);
             if (fb) {
               const useQuoteFb = config.forced_reply_quote !== false;
               if (useQuoteFb) ctx.replyQuoteTo(job.messageId, job.userId, fb);
@@ -3502,7 +3575,7 @@ export const aiChatPlugin: Plugin = {
           error: errMsg.slice(0, 160),
         });
         if (job.forced) {
-          const fb = forcedFallbackReply(job, recordTranscripts);
+          const fb = forcedApiFailureReply(job, errMsg, recordTranscripts);
           if (fb) ctx.replyQuoteTo(job.messageId, job.userId, fb);
         }
       }
@@ -3512,7 +3585,7 @@ export const aiChatPlugin: Plugin = {
       if (job.forced) {
         // 队列层异常 forced 必须给个回复
         try {
-          const fb = forcedFallbackReply(job, []);
+          const fb = forcedApiFailureReply(job, errMsg, []);
           if (fb) ctx.replyQuoteTo(job.messageId, job.userId, fb);
         } catch { /* */ }
       }

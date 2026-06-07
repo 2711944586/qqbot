@@ -66,6 +66,33 @@ function refreshBuiltInPresets(target, template, changes) {
   }
 }
 
+function migrateQuietAiDefaults(target, template, changes) {
+  if (!isPlainObject(target?.ai) || !isPlainObject(template?.ai)) return;
+  const targetAi = target.ai;
+  const templateAi = template.ai;
+
+  if (typeof templateAi.trigger_probability === 'number' && typeof targetAi.trigger_probability === 'number' && targetAi.trigger_probability <= 0.01) {
+    if (targetAi.trigger_probability !== templateAi.trigger_probability) {
+      changes.push(`migrate ai.trigger_probability ${targetAi.trigger_probability} -> ${templateAi.trigger_probability}`);
+      targetAi.trigger_probability = templateAi.trigger_probability;
+    }
+  }
+
+  if (typeof templateAi.related_reply_probability === 'number' && typeof targetAi.related_reply_probability === 'number' && targetAi.related_reply_probability <= 0.2) {
+    if (targetAi.related_reply_probability !== templateAi.related_reply_probability) {
+      changes.push(`migrate ai.related_reply_probability ${targetAi.related_reply_probability} -> ${templateAi.related_reply_probability}`);
+      targetAi.related_reply_probability = templateAi.related_reply_probability;
+    }
+  }
+
+  if (typeof templateAi.passive_random_min_chars === 'number' && typeof targetAi.passive_random_min_chars === 'number' && targetAi.passive_random_min_chars >= 12) {
+    if (targetAi.passive_random_min_chars !== templateAi.passive_random_min_chars) {
+      changes.push(`migrate ai.passive_random_min_chars ${targetAi.passive_random_min_chars} -> ${templateAi.passive_random_min_chars}`);
+      targetAi.passive_random_min_chars = templateAi.passive_random_min_chars;
+    }
+  }
+}
+
 function main() {
   if (!fs.existsSync(examplePath)) {
     console.error('[sync-config] config.example.json 不存在');
@@ -93,6 +120,7 @@ function main() {
 
   if (versionBehind) {
     refreshBuiltInPresets(config, example, changes);
+    migrateQuietAiDefaults(config, example, changes);
   }
 
   if (exampleVersion > 0 && currentVersion < exampleVersion) {
