@@ -5372,7 +5372,13 @@ async function testFunCsPlayer() {
     assert.ok(funTest.duelWeapons.length >= 20, 'daily duel should include a broad weapon pool');
     const manifestStats = funTest.getImageManifestCacheStats();
     assert.ok(manifestStats.some((item) => item.key === 'daily-beauty' && item.cards === beautyCards.length && item.reloads >= 1), 'daily image manifests should be cached with reload stats');
+    assert.ok(manifestStats.some((item) => item.key === 'daily-beauty' && item.uniqueUrls === beautyCards.length), 'daily image manifest cache should expose unique URL count');
+    assert.ok(manifestStats.some((item) => item.key === 'daily-beauty' && item.approxMemoryKB > 0 && item.lastUsedAt > 0), 'daily image manifest cache should expose memory and last-use stats');
     assert.ok(funTest.dailyImageManifestCacheLines().some((line) => line.includes('清单缓存')), 'daily image manifest cache lines should render for status');
+    const imageTargets = funTest.dailyImageManifestTargets();
+    assert.strictEqual(imageTargets.length, funTest.dailyBeautyAuditRows().length, 'daily image target export should match audit rows');
+    assert.ok(imageTargets.some((item) => item.kind === 'mokoko' && item.fields.characterKey === 'tomori'), 'daily image targets should expose mokoko character keys');
+    assert.ok(imageTargets.some((item) => item.kind === 'skin' && item.fields.weapon && item.fields.skin), 'daily image targets should expose weapon+skin fields');
     const bestdoriCandidates = await funTest.buildCharacterImageCandidates(
       funTest.dailyCharacters.find((item) => item.key === 'tomori'),
       61,
@@ -5403,6 +5409,9 @@ async function testFunCsPlayer() {
     assert.ok(poemBeautyCandidates.filter((item) => item.source === 'authorized-image').length >= 200, 'daily poem should rotate a 200+-image authorized visual pool');
     const duelBeautyCandidates = await funTest.buildDuelImageCandidates(duelWeapon, 61, 6657);
     assert.ok(duelBeautyCandidates.filter((item) => item.source === 'authorized-image').length >= 200, 'daily duel should rotate a 200+-image authorized visual pool');
+    const matchCacheStats = funTest.dailyBeautyMatchCacheStats();
+    assert.ok(matchCacheStats.size > 0, 'daily beauty matching should keep an in-memory query cache');
+    assert.ok(matchCacheStats.hits > 0, 'daily beauty matching should reuse cached per-item results');
     const skinWeapons = new Set(funTest.csSkins.map((item) => item.weapon));
     assert.deepStrictEqual(
       funTest.csWeapons.filter((item) => !skinWeapons.has(item.name)).map((item) => item.name),
@@ -5452,6 +5461,33 @@ async function testFunCsPlayer() {
     });
     assert.strictEqual(auditCli.status, 0, `daily image audit CLI should run: ${auditCli.stdout}\n${auditCli.stderr}`);
     assert.ok(auditCli.stdout.includes('每日图片池全量审计'), 'daily image audit CLI should print report');
+    const templateCli = spawnSync(process.execPath, [path.resolve(__dirname, 'daily-image-audit.js'), '--template-json'], {
+      cwd: path.resolve(__dirname, '..'),
+      env: { ...process.env, DAILY_BEAUTY_IMAGE_MANIFEST_PATH: dailyBeautyManifestPath },
+      encoding: 'utf-8',
+    });
+    assert.strictEqual(templateCli.status, 0, `daily image template CLI should run: ${templateCli.stdout}\n${templateCli.stderr}`);
+    const templateStart = templateCli.stdout.indexOf('{');
+    const templatePayload = JSON.parse(templateCli.stdout.slice(templateStart));
+    assert.ok(Array.isArray(templatePayload.cards), 'daily image template CLI should emit cards array');
+    assert.ok(templatePayload.cards.some((item) => item.kind === 'mokoko' && item.characterKey), 'daily image template should include mokoko character fields');
+    assert.ok(templatePayload.cards.some((item) => item.kind === 'skin' && item.weapon && item.skin), 'daily image template should include weapon+skin fields');
+    assert.ok(!templateCli.stdout.includes('Fill urls'), 'daily image template should not include generated-looking placeholder prose');
+    const templateLimitCli = spawnSync(process.execPath, [path.resolve(__dirname, 'daily-image-audit.js'), '--template-json', '--limit', '1'], {
+      cwd: path.resolve(__dirname, '..'),
+      env: { ...process.env, DAILY_BEAUTY_IMAGE_MANIFEST_PATH: dailyBeautyManifestPath },
+      encoding: 'utf-8',
+    });
+    assert.strictEqual(templateLimitCli.status, 0, `daily image limited template CLI should run: ${templateLimitCli.stdout}\n${templateLimitCli.stderr}`);
+    const templateLimitPayload = JSON.parse(templateLimitCli.stdout.slice(templateLimitCli.stdout.indexOf('{')));
+    assert.strictEqual(templateLimitPayload.cards.length, 1, 'daily image template should honor explicit --limit');
+    const templateCsvCli = spawnSync(process.execPath, [path.resolve(__dirname, 'daily-image-audit.js'), '--template-csv'], {
+      cwd: path.resolve(__dirname, '..'),
+      env: { ...process.env, DAILY_BEAUTY_IMAGE_MANIFEST_PATH: dailyBeautyManifestPath },
+      encoding: 'utf-8',
+    });
+    assert.strictEqual(templateCsvCli.status, 0, `daily image CSV template CLI should run: ${templateCsvCli.stdout}\n${templateCsvCli.stderr}`);
+    assert.ok(templateCsvCli.stdout.includes('kind,label,current,missing,minImages'), 'daily image CSV template should include stable header');
     const strictAuditCli = spawnSync(process.execPath, [path.resolve(__dirname, 'daily-image-audit.js'), '--limit', '5', '--strict'], {
       cwd: path.resolve(__dirname, '..'),
       env: { ...process.env, DAILY_BEAUTY_IMAGE_MANIFEST_PATH: dailyBeautyManifestPath },
@@ -5777,6 +5813,39 @@ async function testFunCsPlayer() {
   assert.ok(firstText(sent[37].message).includes('每日图片池全量审计'), '/dailyimage audit should render full audit');
   assert.ok(firstText(sent[37].message).includes('未达标'), '/dailyimage audit should list missing coverage summary');
   assert.ok(firstText(sent[37].message).includes('武器+皮肤成对匹配'), '/dailyimage audit should explain pair matching for skins');
+
+  handler.handleEvent(makePlainEvent(638, 94, '/dailyimage status 4'));
+  await waitFor(() => sent.length === 39, 'daily image status command');
+  assert.ok(firstText(sent[38].message).includes('每日图片池状态'), '/dailyimage status should render image pool status');
+  assert.ok(firstText(sent[38].message).includes('VPS只跑: npm run update'), '/dailyimage status should point to one-command VPS update');
+
+  handler.handleEvent(makePlainEvent(639, 95, '/dailyimage cache'));
+  await waitFor(() => sent.length === 40, 'daily image cache command');
+  assert.ok(firstText(sent[39].message).includes('每日图片缓存状态'), '/dailyimage cache should render cache status');
+  assert.ok(firstText(sent[39].message).includes('美图匹配缓存'), '/dailyimage cache should include matching cache stats');
+
+  handler.handleEvent(makePlainEvent(640, 96, '/dailyimage template 3'));
+  await waitFor(() => sent.length === 41, 'daily image template command');
+  assert.ok(firstText(sent[40].message).includes('每日图片待补清单'), '/dailyimage template should render todo summary');
+  assert.ok(firstText(sent[40].message).includes('data/daily-beauty-images.todo.json'), '/dailyimage template should name the generated todo file');
+
+  handler.handleEvent(makePlainEvent(641, 97, '/dailyimage help'));
+  await waitFor(() => sent.length === 42, 'daily image help command');
+  assert.ok(firstText(sent[41].message).includes('每日图片池命令'), '/dailyimage help should render usage');
+
+  handler.handleEvent(makePlainEvent(642, 98, '/csknife'));
+  await waitFor(() => sent.length === 43, 'daily knife slash command');
+  assert.ok(firstText(sent[42].message).includes('今日发刀'), '/csknife should include title');
+  assert.ok(sent[42].message.some((seg) => seg.type === 'image'), '/csknife should include image');
+
+  handler.handleEvent(makePlainEvent(643, 99, '/mokoko'));
+  await waitFor(() => sent.length === 44, 'daily mokoko slash command');
+  assert.ok(firstText(sent[43].message).includes('每日木柜子'), '/mokoko should include title');
+  assert.ok(sent[43].message.some((seg) => seg.type === 'image'), '/mokoko should include image');
+
+  handler.handleEvent(makePlainEvent(644, 100, '/csimage test mokoko'));
+  await waitFor(() => sent.length === 45, 'daily image mokoko probe command');
+  assert.ok(firstText(sent[44].message).includes('CS真实图片测试'), '/csimage test mokoko should probe image candidates');
   } finally {
     funTest.__setImageResolverForTests();
     funTest.__setImageSourceResolversForTests();

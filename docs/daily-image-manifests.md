@@ -84,15 +84,34 @@ If multiple images match the same draw, the bot rotates up to 200 candidates by 
 
 Use `/csplayer status` on the VPS to see the current draw's per-item beauty coverage, including whether each selected item has reached `200/200OK`.
 
-Use `/dailyimage audit` for a full repository-wide audit. It checks every CS player, team, map, weapon, gun skin, role, utility, tactic, clutch, compatible knife+skin pair, Mokoko character, Genshin character, cold fact, book excerpt, poem, and duel weapon against the 200-image minimum.
+Use `/dailyimage audit` for a full repository-wide audit. `/dailyimage status`, `/dailyimage cache`, and `/dailyimage template` show the current coverage, manifest cache, and todo summary from inside QQ. The audit checks every CS player, team, map, weapon, gun skin, role, utility, tactic, clutch, compatible knife+skin pair, Mokoko character, Genshin character, cold fact, book excerpt, poem, and duel weapon against the 200-image minimum.
 
-On the VPS you can run the same audit without sending a group message:
+Normal VPS operation is a single command:
+
+```bash
+npm run update
+```
+
+The update script pulls code, builds, runs checks, audits daily image pools, writes `data/daily-beauty-images.todo.json`, and restarts PM2.
+
+For local debugging you can run the same audit without sending a group message:
 
 ```bash
 npm run daily:image:audit
 npm run daily:image:audit:strict
+npm run daily:image:template
+npm run daily:image:template:csv
+npm run daily:image:write-template
 ```
 
-`npm run update` runs the audit automatically after build. By default it reports missing pools and keeps the bot online; use `bash scripts/update.sh --strict-images` when you want missing 200-image pools to stop the update.
+`npm run daily:image:template` prints a JSON template for every missing concrete item. Keep the exported `kind`, `key`, `name`, `weapon`, `skin`, `characterKey`, and `characterName` fields as-is, then fill `urls` or `images` with authorized image URLs. The CSV variant is easier to hand to a separate image-curation workflow.
+
+You can also write the JSON template directly:
+
+```bash
+node scripts/daily-image-audit.js --template-json --write-template data/daily-beauty-images.todo.json
+```
+
+`npm run update` runs the audit automatically after build. By default it reports missing pools, writes the todo template, and keeps the bot online; use `bash scripts/update.sh --strict-images` when you want missing 200-image pools to stop the update.
 
 This repo intentionally does not include a website crawler. Use images and URLs that you are authorized to store in these local manifest files.

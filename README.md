@@ -1354,7 +1354,7 @@ npm run smoke
 | `/daily now`、`/daily me`、`/daily personal`、`/daily proof`、`/daily score`、`/daily center`、`/daily desk`、`/daily squad`、`/daily group`、`/daily vibe`、`/daily relay`、`/daily ice`、`/daily topic`、`/daily script`、`/daily kit`、`/daily gap`、`/daily line`、`/daily plan`、`/daily guard`、`/daily streak`、`/daily media`、`/daily voice`、`/daily nudge`、`/daily missing`、`/daily week`、`/daily recap`、`/daily challenge`、`/daily done`、`/daily wrap`、`/daily challenge board`、`/daily checkin`、`/daily board`、`/daily on 09:00`、`/daily status`、`/daily off` | 每日低频今日状态/自然问候；订阅后每天按当前群/私聊固定时间推送，不调用 AI token；`now`/定时推送会直接带识图语音今日实跑摘要，`me` 查看自己的打卡、挑战完成、榜单名次、识图语音今日实跑和下一步，`personal` 按当前会话自填用户画像给每日偏好卡，包含今日打法、聊天口吻、看图引子、语音短句和画像真话边界，`proof` 是今日证据账本，会区分挑战、打卡、识图、听写、发语音哪些有真实记录、哪些只是建议或缓存，`score` 把挑战、打卡、识图、听写、发语音合成今日闭环分和一分钟补法，`center`/`desk` 是一屏今日指挥台，汇总个人缺项、群队形、识图语音脚本、破冰动作和收尾入口，`squad`/`group` 查看当前群/会话每日队形，汇总今日挑战、打卡、双收、扛旗用户和你的缺项，`vibe` 给每日聊天节奏，列出开场、接图、接语音、贴纸分寸、收住规则和真话边界，`relay` 给识图语音每日接力，分看图位、听写位、发声位和验收位，让群里按真实 trace 跑完三件套，`ice`/`topic` 给今日破冰话题，包含群聊选择题、看图接力、语音接力和个人缺项提示，`script`/`kit` 给识图语音每日脚本包，列出看图、听写、发声、验收和群里回执，`gap` 按今日真实 trace 告诉你识图/听写/发语音三件套还缺哪条和优先补什么，`line` 给每日语音台词，包含主句、短回声、群里接话、预检、管理员预热、真测和听写反查，`plan` 给今日行动安排，串起挑战、打卡、识图语音三件套和晚间收尾，`guard`/`streak` 是保连续短催卡，会告诉你现在先补挑战、打卡还是识图语音，`media`/`voice` 给识图语音今日陪跑卡，包含看图问法、听写真测、语音短句、预检和真测命令，`nudge`/`missing` 按今天缺项短催一下、回答“我今天还差啥”，但不写记录，`week` 汇总最近 7 天双收/挑战/打卡日历并附今天识图语音实跑摘要，`recap` 手动生成晚间复盘卡并带当前用户挑战/打卡收尾状态和识图语音真实链路收尾，`challenge` 给当前用户一张当天稳定的今日挑战卡，`done` 记录挑战完成、连续完成天数和累计次数并提示识图语音下一步，`wrap` 一次记录挑战完成和每日打卡并引导跑 `/daily media` 小闭环，`challenge board` 查看当前会话挑战完成榜，`checkin` 记录当前群/私聊的每日打卡、连续天数和累计次数并提示识图语音下一步，`board` 查看当前会话打卡榜；多模态每日链路牌看 `/media daily` |
 | `/csplayer` | 每日 CS 选手，按 QQ、群、日期固定抽取，带选手图和短评 |
 | `/csplayer status` | 查看当前签位、图片缓存、专属美图池是否达到每个对象 200 张 |
-| `/dailyimage audit` | 全量审计所有每日对象的专属美图池，检查选手/战队/刀皮/木柜子/原神等是否各自 200 张起 |
+| `/dailyimage audit`、`/dailyimage status`、`/dailyimage cache`、`/dailyimage template` | 全量审计、状态、清单缓存和待补摘要，检查选手/战队/刀皮/木柜子/原神等是否各自 200 张起 |
 | `/csimage test all` | 实测每日 CS、木柜子、原神等分支能不能成功发图 |
 | `/今日选手` | `/csplayer` 中文别名 |
 | `/csteam` | 每日 CS 队伍，带队伍图和打法短评 |
@@ -1381,14 +1381,14 @@ npm run smoke
 
 - 同一个群友在同一个群同一天抽到同一结果，不同群独立，第二天刷新。
 - 每日选手、战队、地图、武器、枪皮、定位、道具、战术、残局、发刀、木柜子、原神、冷知识、书摘、古诗词、紫禁之巅都优先读取 `data/daily-beauty-images.json` 的专属美图池；每个具体对象建议 200 张起。
-- 枪皮和刀皮按“武器/刀型 + 皮肤名”成对匹配，图片不会跨功能、跨对象混用；缺图时再走专用授权清单、公开图片接口和备用签位图。
+- 枪皮和刀皮按“武器/刀型 + 皮肤名”成对匹配，图片不会跨功能、跨对象混用；缺图时再走专用授权清单、公开图片接口和日签图。
 - 图片发送前会先下载进本地图片缓存，再以 `base64://` 发给 QQ；图片失败时仍返回文字，不会让命令像“没反应”。
 - 输出包含 @、标题、语境、指数、今天打法、别急点、机器短评，排版尽量短而清楚。
 - `/csquiz` 输出本地每日小考，包含题型、场景、题目、选项、参考判断和真话边界；它用于训练判断和整活，不冒充实时赛事事实。
 - `/cstrain` 输出本地每日训练建议，包含强度、练枪、地图道具、定位目标和复盘项；若当前会话有 `/predict` 结算积分，会附加胜率/精准率、地图样本和赛事样本驱动的个人判断训练提示；若你用 `/cstrain log` 记录过训练，会按近 14 天练枪/道具/复盘/实战分布和文字日志里的死亡、补枪、道具、急停预瞄等短板调整建议；若你设置过 `/profile` 队伍/选手/地图偏好，会把它作为训练侧重点和举例参考，但不当作实时阵容/排名/状态事实；`/cstrain analyze <文字日志>` 只读分析你发的文本，不读取 demo/截图，也不冒充实时赛事事实。
 - 队伍字段写的是“队伍语境”，不是永久阵容。用户问“最新在哪队/最近状态”时应走 `/player 最新 <名字>` 或直接 @ 提问触发联网。
 - 输出走本地逻辑，不调用 AI；真实图解析有短超时和缓存，不影响 @ 必回队列。
-- 当前签位图片状态用 `/csplayer status` 看；全量对象覆盖用 `/dailyimage audit` 看；VPS 命令行可以跑 `npm run daily:image:audit`。
+- 当前签位图片状态用 `/csplayer status` 看；全量对象覆盖用 `/dailyimage audit` 看；`/dailyimage status/cache/template` 看状态、缓存和待补摘要。VPS 日常只跑 `npm run update`，脚本会自动写 `data/daily-beauty-images.todo.json`。
 - 设计参考了常见“每日老婆/每日抽取”类 bot：当天固定、返回头像和昵称；本项目改成 CS 主题卡池，适配群聊和玩机器语态。
 
 每日 CS 模糊触发词：
@@ -2215,10 +2215,10 @@ pm2 logs wanjier --lines 80 --nostream
 1. 先跑 `/csplayer`，确认文字里有“今日CS选手”和“签位”。
 2. 跑 `/csplayer status`，看当前签位的专属美图池是否达到 `200/200OK`，以及图片缓存命中/失败情况。
 3. 跑 `/dailyimage audit`，看全量选手、战队、枪皮、刀皮、木柜子、原神等对象哪些还没达到 200 张。
-4. VPS 上跑 `npm run daily:image:audit`，不用发群消息也能看同一份审计报告。
+4. VPS 上只跑 `npm run update`；脚本会构建、自检、审计每日图片池、写 `data/daily-beauty-images.todo.json` 并重启。
 5. 跑 `/csteam`、`/csmap`、`/csutility`、`/cstactic`、`/csclutch`、`/csloadout`、`/genshin`、`/cold`、`/book`、`/poem`、`/duel` 分别确认新功能。
 6. 如果 QQ 不显示图片，先看 `/csplayer status` 和 PM2 日志里的 `send_group_msg` 是否报错；多数是图片下载、缓存、NapCat 图片发送问题。
-7. 长期解决：补 `data/daily-beauty-images.json`，每个具体对象 200 张起，再跑 `npm run daily:image:audit` 和 `npm run smoke`。
+7. 长期解决：补 `data/daily-beauty-images.json`，每个具体对象 200 张起，然后在 VPS 跑 `npm run update`。
 
 ### 知识库越学越假
 

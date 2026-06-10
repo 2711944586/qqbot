@@ -15,6 +15,7 @@ MODE="safe"
 RUN_SMOKE="${WANJIER_UPDATE_SMOKE:-1}"
 RUN_DAILY_IMAGE_AUDIT="${WANJIER_UPDATE_DAILY_IMAGE_AUDIT:-1}"
 STRICT_DAILY_IMAGES="${WANJIER_DAILY_IMAGE_AUDIT_STRICT:-0}"
+WRITE_DAILY_IMAGE_TEMPLATE="${WANJIER_UPDATE_DAILY_IMAGE_TEMPLATE:-1}"
 for arg in "$@"; do
   case "$arg" in
     --hard|--force)
@@ -36,11 +37,18 @@ for arg in "$@"; do
       RUN_DAILY_IMAGE_AUDIT="1"
       STRICT_DAILY_IMAGES="1"
       ;;
+    --image-template)
+      WRITE_DAILY_IMAGE_TEMPLATE="1"
+      ;;
+    --no-image-template)
+      WRITE_DAILY_IMAGE_TEMPLATE="0"
+      ;;
     -h|--help)
-      echo "用法: bash scripts/update.sh [--hard] [--smoke|--no-smoke] [--image-audit|--no-image-audit] [--strict-images]"
+      echo "用法: bash scripts/update.sh [--hard] [--smoke|--no-smoke] [--image-audit|--no-image-audit] [--strict-images] [--image-template|--no-image-template]"
       echo "  默认: 安全 ff-only 拉取，不覆盖本地改动"
       echo "  --hard: 备份配置后强制 reset 到 origin/main，用于 VPS 明确对齐远程"
       echo "  --strict-images: 每日图片池未达到每对象200张时终止更新"
+      echo "  --no-image-template: 不写 data/daily-beauty-images.todo.json"
       exit 0
       ;;
   esac
@@ -56,6 +64,7 @@ echo "========================================="
 echo "模式: $MODE"
 echo "完整smoke: $RUN_SMOKE"
 echo "每日图片审计: $RUN_DAILY_IMAGE_AUDIT strict=$STRICT_DAILY_IMAGES"
+echo "每日待补模板: $WRITE_DAILY_IMAGE_TEMPLATE"
 echo "目标分支: origin/main"
 echo "当前目录: $ROOT_DIR"
 echo "更新前提交: $(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
@@ -116,6 +125,10 @@ echo "[1/9] 备份配置..."
 backup_file "config.json"
 backup_file ".env"
 backup_file "voice_sample.mp3"
+backup_file "data/daily-beauty-images.json"
+backup_file "data/bestdori-cards.json"
+backup_file "data/daily-player-images.json"
+backup_file "data/genshin-character-images.json"
 cp -f scripts/update.sh "$BACKUP_DIR/update.sh.bak" 2>/dev/null || true
 
 echo "[2/9] 拉取代码前检查工作区..."
@@ -175,6 +188,9 @@ if npm run | grep -q "data:test"; then
   npm run data:test
 fi
 if [ "$RUN_DAILY_IMAGE_AUDIT" = "1" ]; then
+  if [ "$WRITE_DAILY_IMAGE_TEMPLATE" = "1" ]; then
+    node scripts/daily-image-audit.js --template-json --write-template data/daily-beauty-images.todo.json || true
+  fi
   if [ "$STRICT_DAILY_IMAGES" = "1" ]; then
     node scripts/daily-image-audit.js --limit 60 --strict
   else
@@ -209,6 +225,8 @@ echo "  每日功能验收: /help daily"
 echo "  当前签位图片池: /csplayer status"
 echo "  全量图片池审计: /dailyimage audit"
 echo "  VPS命令行审计: npm run daily:image:audit"
+echo "  待补清单模板: data/daily-beauty-images.todo.json"
+echo "  VPS标准操作: npm run update"
 
 echo "========================================="
 echo "  ✅ 更新完成"

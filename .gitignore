@@ -19,6 +19,7 @@ stickers/*
 voice_sample.mp3
 local-tts.sh
 local-stt.sh
+data/*.todo.json
 
 # 知识库运行时数据
 knowledge/audit.json

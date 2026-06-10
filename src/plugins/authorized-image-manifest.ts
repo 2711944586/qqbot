@@ -29,10 +29,13 @@ export interface ImageManifestCacheStats {
   exists: boolean;
   cards: number;
   kinds: number;
+  uniqueUrls: number;
+  approxMemoryKB: number;
   mtimeMs: number;
   sizeBytes: number;
   hits: number;
   reloads: number;
+  lastUsedAt: number;
   lastLoadedAt: number;
   lastError: string;
 }
@@ -43,15 +46,25 @@ interface ImageManifestCacheEntry {
   exists: boolean;
   cards: AuthorizedImageManifestCard[];
   cardsByKind: Map<string, AuthorizedImageManifestCard[]>;
+  uniqueUrls: number;
+  approxMemoryBytes: number;
   mtimeMs: number;
   sizeBytes: number;
   hits: number;
   reloads: number;
+  lastUsedAt: number;
   lastLoadedAt: number;
   lastError: string;
 }
 
 const manifestCache: Map<string, ImageManifestCacheEntry> = new Map();
+const DEFAULT_MAX_MANIFEST_CACHE_ENTRIES = 12;
+
+function maxManifestCacheEntries(): number {
+  const value = Number(process.env.WANJIER_IMAGE_MANIFEST_CACHE_MAX || process.env.DAILY_IMAGE_MANIFEST_CACHE_MAX || DEFAULT_MAX_MANIFEST_CACHE_ENTRIES);
+  if (!Number.isFinite(value)) return DEFAULT_MAX_MANIFEST_CACHE_ENTRIES;
+  return Math.max(4, Math.min(Math.floor(value), 64));
+}
 
 export function compactManifestValue(value: unknown): string {
   return String(value || '').toLowerCase().replace(/[^a-z0-9\u4e00-\u9fa5]+/g, '');
@@ -108,6 +121,28 @@ function buildKindIndex(cards: AuthorizedImageManifestCard[]): Map<string, Autho
   return index;
 }
 
+function approximateCardsMemoryBytes(cards: AuthorizedImageManifestCard[]): number {
+  return Buffer.byteLength(JSON.stringify(cards), 'utf-8');
+}
+
+function uniqueUrlCount(cards: AuthorizedImageManifestCard[]): number {
+  return new Set(cards.map((card) => String(card.url || '')).filter(Boolean)).size;
+}
+
+function evictOldManifestCacheEntries(): void {
+  const maxEntries = maxManifestCacheEntries();
+  if (manifestCache.size <= maxEntries) return;
+  const stale = [...manifestCache.entries()]
+    .sort((a, b) => a[1].lastUsedAt - b[1].lastUsedAt)
+    .slice(0, manifestCache.size - maxEntries);
+  for (const [id] of stale) manifestCache.delete(id);
+}
+
+function touchManifestEntry(entry: ImageManifestCacheEntry): ImageManifestCacheEntry {
+  entry.lastUsedAt = Date.now();
+  return entry;
+}
+
 function cacheId(manifestKey: string, manifestPath: string): string {
   return `${manifestKey}:${path.resolve(manifestPath)}`;
 }
@@ -125,7 +160,7 @@ function loadManifestEntry(manifestPath: string, manifestKey: string): ImageMani
     if (!fs.existsSync(manifestPath)) {
       if (cached && !cached.exists) {
         cached.hits++;
-        return cached;
+        return touchManifestEntry(cached);
       }
       const entry: ImageManifestCacheEntry = {
         key: manifestKey,
@@ -133,21 +168,25 @@ function loadManifestEntry(manifestPath: string, manifestKey: string): ImageMani
         exists: false,
         cards: [],
         cardsByKind: new Map(),
+        uniqueUrls: 0,
+        approxMemoryBytes: 0,
         mtimeMs: 0,
         sizeBytes: 0,
         hits: cached?.hits || 0,
         reloads: cached?.reloads || 0,
+        lastUsedAt: Date.now(),
         lastLoadedAt: Date.now(),
         lastError: '',
       };
       manifestCache.set(id, entry);
+      evictOldManifestCacheEntries();
       return entry;
     }
 
     const stat = fs.statSync(manifestPath);
     if (cached && cached.exists && cached.mtimeMs === stat.mtimeMs && cached.sizeBytes === stat.size) {
       cached.hits++;
-      return cached;
+      return touchManifestEntry(cached);
     }
 
     const cards = parseManifestFile(manifestPath);
@@ -157,14 +196,18 @@ function loadManifestEntry(manifestPath: string, manifestKey: string): ImageMani
       exists: true,
       cards,
       cardsByKind: buildKindIndex(cards),
+      uniqueUrls: uniqueUrlCount(cards),
+      approxMemoryBytes: approximateCardsMemoryBytes(cards),
       mtimeMs: stat.mtimeMs,
       sizeBytes: stat.size,
       hits: cached?.hits || 0,
       reloads: (cached?.reloads || 0) + 1,
+      lastUsedAt: Date.now(),
       lastLoadedAt: Date.now(),
       lastError: '',
     };
     manifestCache.set(id, entry);
+    evictOldManifestCacheEntries();
     return entry;
   } catch (err) {
     const entry: ImageManifestCacheEntry = {
@@ -173,14 +216,18 @@ function loadManifestEntry(manifestPath: string, manifestKey: string): ImageMani
       exists: fs.existsSync(manifestPath),
       cards: cached?.cards || [],
       cardsByKind: cached?.cardsByKind || new Map(),
+      uniqueUrls: cached?.uniqueUrls || 0,
+      approxMemoryBytes: cached?.approxMemoryBytes || 0,
       mtimeMs: cached?.mtimeMs || 0,
       sizeBytes: cached?.sizeBytes || 0,
       hits: cached?.hits || 0,
       reloads: cached?.reloads || 0,
+      lastUsedAt: Date.now(),
       lastLoadedAt: Date.now(),
       lastError: err instanceof Error ? err.message : String(err),
     };
     manifestCache.set(id, entry);
+    evictOldManifestCacheEntries();
     console.warn(`[image-manifest] 本地图片清单读取失败 ${manifestKey}:`, entry.lastError);
     return entry;
   }
@@ -213,13 +260,21 @@ export function getImageManifestCacheStats(): ImageManifestCacheStats[] {
       exists: entry.exists,
       cards: entry.cards.length,
       kinds: entry.cardsByKind.size,
+      uniqueUrls: entry.uniqueUrls,
+      approxMemoryKB: Math.round(entry.approxMemoryBytes / 1024),
       mtimeMs: entry.mtimeMs,
       sizeBytes: entry.sizeBytes,
       hits: entry.hits,
       reloads: entry.reloads,
+      lastUsedAt: entry.lastUsedAt,
       lastLoadedAt: entry.lastLoadedAt,
       lastError: entry.lastError,
     }));
+}
+
+export function getImageManifestSignature(manifestPath: string, manifestKey: string): string {
+  const entry = loadManifestEntry(manifestPath, manifestKey);
+  return `${entry.exists ? '1' : '0'}:${entry.mtimeMs}:${entry.sizeBytes}:${entry.cards.length}`;
 }
 
 export function clearImageManifestCache(): void {

@@ -37,11 +37,13 @@ export function buildHelpTopic(topicRaw: string): string {
       '/cold /book /poem - 每日冷知识 / 书摘 / 古诗词',
       '/duel 或 决战紫禁之巅 - 你和机器随机武器对决，带配图',
       '/dailyimage audit - 全量审计所有每日对象是否各自达到200张',
+      '/dailyimage status / cache / template - 看图片池状态、清单缓存和待补摘要',
       '/csquiz - 今日小考题面；/csquiz answer A 或 /csquiz 答 B 提交判分',
       '/cstrain - 今日训练计划；/cstrain log 30 Mirage AK 急停 记录训练',
       '/cstrain analyze <文字日志> - 只读分析死亡、补枪、道具、急停等短板',
       '/daily on 09:00 - 当前群/私聊每天推送低频今日状态；/daily now 立即看；/daily me 我的进度；/daily personal 每日偏好卡；/daily proof 今日证据账本；/daily score 今日闭环分；/daily center/desk 今日指挥台；/daily squad/group 群每日队形；/daily vibe 每日聊天节奏；/daily relay 识图语音群接力；/daily ice/topic 今日破冰话题；/daily script/kit 识图语音脚本包；/daily gap 识图语音今日补缺；/daily line 每日语音台词；/daily plan 今日安排；/daily guard/streak 保连续；/daily media|voice 识图语音陪跑；/daily nudge/missing 催一下/看今天还差啥；/daily week 最近7天周报；/daily recap 晚间复盘+个人收尾和识图语音收尾；/daily challenge 今日挑战；/daily done 记录完成并提示识图语音下一步；/daily wrap 今日收工；/daily challenge board 挑战榜；/daily checkin 每日打卡；/daily board 打卡榜',
       '边界: 每日CS和小考是本地稳定签位/训练建议，不是实时赛事事实。',
+      'VPS运维: 以后只跑 npm run update；脚本会拉代码、构建、自检、审计、写待补模板并重启。',
     ].join('\n');
   }
   if (['media', 'multi', 'multimodal', 'vision', 'voice', '语音', '识图', '图片', '多模态'].includes(topic)) {
@@ -163,7 +165,8 @@ export const helpPlugin: Plugin = {
         '  /cstrain log 30 Mirage AK 急停 / stats / clear - 记录训练并让计划按历史短板调整',
         '  /csimage test all - 测每日CS/木柜子/原神图源',
         '  /csplayer status - 看当前签位专属美图池是否达到200张',
-        '  /dailyimage audit - 全量审计所有每日对象是否各自达到200张',
+        '  /dailyimage audit / status / cache / template - 全量审计、状态、缓存和待补摘要',
+        '  VPS只跑 npm run update；脚本会自动写 data/daily-beauty-images.todo.json',
         '  也可以直接说: 今日CS / 今天抽个选手 / 今日地图 / 今天用什么枪 / 今日皮肤 / 今日发刀 / 每日木柜子 / 每日原神角色 / 每日冷知识 / 每日书摘 / 每日古诗词 / 决战紫禁之巅 / 今天怎么练枪 / 来个CS小考',
         '',
         '趣味:',

@@ -16,6 +16,7 @@ import {
   type AuthorizedImageManifestCard,
   clearImageManifestCache,
   compactManifestValue,
+  getImageManifestSignature,
   getImageManifestCacheStats,
   loadImageManifest,
   loadImageManifestByKinds,
@@ -76,6 +77,7 @@ type FandomWiki = 'counterstrike' | 'bandori' | 'genshin';
 
 const DAILY_BEAUTY_MIN_IMAGES_PER_ITEM = 200;
 const DAILY_IMAGE_CANDIDATE_LIMIT = 200;
+const DAILY_BEAUTY_MATCH_CACHE_MAX = 6000;
 
 interface SkinCard extends DailyCard {
   weapon: string;
@@ -131,6 +133,16 @@ interface DailyDuelWeapon {
 }
 
 type BestdoriCardImage = AuthorizedImageManifestCard;
+
+interface DailyImageManifestTarget {
+  kind: string;
+  label: string;
+  count: number;
+  ok: boolean;
+  minImages: number;
+  fields: Record<string, string>;
+  tags: string[];
+}
 
 interface ImageCandidate {
   url: string;
@@ -1594,8 +1606,8 @@ function dailyCardImagePlan(card: DailyCard): string {
   if (card.playerImageFallback) parts.push(`代表选手${card.playerImageFallback}`);
   if (card.image) parts.push('静态真实图URL');
   return parts.length > 0
-    ? `图片路径：${parts.join(' -> ')}；都拿不到时给备用签位图`
-    : '图片路径：Counter-Strike Wiki/Fandom；都拿不到时给备用签位图';
+    ? `图片路径：${parts.join(' -> ')}；都拿不到时给日签图`
+    : '图片路径：Counter-Strike Wiki/Fandom；都拿不到时给日签图';
 }
 
 function playerRoleAdvice(player: CSPlayer, score?: number): { style: string; avoid: string } {
@@ -1650,9 +1662,21 @@ function isCsPlayerStatusRequest(command: string | null, args: string[], rawText
 function isDailyImageAuditRequest(command: string | null, args: string[], rawText: string): boolean {
   const first = (args[0] || '').toLowerCase();
   if (['dailyimage', 'dailyimages', 'dailyimg', '每日图片', '图片池'].includes(command || '')) {
-    return !first || ['audit', 'status', 'check', '审计', '状态', '检查'].includes(first);
+    return !first || ['audit', 'status', 'check', 'cache', 'template', 'todo', 'help', 'usage', '审计', '状态', '检查', '缓存', '模板', '待补', '帮助', '用法'].includes(first);
   }
-  return /^(?:\/)?(?:dailyimage|dailyimages|dailyimg|每日图片|图片池)(?:audit|status|check|审计|状态|检查)?$/.test(normalizeDrawText(rawText));
+  return /^(?:\/)?(?:dailyimage|dailyimages|dailyimg|每日图片|图片池)(?:audit|status|check|cache|template|todo|help|usage|审计|状态|检查|缓存|模板|待补|帮助|用法)?$/.test(normalizeDrawText(rawText));
+}
+
+type DailyImageCommandAction = 'audit' | 'status' | 'cache' | 'template' | 'help';
+
+function dailyImageCommandAction(args: string[], rawText: string): DailyImageCommandAction {
+  const first = normalizeDrawText(args[0] || '');
+  const raw = normalizeDrawText(rawText);
+  if (['help', 'usage', '帮助', '用法'].includes(first) || /(帮助|用法)$/.test(raw)) return 'help';
+  if (['cache', '缓存'].includes(first) || /(cache|缓存)$/.test(raw)) return 'cache';
+  if (['template', 'todo', '模板', '待补'].includes(first) || /(template|todo|模板|待补)$/.test(raw)) return 'template';
+  if (['status', 'check', '状态', '检查'].includes(first) || /(status|check|状态|检查)$/.test(raw)) return 'status';
+  return 'audit';
 }
 
 function isCsImageCommand(command: string | null, rawText: string): boolean {
@@ -2038,7 +2062,7 @@ async function probeImageCandidates(title: string, candidates: ImageCandidate[],
     lines.push(`FAIL ${candidate.source} ${candidate.label}`);
   }
   if (!image && fallbackCard) {
-    lines.push('备用签位图已生成。');
+    lines.push('已生成日签图。');
     image = localDailyCardImage(fallbackCard, score);
   }
   const stats = getCacheStats();
@@ -2234,12 +2258,12 @@ async function imageSegmentOrNote(url?: string, fallbackPlayerNick?: string, fal
   }
 
   if (fallbackCard) {
-    console.log(`[fun] ${fallbackCard.title}/${fallbackCard.name} 使用备用签位图`);
+    console.log(`[fun] ${fallbackCard.title}/${fallbackCard.name} 使用日签图`);
     return [localDailyCardImage(fallbackCard, score)];
   }
 
   if (fallbackPlayerNick) {
-    console.log(`[fun] ${fallbackPlayerNick} 使用备用选手签位图`);
+    console.log(`[fun] ${fallbackPlayerNick} 使用选手日签图`);
     return [localDailyCardImage({
       key: `player-${fallbackPlayerNick}`,
       title: '今日CS选手',
@@ -2344,6 +2368,10 @@ let bestdoriCardManifestPathOverride = '';
 let playerImageManifestPathOverride = '';
 let genshinImageManifestPathOverride = '';
 let dailyBeautyImageManifestPathOverride = '';
+let dailyBeautyMatchCacheHits = 0;
+let dailyBeautyMatchCacheMisses = 0;
+let dailyBeautyMatchCacheEvictions = 0;
+const dailyBeautyMatchCache = new Map<string, BestdoriCardImage[]>();
 
 function bestdoriCardManifestPath(): string {
   return bestdoriCardManifestPathOverride || process.env.BESTDORI_CARD_MANIFEST_PATH || BESTDORI_CARD_MANIFEST_PATH;
@@ -2375,6 +2403,35 @@ function loadGenshinManifestImages(): BestdoriCardImage[] {
 
 function loadDailyBeautyImages(): BestdoriCardImage[] {
   return loadImageManifest(dailyBeautyImageManifestPath(), 'daily-beauty');
+}
+
+function clearDailyBeautyMatchCache(): void {
+  dailyBeautyMatchCache.clear();
+  dailyBeautyMatchCacheHits = 0;
+  dailyBeautyMatchCacheMisses = 0;
+  dailyBeautyMatchCacheEvictions = 0;
+}
+
+function setDailyBeautyMatchCache(key: string, cards: BestdoriCardImage[]): BestdoriCardImage[] {
+  dailyBeautyMatchCache.set(key, cards);
+  if (dailyBeautyMatchCache.size > DAILY_BEAUTY_MATCH_CACHE_MAX) {
+    const firstKey = dailyBeautyMatchCache.keys().next().value;
+    if (firstKey) {
+      dailyBeautyMatchCache.delete(firstKey);
+      dailyBeautyMatchCacheEvictions++;
+    }
+  }
+  return cards;
+}
+
+function dailyBeautyMatchCacheStats(): { size: number; max: number; hits: number; misses: number; evictions: number } {
+  return {
+    size: dailyBeautyMatchCache.size,
+    max: DAILY_BEAUTY_MATCH_CACHE_MAX,
+    hits: dailyBeautyMatchCacheHits,
+    misses: dailyBeautyMatchCacheMisses,
+    evictions: dailyBeautyMatchCacheEvictions,
+  };
 }
 
 const dailyImageKindAliases: Record<string, string[]> = {
@@ -2441,12 +2498,23 @@ function preferBeautyManifestImages(cards: BestdoriCardImage[]): BestdoriCardIma
 function dailyBeautyManifestImagesFor(kind: string, values: unknown[]): BestdoriCardImage[] {
   const keys = values.map(compactManifestValue).filter(Boolean);
   if (keys.length === 0) return [];
+  const manifestPath = dailyBeautyImageManifestPath();
+  const signature = getImageManifestSignature(manifestPath, 'daily-beauty');
+  const cacheKey = `single:${signature}:${imageKindAliases(kind).join('|')}:${keys.join('|')}`;
+  const cached = dailyBeautyMatchCache.get(cacheKey);
+  if (cached) {
+    dailyBeautyMatchCacheHits++;
+    dailyBeautyMatchCache.delete(cacheKey);
+    dailyBeautyMatchCache.set(cacheKey, cached);
+    return cached;
+  }
+  dailyBeautyMatchCacheMisses++;
   const kindCards = loadImageManifestByKinds(dailyBeautyImageManifestPath(), 'daily-beauty', imageKindAliases(kind));
   const matches = kindCards.filter((card) => {
     const cardValues = manifestSearchValues(card);
     return cardValues.some((value) => keys.some((key) => value === key || value.includes(key) || key.includes(value)));
   });
-  return preferBeautyManifestImages(matches);
+  return setDailyBeautyMatchCache(cacheKey, preferBeautyManifestImages(matches));
 }
 
 function manifestValueMatches(cardValues: string[], keys: unknown[]): boolean {
@@ -2459,12 +2527,23 @@ function dailyBeautyManifestImagesForPair(kind: string, firstValues: unknown[], 
   const firstKeys = firstValues.map(compactManifestValue).filter(Boolean);
   const secondKeys = secondValues.map(compactManifestValue).filter(Boolean);
   if (firstKeys.length === 0 || secondKeys.length === 0) return [];
-  const kindCards = loadImageManifestByKinds(dailyBeautyImageManifestPath(), 'daily-beauty', imageKindAliases(kind));
+  const manifestPath = dailyBeautyImageManifestPath();
+  const signature = getImageManifestSignature(manifestPath, 'daily-beauty');
+  const cacheKey = `pair:${signature}:${imageKindAliases(kind).join('|')}:${firstKeys.join('|')}:${secondKeys.join('|')}`;
+  const cached = dailyBeautyMatchCache.get(cacheKey);
+  if (cached) {
+    dailyBeautyMatchCacheHits++;
+    dailyBeautyMatchCache.delete(cacheKey);
+    dailyBeautyMatchCache.set(cacheKey, cached);
+    return cached;
+  }
+  dailyBeautyMatchCacheMisses++;
+  const kindCards = loadImageManifestByKinds(manifestPath, 'daily-beauty', imageKindAliases(kind));
   const matches = kindCards.filter((card) => {
     const cardValues = manifestSearchValues(card);
     return manifestValueMatches(cardValues, firstKeys) && manifestValueMatches(cardValues, secondKeys);
   });
-  return preferBeautyManifestImages(matches);
+  return setDailyBeautyMatchCache(cacheKey, preferBeautyManifestImages(matches));
 }
 
 function dailyBeautyCandidatesFromCards(kind: string, label: string, cards: BestdoriCardImage[], userId: number, scopeId: number, limit = DAILY_IMAGE_CANDIDATE_LIMIT): ImageCandidate[] {
@@ -2553,36 +2632,143 @@ function currentDailyBeautyCoverageLines(userId: number, scopeId: number): strin
   ];
 }
 
-function dailyBeautyAuditRows(): Array<{ kind: string; label: string; count: number; ok: boolean }> {
-  const rows: Array<{ kind: string; label: string; count: number; ok: boolean }> = [];
-  const push = (kind: string, label: string, count: number) => rows.push({
+function compactDailyImageFields(fields: Record<string, unknown>): Record<string, string> {
+  const result: Record<string, string> = {};
+  for (const [key, value] of Object.entries(fields)) {
+    const text = String(value || '').trim();
+    if (text) result[key] = text;
+  }
+  return result;
+}
+
+function dailyCardManifestFields(card: DailyCard): Record<string, string> {
+  const skinCard = isSkinCard(card) ? card : null;
+  return compactDailyImageFields({
+    key: card.key,
+    name: card.name,
+    itemName: card.imageLabel || card.name,
+    weapon: skinCard?.weapon,
+    skin: skinCard?.name,
+  });
+}
+
+function dailyTextManifestFields(card: DailyTextCard): Record<string, string> {
+  return compactDailyImageFields({
+    key: card.key,
+    name: card.name,
+    itemName: card.name,
+    title: card.title,
+  });
+}
+
+function dailyImageTarget(kind: string, label: string, fields: Record<string, string>, count: number, tags: string[] = ['poster', 'wallpaper', 'artwork']): DailyImageManifestTarget {
+  return {
     kind,
     label,
     count,
     ok: count >= DAILY_BEAUTY_MIN_IMAGES_PER_ITEM,
-  });
+    minImages: DAILY_BEAUTY_MIN_IMAGES_PER_ITEM,
+    fields,
+    tags,
+  };
+}
 
-  for (const player of csPlayers) push('player', player.nick, dailyBeautyImageCountFor('player', [player.nick, player.name, ...(player.aliases || [])]));
-  for (const team of csTeams) push('team', team.name, dailyBeautyImageCountFor('team', dailyCardManifestSearchValues(team)));
-  for (const map of csMaps) push('map', map.name, dailyBeautyImageCountFor('map', dailyCardManifestSearchValues(map)));
-  for (const weapon of csWeapons) push('weapon', weapon.name, dailyBeautyImageCountFor('weapon', dailyCardManifestSearchValues(weapon)));
-  for (const skin of csSkins) push('skin', `${skin.weapon} | ${skin.name}`, dailyBeautySkinImagesFor(skin).length);
-  for (const role of csRoles) push('role', role.name, dailyBeautyImageCountFor('role', dailyCardManifestSearchValues(role)));
-  for (const utility of csUtilities) push('utility', utility.name, dailyBeautyImageCountFor('utility', dailyCardManifestSearchValues(utility)));
-  for (const tactic of csTactics) push('tactic', tactic.name, dailyBeautyImageCountFor('tactic', dailyCardManifestSearchValues(tactic)));
-  for (const clutch of csClutches) push('clutch', clutch.name, dailyBeautyImageCountFor('clutch', dailyCardManifestSearchValues(clutch)));
+function dailyImageManifestTargets(): DailyImageManifestTarget[] {
+  const targets: DailyImageManifestTarget[] = [];
+  for (const player of csPlayers) {
+    targets.push(dailyImageTarget(
+      'player',
+      player.nick,
+      compactDailyImageFields({ key: player.nick, nick: player.nick, name: player.name }),
+      dailyBeautyImageCountFor('player', [player.nick, player.name, ...(player.aliases || [])]),
+      ['poster', 'action', 'stage', 'wallpaper'],
+    ));
+  }
+  for (const team of csTeams) {
+    targets.push(dailyImageTarget('team', team.name, dailyCardManifestFields(team), dailyBeautyImageCountFor('team', dailyCardManifestSearchValues(team)), ['poster', 'stage', 'keyvisual', 'wallpaper']));
+  }
+  for (const map of csMaps) {
+    targets.push(dailyImageTarget('map', map.name, dailyCardManifestFields(map), dailyBeautyImageCountFor('map', dailyCardManifestSearchValues(map)), ['map', 'scene', 'wallpaper', 'screenshot']));
+  }
+  for (const weapon of csWeapons) {
+    targets.push(dailyImageTarget('weapon', weapon.name, dailyCardManifestFields(weapon), dailyBeautyImageCountFor('weapon', dailyCardManifestSearchValues(weapon)), ['inspect', 'showcase', 'render', 'wallpaper']));
+  }
+  for (const skin of csSkins) {
+    targets.push(dailyImageTarget('skin', skin.name, compactDailyImageFields({
+      key: skin.key,
+      weapon: skin.weapon,
+      skin: skin.name,
+      name: skin.name,
+      itemName: skin.name,
+    }), dailyBeautySkinImagesFor(skin).length, ['inspect', 'showcase', 'skin', 'render']));
+  }
+  for (const role of csRoles) {
+    targets.push(dailyImageTarget('role', role.name, dailyCardManifestFields(role), dailyBeautyImageCountFor('role', dailyCardManifestSearchValues(role)), ['poster', 'action', 'scene', 'wallpaper']));
+  }
+  for (const utility of csUtilities) {
+    targets.push(dailyImageTarget('utility', utility.name, dailyCardManifestFields(utility), dailyBeautyImageCountFor('utility', dailyCardManifestSearchValues(utility)), ['utility', 'lineup', 'scene', 'showcase']));
+  }
+  for (const tactic of csTactics) {
+    targets.push(dailyImageTarget('tactic', tactic.name, dailyCardManifestFields(tactic), dailyBeautyImageCountFor('tactic', dailyCardManifestSearchValues(tactic)), ['tactic', 'scene', 'poster', 'action']));
+  }
+  for (const clutch of csClutches) {
+    targets.push(dailyImageTarget('clutch', clutch.name, dailyCardManifestFields(clutch), dailyBeautyImageCountFor('clutch', dailyCardManifestSearchValues(clutch)), ['clutch', 'action', 'scene', 'poster']));
+  }
   for (const knife of csKnives) {
     for (const skin of knifeSkinPoolFor(knife)) {
-      push('knife', `${knife.name} | ${skin.name}`, dailyBeautyKnifeImagesFor(knife, skin).length);
+      targets.push(dailyImageTarget('knife', `${knife.name} | ${skin.name}`, compactDailyImageFields({
+        key: knife.key,
+        name: knife.name,
+        skin: skin.name,
+        itemKey: skin.key,
+        itemName: `${knife.name} | ${skin.name}`,
+      }), dailyBeautyKnifeImagesFor(knife, skin).length, ['inspect', 'showcase', 'knife', 'skin']));
     }
   }
-  for (const character of dailyCharacters) push('mokoko', character.name, dailyBeautyImageCountFor('mokoko', [character.key, character.name, character.band, character.role, character.page]));
-  for (const character of dailyGenshinCharacters) push('genshin', character.name, dailyBeautyImageCountFor('genshin', [character.key, character.name, character.page, character.tag]));
-  for (const fact of dailyFacts) push('fact', fact.name, dailyBeautyImageCountFor('fact', [fact.key, fact.title, fact.name, fact.subtitle, fact.body, fact.line]));
-  for (const book of dailyBookExcerpts) push('book', book.name, dailyBeautyImageCountFor('book', [book.key, book.title, book.name, book.subtitle, book.body, book.line]));
-  for (const poem of dailyPoems) push('poem', poem.name, dailyBeautyImageCountFor('poem', [poem.key, poem.title, poem.name, poem.subtitle, poem.body, poem.line]));
-  for (const weapon of duelWeapons) push('duel', weapon.name, dailyBeautyImageCountFor('duel', [weapon.key, weapon.name, weapon.style]));
-  return rows;
+  for (const character of dailyCharacters) {
+    targets.push(dailyImageTarget('mokoko', character.name, compactDailyImageFields({
+      key: character.key,
+      name: character.name,
+      characterKey: character.key,
+      characterName: character.name,
+      itemName: character.name,
+    }), dailyBeautyImageCountFor('mokoko', [character.key, character.name, character.band, character.role, character.page]), ['card', 'artwork', 'stage', 'keyvisual']));
+  }
+  for (const character of dailyGenshinCharacters) {
+    targets.push(dailyImageTarget('genshin', character.name, compactDailyImageFields({
+      key: character.key,
+      name: character.name,
+      characterKey: character.key,
+      characterName: character.name,
+      itemName: character.name,
+    }), dailyBeautyImageCountFor('genshin', [character.key, character.name, character.page, character.tag]), ['splash', 'artwork', 'card', 'wallpaper']));
+  }
+  for (const fact of dailyFacts) {
+    targets.push(dailyImageTarget('fact', fact.name, dailyTextManifestFields(fact), dailyBeautyImageCountFor('fact', [fact.key, fact.title, fact.name, fact.subtitle, fact.body, fact.line]), ['poster', 'scene', 'illustration', 'wallpaper']));
+  }
+  for (const book of dailyBookExcerpts) {
+    targets.push(dailyImageTarget('book', book.name, dailyTextManifestFields(book), dailyBeautyImageCountFor('book', [book.key, book.title, book.name, book.subtitle, book.body, book.line]), ['cover', 'artwork', 'scene', 'poster']));
+  }
+  for (const poem of dailyPoems) {
+    targets.push(dailyImageTarget('poem', poem.name, dailyTextManifestFields(poem), dailyBeautyImageCountFor('poem', [poem.key, poem.title, poem.name, poem.subtitle, poem.body, poem.line]), ['scene', 'landscape', 'wallpaper', 'artwork']));
+  }
+  for (const weapon of duelWeapons) {
+    targets.push(dailyImageTarget('duel', weapon.name, compactDailyImageFields({
+      key: weapon.key,
+      name: weapon.name,
+      itemName: weapon.name,
+    }), dailyBeautyImageCountFor('duel', [weapon.key, weapon.name, weapon.style]), ['poster', 'action', 'showcase', 'scene']));
+  }
+  return targets;
+}
+
+function dailyBeautyAuditRows(): Array<{ kind: string; label: string; count: number; ok: boolean }> {
+  return dailyImageManifestTargets().map((target) => ({
+    kind: target.kind,
+    label: target.label,
+    count: target.count,
+    ok: target.ok,
+  }));
 }
 
 function buildDailyImageAuditReport(limit: number = 30): string {
@@ -2609,6 +2795,78 @@ function buildDailyImageAuditReport(limit: number = 30): string {
   return lines.join('\n');
 }
 
+function formatDailyImageTargetFields(target: DailyImageManifestTarget): string {
+  return Object.entries(target.fields)
+    .filter(([key]) => ['key', 'nick', 'name', 'weapon', 'skin', 'characterKey', 'characterName', 'itemKey', 'itemName'].includes(key))
+    .map(([key, value]) => `${key}=${value}`)
+    .slice(0, 5)
+    .join(' ');
+}
+
+function buildDailyImageTemplateReport(limit: number = 12): string {
+  const targets = dailyImageManifestTargets();
+  const missing = targets
+    .filter((target) => !target.ok)
+    .sort((a, b) => (a.minImages - a.count) - (b.minImages - b.count) || a.kind.localeCompare(b.kind) || a.label.localeCompare(b.label));
+  const shown = missing.slice(0, Math.max(1, Math.min(limit, 40)));
+  const lines = [
+    '每日图片待补清单',
+    `对象总数: ${targets.length}`,
+    `未达标: ${missing.length}`,
+    '模板文件: data/daily-beauty-images.todo.json',
+    'VPS更新: npm run update 会自动写模板、审计、构建、重启',
+  ];
+  if (shown.length > 0) {
+    lines.push(`待补前${shown.length}项:`);
+    for (const target of shown) {
+      lines.push(`${target.kind} ${target.label}: 还差${Math.max(0, target.minImages - target.count)}张 ${formatDailyImageTargetFields(target)}`);
+    }
+    if (missing.length > shown.length) lines.push(`还有${missing.length - shown.length}项未展示，模板文件里会放全量缺口。`);
+  } else {
+    lines.push('当前没有待补项。');
+  }
+  return lines.join('\n');
+}
+
+function buildDailyImageStatusReport(userId: number, scopeId: number, limit: number = 12): string {
+  const rows = dailyBeautyAuditRows();
+  const missing = rows.filter((row) => !row.ok).sort((a, b) => a.count - b.count || a.kind.localeCompare(b.kind) || a.label.localeCompare(b.label));
+  return [
+    '每日图片池状态',
+    `对象总数: ${rows.length}`,
+    `达标: ${rows.length - missing.length}/${rows.length}`,
+    `未达标: ${missing.length}`,
+    `通用每日美图: ${loadDailyBeautyImages().length}张`,
+    ...dailyImageManifestCacheLines(),
+    ...currentDailyBeautyCoverageLines(userId, scopeId),
+    missing.length > 0
+      ? `优先补: ${missing.slice(0, Math.max(1, Math.min(limit, 20))).map((row) => `${row.kind} ${row.label} ${row.count}/${DAILY_BEAUTY_MIN_IMAGES_PER_ITEM}`).join(' | ')}`
+      : '全部对象都达到200张起步。',
+    'VPS只跑: npm run update',
+  ].join('\n');
+}
+
+function buildDailyImageCacheReport(): string {
+  return [
+    '每日图片缓存状态',
+    ...dailyImageManifestCacheLines(),
+    '改完清单后不用重启；文件大小或修改时间变化会自动重载。',
+  ].join('\n');
+}
+
+function buildDailyImageHelp(): string {
+  return [
+    '每日图片池命令',
+    '/dailyimage audit [数量] - 全量审计所有对象是否各自200张起',
+    '/dailyimage status - 当前签位和全局图片池状态',
+    '/dailyimage cache - 本地清单缓存和匹配缓存状态',
+    '/dailyimage template [数量] - 看待补清单摘要',
+    '/csplayer status - 当前抽签结果的图片覆盖',
+    'VPS只跑: npm run update',
+    '脚本会自动拉代码、构建、自检、审计、写 data/daily-beauty-images.todo.json、重启服务。',
+  ].join('\n');
+}
+
 function dailyImageManifestCacheLines(): string[] {
   loadBestdoriCardImages();
   loadPlayerManifestImages();
@@ -2617,10 +2875,14 @@ function dailyImageManifestCacheLines(): string[] {
   const stats = getImageManifestCacheStats();
   const hits = stats.reduce((sum, item) => sum + item.hits, 0);
   const reloads = stats.reduce((sum, item) => sum + item.reloads, 0);
-  const lines = [`清单缓存: ${stats.length}份 命中${hits} 重载${reloads}`];
+  const memoryKB = stats.reduce((sum, item) => sum + item.approxMemoryKB, 0);
+  const urlCount = stats.reduce((sum, item) => sum + item.uniqueUrls, 0);
+  const matchStats = dailyBeautyMatchCacheStats();
+  const lines = [`清单缓存: ${stats.length}份 URL${urlCount} 内存约${memoryKB}KB 命中${hits} 重载${reloads}`];
+  lines.push(`美图匹配缓存: ${matchStats.size}/${matchStats.max} 命中${matchStats.hits}/${matchStats.misses} 淘汰${matchStats.evictions}`);
   for (const item of stats.slice(0, 4)) {
     const rel = path.relative(process.cwd(), item.path).replace(/\\/g, '/');
-    lines.push(`${item.key}: ${item.exists ? `${item.cards}张/${item.kinds}类` : '未放清单'} hit${item.hits} reload${item.reloads} ${rel}${item.lastError ? ` 错误=${item.lastError.slice(0, 48)}` : ''}`);
+    lines.push(`${item.key}: ${item.exists ? `${item.cards}张/${item.kinds}类/${item.uniqueUrls}URL` : '未放清单'} hit${item.hits} reload${item.reloads} ${rel}${item.lastError ? ` 错误=${item.lastError.slice(0, 48)}` : ''}`);
   }
   return lines;
 }
@@ -3805,7 +4067,12 @@ export const funPlugin: Plugin = {
 
     if (isDailyImageAuditRequest(ctx.command, ctx.args, raw)) {
       const limit = Math.max(1, Math.min(parseInt(ctx.args.find((arg) => /^\d+$/.test(arg)) || '30', 10) || 30, 80));
-      ctx.reply(buildDailyImageAuditReport(limit));
+      const action = dailyImageCommandAction(ctx.args, raw);
+      if (action === 'help') ctx.reply(buildDailyImageHelp());
+      else if (action === 'status') ctx.reply(buildDailyImageStatusReport(ctx.event.user_id, ctx.groupId || 0, limit));
+      else if (action === 'cache') ctx.reply(buildDailyImageCacheReport());
+      else if (action === 'template') ctx.reply(buildDailyImageTemplateReport(limit));
+      else ctx.reply(buildDailyImageAuditReport(limit));
       return true;
     }
 
@@ -3827,7 +4094,7 @@ export const funPlugin: Plugin = {
         ...currentDailyBeautyCoverageLines(ctx.event.user_id, ctx.groupId || 0),
         `冷知识/书摘/古诗词: ${dailyFacts.length}/${dailyBookExcerpts.length}/${dailyPoems.length}`,
         `紫禁之巅武器池: ${duelWeapons.length}种`,
-        `发图顺序: 专属美图池 -> 专用清单 -> 公开图片接口 -> 备用签位图`,
+        `发图顺序: 专属美图池 -> 专用清单 -> 公开图片接口 -> 日签图`,
         `队伍示例: ${csTeams.slice(0, 3).map((item) => `${item.name}(${dailyCardImagePlan(item).replace(/^图片路径：/, '')})`).join(' | ')}`,
         (() => {
           const liq = getLiquipediaImageStats();
@@ -4131,7 +4398,13 @@ export const __test = {
   buildLoadoutMessage,
   buildCsTrainingMessage,
   dailyBeautyAuditRows,
+  dailyImageManifestTargets,
   buildDailyImageAuditReport,
+  buildDailyImageStatusReport,
+  buildDailyImageCacheReport,
+  buildDailyImageTemplateReport,
+  buildDailyImageHelp,
+  dailyBeautyMatchCacheStats,
   dailyCsQuizFor,
   buildCsQuizMessage,
   __setTrainingStorePathForTests: (filepath?: string) => {
@@ -4140,18 +4413,22 @@ export const __test = {
   __setBestdoriCardManifestPathForTests: (filepath?: string) => {
     bestdoriCardManifestPathOverride = filepath || '';
     clearImageManifestCache();
+    clearDailyBeautyMatchCache();
   },
   __setPlayerImageManifestPathForTests: (filepath?: string) => {
     playerImageManifestPathOverride = filepath || '';
     clearImageManifestCache();
+    clearDailyBeautyMatchCache();
   },
   __setGenshinImageManifestPathForTests: (filepath?: string) => {
     genshinImageManifestPathOverride = filepath || '';
     clearImageManifestCache();
+    clearDailyBeautyMatchCache();
   },
   __setDailyBeautyImageManifestPathForTests: (filepath?: string) => {
     dailyBeautyImageManifestPathOverride = filepath || '';
     clearImageManifestCache();
+    clearDailyBeautyMatchCache();
   },
   __setImageResolverForTests: (resolver?: (url: string) => Promise<string | null>) => {
     imageDataUrlResolver = resolver || getImageDataUrl;
