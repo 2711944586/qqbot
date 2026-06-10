@@ -5175,6 +5175,7 @@ async function testFunCsPlayer() {
   const config = makeConfigForHandler();
   const trainingStorePath = path.resolve(__dirname, '..', 'data', `cs-training-smoke-${Date.now()}.json`);
   const profileStorePath = path.resolve(__dirname, '..', 'data', `cs-profile-smoke-${Date.now()}.json`);
+  const bestdoriManifestPath = path.resolve(__dirname, '..', 'data', `bestdori-cards-smoke-${Date.now()}.json`);
   const sent = [];
   const bot = {
     getConfig: () => config,
@@ -5188,6 +5189,14 @@ async function testFunCsPlayer() {
   const handler = new MessageHandler(bot);
   handler.use(funPlugin);
   funTest.__setTrainingStorePathForTests(trainingStorePath);
+  fs.mkdirSync(path.dirname(bestdoriManifestPath), { recursive: true });
+  fs.writeFileSync(bestdoriManifestPath, JSON.stringify({
+    cards: [
+      { characterKey: 'tomori', characterName: 'Takamatsu Tomori', title: 'smoke tomori card 1', url: 'https://example.com/bestdori-tomori-1.png' },
+      { characterKey: 'tomori', characterName: 'Takamatsu Tomori', title: 'smoke tomori card 2', url: 'https://example.com/bestdori-tomori-2.png' },
+    ],
+  }), 'utf-8');
+  funTest.__setBestdoriCardManifestPathForTests(bestdoriManifestPath);
   userProfile.__test.setStorePathForTests(profileStorePath);
   funTest.__setImageResolverForTests(async () => 'data:image/jpeg;base64,/9j/2w==');
   funTest.__setImageSourceResolversForTests({
@@ -5223,10 +5232,16 @@ async function testFunCsPlayer() {
     assert.ok(funTest.csSkins.length >= 55, 'daily CS skin pool should cover the full weapon pool');
     assert.strictEqual(funTest.dailyCharacters.length, 10, 'mokoko pool should cover MyGO and Ave Mujica members');
     assert.ok(funTest.dailyGenshinCharacters.length >= 90, 'daily genshin pool should include a broad character pool');
-    assert.ok(funTest.dailyFacts.length >= 20, 'daily fact pool should be rich enough for variety');
-    assert.ok(funTest.dailyBookExcerpts.length >= 20, 'daily book excerpt pool should be rich enough for variety');
-    assert.ok(funTest.dailyPoems.length >= 20, 'daily poem pool should be rich enough for variety');
+    assert.ok(funTest.dailyFacts.length >= 40, 'daily fact pool should be rich enough for variety');
+    assert.ok(funTest.dailyBookExcerpts.length >= 40, 'daily book excerpt pool should be rich enough for variety');
+    assert.ok(funTest.dailyPoems.length >= 40, 'daily poem pool should be rich enough for variety');
     assert.ok(funTest.duelWeapons.length >= 20, 'daily duel should include a broad weapon pool');
+    const bestdoriCandidates = await funTest.buildCharacterImageCandidates(
+      funTest.dailyCharacters.find((item) => item.key === 'tomori'),
+      61,
+      6657,
+    );
+    assert.ok(bestdoriCandidates.some((item) => item.source === 'bestdori-card'), 'daily mokoko should prefer local authorized Bestdori card manifest when present');
     const skinWeapons = new Set(funTest.csSkins.map((item) => item.weapon));
     assert.deepStrictEqual(
       funTest.csWeapons.filter((item) => !skinWeapons.has(item.name)).map((item) => item.name),
@@ -5539,9 +5554,11 @@ async function testFunCsPlayer() {
     funTest.__setImageResolverForTests();
     funTest.__setImageSourceResolversForTests();
     funTest.__setTrainingStorePathForTests();
+    funTest.__setBestdoriCardManifestPathForTests();
     userProfile.__test.setStorePathForTests();
     if (fs.existsSync(trainingStorePath)) fs.unlinkSync(trainingStorePath);
     if (fs.existsSync(profileStorePath)) fs.unlinkSync(profileStorePath);
+    if (fs.existsSync(bestdoriManifestPath)) fs.unlinkSync(bestdoriManifestPath);
   }
 }
 

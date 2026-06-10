@@ -716,6 +716,75 @@ const duelWeapons: DailyDuelWeapon[] = [
   { key: 'slipper', name: '拖鞋', style: '家庭秘传', power: 80, tempo: 76, line: '出手很轻，威慑很重。' },
 ];
 
+dailyFacts.push(
+  { key: 'pencil-space', title: '每日冷知识', name: '铅笔不能在太空随便替代钢笔', subtitle: '航天 / 材料', body: '铅笔碎屑和石墨粉在失重环境里可能带来导电、吸入和漂浮污染风险，所以航天书写工具要考虑很多安全细节。', advice: '今天别把“简单替代”想得太简单，环境一变，风险也会变。', line: '不是铅笔不行，是太空不吃这一套。', scoreLabel: '新鲜度' },
+  { key: 'blue-blood', title: '每日冷知识', name: '鲎的血液呈蓝色', subtitle: '生物 / 医学', body: '鲎血里含有以铜为核心的血蓝蛋白，遇氧后呈蓝色；相关试剂还曾被广泛用于检测细菌内毒素。', advice: '今天看见奇怪颜色，先问它背后的元素。', line: '蓝不是滤镜，是化学在营业。', scoreLabel: '新鲜度' },
+  { key: 'rain-smell', title: '每日冷知识', name: '雨后土味有名字', subtitle: '气味 / 微生物', body: '雨后泥土气味常和土壤细菌产生的土臭素有关，雨滴把它带进空气里，人就闻到了“下雨味”。', advice: '今天别小看气味，它常常是环境的消息推送。', line: '雨味不是玄学，是土壤在发通知。', scoreLabel: '新鲜度' },
+  { key: 'penguin-knees', title: '每日冷知识', name: '企鹅其实有膝盖', subtitle: '动物 / 骨骼', body: '企鹅短腿外观下藏着完整腿骨结构，膝关节被羽毛和身体轮廓遮住了。', advice: '今天别只看外形，结构可能藏得很深。', line: '看着没腿，不代表没有关节。', scoreLabel: '新鲜度' },
+  { key: 'moon-leaving', title: '每日冷知识', name: '月球正在慢慢远离地球', subtitle: '天文 / 潮汐', body: '潮汐相互作用让月球平均每年远离地球约几厘米，尺度很小，但长期很有戏。', advice: '今天别忽略慢变量，它们最会改写长期结局。', line: '有些告别慢到像没发生，但一直在发生。', scoreLabel: '新鲜度' },
+  { key: 'tongue-map', title: '每日冷知识', name: '舌头味觉地图并不准确', subtitle: '人体 / 味觉', body: '甜酸苦咸鲜不是严格分区感知，舌头很多区域都能感受多种味道。', advice: '今天遇到老图老说法，别急着当真。', line: '教材图有时也会被时代修正。', scoreLabel: '新鲜度' },
+  { key: 'paper-cuts', title: '每日冷知识', name: '纸割伤格外疼', subtitle: '人体 / 材料', body: '纸边缘会造成浅而不整齐的切口，手指神经末梢密集，又常接触空气和水，所以疼得很有存在感。', advice: '今天别低估小伤害，细碎但持续的东西最烦。', line: '纸很薄，但它很会找痛点。', scoreLabel: '新鲜度' },
+  { key: 'ants-sleep', title: '每日冷知识', name: '蚂蚁会短时多次休息', subtitle: '动物 / 行为', body: '一些蚂蚁会用大量短暂休息片段拼出睡眠，不像人类这样整块睡。', advice: '今天精力不够就拆小段恢复，不一定非要等大块空闲。', line: '碎片化休息，也是休息。', scoreLabel: '新鲜度' },
+  { key: 'eiffel-summer', title: '每日冷知识', name: '埃菲尔铁塔会热胀冷缩', subtitle: '工程 / 材料', body: '金属受温度影响会膨胀收缩，埃菲尔铁塔高度会随季节和温度发生小幅变化。', advice: '今天别把测量结果看成绝对静止，环境会动手脚。', line: '钢铁也有热胀冷缩的小情绪。', scoreLabel: '新鲜度' },
+  { key: 'sound-mars', title: '每日冷知识', name: '火星上的声音传播不一样', subtitle: '行星 / 声学', body: '火星大气稀薄且成分不同，声音传播速度、衰减和高低频表现都和地球不同。', advice: '今天换了环境，就别沿用旧耳朵。', line: '同一句话，到火星也会变味。', scoreLabel: '新鲜度' },
+  { key: 'salt-salary', title: '每日冷知识', name: 'salary 与盐有历史关系', subtitle: '词源 / 文化', body: '英语 salary 常被认为和拉丁语 salarium 有关，背后连着盐在古代经济里的重要性。', advice: '今天看一个词，可以顺手翻出一段生活史。', line: '工资和盐，曾经离得很近。', scoreLabel: '新鲜度' },
+  { key: 'mammoth-pyramid', title: '每日冷知识', name: '金字塔时代仍有猛犸象', subtitle: '历史 / 演化', body: '部分孤岛猛犸象存活到约四千年前，和埃及金字塔时期在时间上有重叠。', advice: '今天别把远古生物都塞进同一个“很久以前”。', line: '时间线一对齐，世界会突然很魔幻。', scoreLabel: '新鲜度' },
+  { key: 'barcode-country', title: '每日冷知识', name: '条形码前三位不等于产地', subtitle: '商业 / 编码', body: '条形码前缀通常对应编码组织，不一定代表商品真实生产地。', advice: '今天看标签要看完整信息，别用一个数字下结论。', line: '编码不是户口本。', scoreLabel: '新鲜度' },
+  { key: 'ice-clear', title: '每日冷知识', name: '透明冰和冻结方向有关', subtitle: '物理 / 生活', body: '家用冰块常因气泡和杂质被困住而发白，定向冻结能把气泡挤到一侧，冰就更透明。', advice: '今天想要结果干净，过程方向也要设计。', line: '清澈不是运气，是气泡被安排明白了。', scoreLabel: '新鲜度' },
+  { key: 'spider-silk', title: '每日冷知识', name: '蜘蛛丝强韧但难量产', subtitle: '材料 / 生物', body: '蜘蛛丝性能优秀，但蜘蛛领地性强、产量和加工难度高，工业化复制一直不简单。', advice: '今天别只看材料参数，也要看生产系统。', line: '好东西不一定好量产。', scoreLabel: '新鲜度' },
+  { key: 'earwax-types', title: '每日冷知识', name: '耳屎有干湿类型', subtitle: '遗传 / 人体', body: '耳垢干湿和 ABCC11 基因变体有关，不同人群分布差异明显。', advice: '今天别把身体小差异都当习惯问题，有些写在基因里。', line: '连耳垢都有遗传路线。', scoreLabel: '新鲜度' },
+  { key: 'blue-sky', title: '每日冷知识', name: '天空蓝来自散射', subtitle: '物理 / 光', body: '大气分子更容易散射短波长蓝光，所以晴天天空常呈蓝色。', advice: '今天看见日常现象，别忘了它背后也有公式。', line: '蓝天不是背景板，是光在拐弯。', scoreLabel: '新鲜度' },
+  { key: 'seed-vault', title: '每日冷知识', name: '世界上有种子库', subtitle: '农业 / 保存', body: '斯瓦尔巴全球种子库储存大量作物种子样本，用于保护农业遗传多样性。', advice: '今天做备份别嫌麻烦，未来最怕没有备用方案。', line: '真正的安全感，有时是一粒种子。', scoreLabel: '新鲜度' },
+  { key: 'train-track', title: '每日冷知识', name: '铁轨之间要留伸缩缝', subtitle: '工程 / 热胀冷缩', body: '钢轨受温度变化会伸缩，工程上要通过缝隙、扣件和无缝线路设计处理热应力。', advice: '今天给系统留余量，别把所有东西卡死。', line: '不给伸缩空间，就等着变形。', scoreLabel: '新鲜度' },
+  { key: 'soap-clean', title: '每日冷知识', name: '肥皂靠两亲结构清洁', subtitle: '化学 / 生活', body: '肥皂分子一头亲水一头亲油，能把油污包进胶束里带走。', advice: '今天解决矛盾，找一个能同时牵住两边的结构。', line: '会清洁，是因为它左右逢源。', scoreLabel: '新鲜度' },
+);
+
+dailyBookExcerpts.push(
+  { key: 'shijing-deer', title: '每日书摘', name: '《诗经》', subtitle: '鹿鸣', body: '呦呦鹿鸣，食野之苹。', advice: '今天可以主动招呼朋友，别总等别人开口。', line: '好关系也需要一点邀请。', scoreLabel: '共鸣度' },
+  { key: 'chuci-road', title: '每日书摘', name: '《楚辞》', subtitle: '离骚', body: '路漫漫其修远兮，吾将上下而求索。', advice: '今天别怕路长，先把下一步走实。', line: '求索不是鸡血，是长期动作。', scoreLabel: '共鸣度' },
+  { key: 'shiji-life', title: '每日书摘', name: '《史记》', subtitle: '报任安书', body: '人固有一死，或重于泰山，或轻于鸿毛。', advice: '今天做判断时，想想什么值得认真。', line: '分量感，是选择给出来的。', scoreLabel: '共鸣度' },
+  { key: 'han-shu', title: '每日书摘', name: '《汉书》', subtitle: '艺文志', body: '河出图，洛出书。', advice: '今天看知识体系，先找源头和脉络。', line: '传统里常藏着一张地图。', scoreLabel: '共鸣度' },
+  { key: 'tao-peach', title: '每日书摘', name: '陶渊明《桃花源记》', subtitle: '忽逢桃花林', body: '芳草鲜美，落英缤纷。', advice: '今天给自己留一小段不被打扰的地方。', line: '桃花源不一定远，可能只是十分钟安静。', scoreLabel: '共鸣度' },
+  { key: 'wang-xizhi', title: '每日书摘', name: '王羲之《兰亭集序》', subtitle: '俯仰之间', body: '仰观宇宙之大，俯察品类之盛。', advice: '今天把视角拉远一点，小烦恼会变小。', line: '一仰一俯，格局就换了。', scoreLabel: '共鸣度' },
+  { key: 'han-yu', title: '每日书摘', name: '韩愈《师说》', subtitle: '闻道有先后', body: '闻道有先后，术业有专攻。', advice: '今天别拿自己短板硬比别人的长项。', line: '专业分工，不是认输。', scoreLabel: '共鸣度' },
+  { key: 'liu-zongyuan', title: '每日书摘', name: '柳宗元《小石潭记》', subtitle: '清冽', body: '潭中鱼可百许头，皆若空游无所依。', advice: '今天看事物可以慢一点，细节会自己浮出来。', line: '透明感来自观察，不来自滤镜。', scoreLabel: '共鸣度' },
+  { key: 'ouyang', title: '每日书摘', name: '欧阳修《醉翁亭记》', subtitle: '山水之乐', body: '醉翁之意不在酒，在乎山水之间也。', advice: '今天做事别只看表面目标，真正想要的也许在旁边。', line: '借酒说山水，高手。', scoreLabel: '共鸣度' },
+  { key: 'fan-zhongyan', title: '每日书摘', name: '范仲淹《岳阳楼记》', subtitle: '忧乐', body: '先天下之忧而忧，后天下之乐而乐。', advice: '今天多承担一点，但别把自己耗空。', line: '大格局也需要好体力。', scoreLabel: '共鸣度' },
+  { key: 'zhou-dunyi', title: '每日书摘', name: '周敦颐《爱莲说》', subtitle: '莲', body: '出淤泥而不染，濯清涟而不妖。', advice: '今天守住一点清爽，不必跟着环境变浑。', line: '干净不是脆弱，是有边界。', scoreLabel: '共鸣度' },
+  { key: 'sima-guang', title: '每日书摘', name: '《资治通鉴》', subtitle: '鉴前世', body: '鉴前世之兴衰，考当今之得失。', advice: '今天做决定前，翻翻旧账不是坏事。', line: '历史不是答案库，是避坑图。', scoreLabel: '共鸣度' },
+  { key: 'zhuzi', title: '每日书摘', name: '《朱子家训》', subtitle: '黎明即起', body: '黎明即起，洒扫庭除。', advice: '今天先整理环境，再整理心情。', line: '房间一清，脑子也少堵一点。', scoreLabel: '共鸣度' },
+  { key: 'liaozhai', title: '每日书摘', name: '《聊斋志异》', subtitle: '异事', body: '有花有酒春常在，无烛无灯夜自明。', advice: '今天给生活留点奇气，别太平铺直叙。', line: '怪谈也懂浪漫。', scoreLabel: '共鸣度' },
+  { key: 'rulin', title: '每日书摘', name: '《儒林外史》', subtitle: '世相', body: '功名富贵无凭据，费尽心情，总把流光误。', advice: '今天别为了虚名错过真实进度。', line: '最贵的是被误掉的流光。', scoreLabel: '共鸣度' },
+  { key: 'jinghua', title: '每日书摘', name: '《镜花缘》', subtitle: '见闻', body: '学问无大小，能者为尊。', advice: '今天多向会的人学，少纠结资历排序。', line: '会就是会，很朴素。', scoreLabel: '共鸣度' },
+  { key: 'sun-bin', title: '每日书摘', name: '《孙膑兵法》', subtitle: '势备', body: '胜不可一。', advice: '今天别指望一种方法打所有局。', line: '策略最怕一招鲜硬吃天下。', scoreLabel: '共鸣度' },
+  { key: 'mozi', title: '每日书摘', name: '《墨子》', subtitle: '兼爱', body: '兼相爱，交相利。', advice: '今天合作先看互利结构，别只靠情绪推动。', line: '关系稳定，常常因为彼此都有得。', scoreLabel: '共鸣度' },
+  { key: 'guanzi', title: '每日书摘', name: '《管子》', subtitle: '仓廪', body: '仓廪实而知礼节。', advice: '今天先补基础资源，很多状态问题会跟着好转。', line: '底盘稳了，体面才站得住。', scoreLabel: '共鸣度' },
+  { key: 'yanzi', title: '每日书摘', name: '《晏子春秋》', subtitle: '橘枳', body: '橘生淮南则为橘，生于淮北则为枳。', advice: '今天别只怪个人，环境也会塑形。', line: '换个土壤，结果可能完全不同。', scoreLabel: '共鸣度' },
+);
+
+dailyPoems.push(
+  { key: 'wang-zhihuan-tower', title: '每日古诗词', name: '王之涣《登鹳雀楼》', subtitle: '唐诗 / 登临', body: '欲穷千里目，更上一层楼。', advice: '今天想看远一点，就先把自己抬高一点。', line: '视野问题，有时是楼层问题。', scoreLabel: '诗意值' },
+  { key: 'li-bai-baidi', title: '每日古诗词', name: '李白《早发白帝城》', subtitle: '唐诗 / 轻快', body: '两岸猿声啼不住，轻舟已过万重山。', advice: '今天顺起来就别回头怀疑，先过山。', line: '轻舟的爽感，是困难突然被甩在后面。', scoreLabel: '诗意值' },
+  { key: 'du-fu-mountain', title: '每日古诗词', name: '杜甫《望岳》', subtitle: '唐诗 / 登高', body: '会当凌绝顶，一览众山小。', advice: '今天给自己一个高一点的目标，但脚下要实。', line: '豪气也要爬台阶。', scoreLabel: '诗意值' },
+  { key: 'wang-wei-deer', title: '每日古诗词', name: '王维《鹿柴》', subtitle: '唐诗 / 空山', body: '空山不见人，但闻人语响。', advice: '今天别只看有没有人，听听回声里有什么。', line: '空，不等于没有内容。', scoreLabel: '诗意值' },
+  { key: 'liu-yuxi-autumn', title: '每日古诗词', name: '刘禹锡《秋词》', subtitle: '唐诗 / 秋气', body: '晴空一鹤排云上，便引诗情到碧霄。', advice: '今天别把秋天当低落，抬头看看。', line: '一只鹤就能把情绪拉高。', scoreLabel: '诗意值' },
+  { key: 'jia-dao', title: '每日古诗词', name: '贾岛《寻隐者不遇》', subtitle: '唐诗 / 寻访', body: '只在此山中，云深不知处。', advice: '今天找不到答案也别急，至少方向已经接近。', line: '云深不知处，也是一种线索。', scoreLabel: '诗意值' },
+  { key: 'meng-haoran-old-friend', title: '每日古诗词', name: '孟浩然《过故人庄》', subtitle: '唐诗 / 田园', body: '待到重阳日，还来就菊花。', advice: '今天把“下次再聚”落实成真的日期。', line: '好友情需要下一次。', scoreLabel: '诗意值' },
+  { key: 'zhang-ji', title: '每日古诗词', name: '张继《枫桥夜泊》', subtitle: '唐诗 / 夜泊', body: '姑苏城外寒山寺，夜半钟声到客船。', advice: '今天夜里别硬撑，听到钟声就收一收。', line: '夜半的声音最容易进心里。', scoreLabel: '诗意值' },
+  { key: 'li-he', title: '每日古诗词', name: '李贺《雁门太守行》', subtitle: '唐诗 / 边塞', body: '黑云压城城欲摧，甲光向日金鳞开。', advice: '今天压力很重，也要把自己的亮面撑出来。', line: '黑云越厚，甲光越显眼。', scoreLabel: '诗意值' },
+  { key: 'wen-tingyun', title: '每日古诗词', name: '温庭筠《商山早行》', subtitle: '唐诗 / 早行', body: '鸡声茅店月，人迹板桥霜。', advice: '今天早一点动身，路上的细节会多。', line: '清晨自带电影感。', scoreLabel: '诗意值' },
+  { key: 'yan-shu', title: '每日古诗词', name: '晏殊《浣溪沙》', subtitle: '宋词 / 惜春', body: '无可奈何花落去，似曾相识燕归来。', advice: '今天接受一点失去，也等一点回来。', line: '生活很会一边落花一边归燕。', scoreLabel: '诗意值' },
+  { key: 'qin-guan', title: '每日古诗词', name: '秦观《鹊桥仙》', subtitle: '宋词 / 相会', body: '两情若是久长时，又岂在朝朝暮暮。', advice: '今天别用频率替代质量。', line: '久长不是天天刷存在感。', scoreLabel: '诗意值' },
+  { key: 'zhou-bangyan', title: '每日古诗词', name: '周邦彦《苏幕遮》', subtitle: '宋词 / 夏夜', body: '叶上初阳干宿雨，水面清圆，一一风荷举。', advice: '今天把昨夜的湿气晾一晾，再重新站起来。', line: '荷叶最懂清爽开局。', scoreLabel: '诗意值' },
+  { key: 'jiang-kui', title: '每日古诗词', name: '姜夔《扬州慢》', subtitle: '宋词 / 怀古', body: '二十四桥仍在，波心荡，冷月无声。', advice: '今天路过旧地方，允许自己沉默一下。', line: '有些月亮冷，是因为它照过太多事。', scoreLabel: '诗意值' },
+  { key: 'li-yu', title: '每日古诗词', name: '李煜《虞美人》', subtitle: '词 / 春花秋月', body: '问君能有几多愁，恰似一江春水向东流。', advice: '今天情绪很满就找出口，别堵在心里。', line: '愁一多，就会自己成河。', scoreLabel: '诗意值' },
+  { key: 'yan-jidao', title: '每日古诗词', name: '晏几道《临江仙》', subtitle: '宋词 / 记梦', body: '落花人独立，微雨燕双飞。', advice: '今天适合安静一点，不必把孤独说得太大声。', line: '微雨很轻，但画面很重。', scoreLabel: '诗意值' },
+  { key: 'lu-you-mei', title: '每日古诗词', name: '陆游《卜算子》', subtitle: '宋词 / 咏梅', body: '零落成泥碾作尘，只有香如故。', advice: '今天守住一点底色，别被环境磨没。', line: '真正的香气，落地也还在。', scoreLabel: '诗意值' },
+  { key: 'xin-qiji-village', title: '每日古诗词', name: '辛弃疾《西江月》', subtitle: '宋词 / 夜行', body: '稻花香里说丰年，听取蛙声一片。', advice: '今天别只看结果，过程里的声音也很踏实。', line: '丰年有时先从蛙声里冒头。', scoreLabel: '诗意值' },
+  { key: 'ma-zhiyuan', title: '每日古诗词', name: '马致远《天净沙》', subtitle: '元曲 / 秋思', body: '夕阳西下，断肠人在天涯。', advice: '今天想家就承认，不必假装很潇洒。', line: '天涯两个字，最会让人安静。', scoreLabel: '诗意值' },
+  { key: 'yu-qian', title: '每日古诗词', name: '于谦《石灰吟》', subtitle: '明诗 / 气节', body: '粉骨碎身浑不怕，要留清白在人间。', advice: '今天守住原则，别为了省事把底线卖了。', line: '清白两个字，很硬。', scoreLabel: '诗意值' },
+);
+
 csSkins.push(
   { key: 'm4a4-asiimov', title: '今日CS皮肤', name: 'M4A4 | Asiimov', weapon: 'M4A4', rarity: 'Covert', subtitle: '白橙科幻 / 老牌大枪皮', scoreLabel: '出货指数', advice: '弹量优势用来转移和压制，别扫到自己都慌。', avoid: '别皮肤很科幻，打法很原始。', line: 'M4A4二西莫夫签，干净点。', fandomFile: 'M4A4_Asiimov.png', fandomPage: 'Asiimov' },
   { key: 'm4a4-desolate-space', title: '今日CS皮肤', name: 'M4A4 | Desolate Space', weapon: 'M4A4', rarity: 'Classified', subtitle: '荒凉太空 / 冷色压迫', scoreLabel: '出货指数', advice: '今天别站桩，打完一波马上换位。', avoid: '别荒凉的是队伍经济。', line: '荒凉太空签，画面可以冷，人别冷场。', fandomFile: 'M4A4_Desolate_Space.png' },
@@ -2189,13 +2258,19 @@ async function imageFromCandidatesOrCard(candidates: ImageCandidate[], fallbackC
 
 const BESTDORI_CARD_MANIFEST_PATH = path.resolve(__dirname, '..', '..', 'data', 'bestdori-cards.json');
 let bestdoriCardCache: { mtimeMs: number; cards: BestdoriCardImage[] } | null = null;
+let bestdoriCardManifestPathOverride = '';
+
+function bestdoriCardManifestPath(): string {
+  return bestdoriCardManifestPathOverride || BESTDORI_CARD_MANIFEST_PATH;
+}
 
 function loadBestdoriCardImages(): BestdoriCardImage[] {
   try {
-    if (!fs.existsSync(BESTDORI_CARD_MANIFEST_PATH)) return [];
-    const stat = fs.statSync(BESTDORI_CARD_MANIFEST_PATH);
+    const manifestPath = bestdoriCardManifestPath();
+    if (!fs.existsSync(manifestPath)) return [];
+    const stat = fs.statSync(manifestPath);
     if (bestdoriCardCache && bestdoriCardCache.mtimeMs === stat.mtimeMs) return bestdoriCardCache.cards;
-    const parsed = JSON.parse(fs.readFileSync(BESTDORI_CARD_MANIFEST_PATH, 'utf-8'));
+    const parsed = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
     const rawCards = Array.isArray(parsed) ? parsed : Array.isArray(parsed?.cards) ? parsed.cards : [];
     const cards = rawCards
       .filter((item: Partial<BestdoriCardImage>) => item && typeof item.url === 'string' && /^https?:\/\//i.test(item.url))
@@ -2281,6 +2356,34 @@ async function buildCharacterImageCandidates(character: DailyCharacter, userId: 
 
 async function buildGenshinImageCandidates(character: DailyGenshinCharacter): Promise<ImageCandidate[]> {
   const candidateUrls: ImageCandidate[] = [];
+  const fileCandidates = [
+    `Character ${character.name} Card.png`,
+    `${character.name} Card.png`,
+    `Character ${character.name} Portrait.png`,
+    `${character.name} Icon.png`,
+  ];
+  const resolvedFiles = await Promise.all(fileCandidates.map(async (filename) => {
+    try {
+      return {
+        filename,
+        url: await Promise.race([
+          fandomImageResolver(filename, 'genshin'),
+          new Promise<null>((r) => setTimeout(() => r(null), 3500)),
+        ]),
+      };
+    } catch (err) {
+      console.warn(`[fun] ${character.name} Genshin文件图解析失败:`, err instanceof Error ? err.message : err);
+      return { filename, url: null };
+    }
+  }));
+  for (const item of resolvedFiles) {
+    if (!item.url) continue;
+    candidateUrls.push({
+      url: item.url,
+      label: `${character.name}/genshin-file/${item.filename}`,
+      source: 'fandom-file',
+    });
+  }
   try {
     const pageUrl = await Promise.race([
       fandomPageImageResolver(character.page, 'genshin'),
@@ -3532,6 +3635,8 @@ export const __test = {
   buildKnifeMessage,
   buildMokokoMessage,
   buildGenshinMessage,
+  buildCharacterImageCandidates,
+  buildGenshinImageCandidates,
   buildDailyTextCardMessage,
   buildDailyDuelMessage,
   buildLoadoutMessage,
@@ -3540,6 +3645,10 @@ export const __test = {
   buildCsQuizMessage,
   __setTrainingStorePathForTests: (filepath?: string) => {
     trainingStorePathOverride = filepath || '';
+  },
+  __setBestdoriCardManifestPathForTests: (filepath?: string) => {
+    bestdoriCardManifestPathOverride = filepath || '';
+    bestdoriCardCache = null;
   },
   __setImageResolverForTests: (resolver?: (url: string) => Promise<string | null>) => {
     imageDataUrlResolver = resolver || getImageDataUrl;
