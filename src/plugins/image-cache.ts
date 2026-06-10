@@ -266,7 +266,7 @@ function readInlineImage(input: string): string | null {
 }
 
 /** 下载图片并缓存到磁盘 */
-function downloadAndCache(url: string, redirectCount: number = 0, cacheKeyUrl: string = url, uaIndex: number = 0): Promise<CacheEntry | null> {
+function downloadAndCache(url: string, redirectCount: number = 0, cacheKeyUrl: string = url, uaIndex: number = 0, family?: 4 | 6): Promise<CacheEntry | null> {
   return new Promise((resolve) => {
     let settled = false;
     const safeResolve = (value: CacheEntry | null): void => {
@@ -307,7 +307,8 @@ function downloadAndCache(url: string, redirectCount: number = 0, cacheKeyUrl: s
     const transport = isHttps ? https : http;
     const hostname = parsedUrl.hostname.toLowerCase();
     const isQqCdn = /qq\.com|qpic\.cn|gtimg\.cn/.test(hostname);
-    const isLiquipedia = /liquipedia\.net|wikimedia\.org/.test(hostname);
+    const isLiquipedia = /liquipedia\.net/.test(hostname);
+    const isWikimedia = /wikimedia\.org|wikipedia\.org/.test(hostname);
 
     // 多 UA 重试 - 不同站点对 UA 偏好不同
     const qqUserAgents = [
@@ -336,6 +337,8 @@ function downloadAndCache(url: string, redirectCount: number = 0, cacheKeyUrl: s
     } else if (isLiquipedia) {
       // Liquipedia 接受空 Referer 或自家 Referer，绝对不能用 QQ 的
       headers['Referer'] = 'https://liquipedia.net/';
+    } else if (isWikimedia) {
+      headers['Referer'] = 'https://commons.wikimedia.org/';
     }
 
     const req = transport.get({
@@ -343,6 +346,7 @@ function downloadAndCache(url: string, redirectCount: number = 0, cacheKeyUrl: s
       port: parsedUrl.port || (isHttps ? 443 : 80),
       path: parsedUrl.pathname + parsedUrl.search,
       headers,
+      ...(family ? { family } : {}),
     }, (res) => {
       const statusCode = res.statusCode || 0;
       if ([301, 302, 303, 307, 308].includes(statusCode) && res.headers.location) {
@@ -364,7 +368,7 @@ function downloadAndCache(url: string, redirectCount: number = 0, cacheKeyUrl: s
           return;
         }
         res.resume();
-        void downloadAndCache(nextUrl, redirectCount + 1, cacheKeyUrl, uaIndex).then(safeResolve);
+        void downloadAndCache(nextUrl, redirectCount + 1, cacheKeyUrl, uaIndex, family).then(safeResolve);
         return;
       }
 
@@ -384,7 +388,7 @@ function downloadAndCache(url: string, redirectCount: number = 0, cacheKeyUrl: s
         if ((statusCode === 403 || statusCode === 401) && uaIndex < userAgents.length - 1) {
           res.resume();
           console.warn(`[ImageCache] HTTP ${statusCode} ua=${uaIndex}，换UA重试 url=${url.slice(0, 80)}`);
-          void downloadAndCache(url, redirectCount, cacheKeyUrl, uaIndex + 1).then(safeResolve);
+          void downloadAndCache(url, redirectCount, cacheKeyUrl, uaIndex + 1, family).then(safeResolve);
           return;
         }
         setImageError(`HTTP ${res.statusCode} ${url.slice(0, 80)}`);
@@ -468,6 +472,14 @@ function downloadAndCache(url: string, redirectCount: number = 0, cacheKeyUrl: s
     });
 
     req.on('error', (err) => {
+      if (isWikimedia && !family) {
+        void downloadAndCache(url, redirectCount, cacheKeyUrl, uaIndex, 6).then(safeResolve);
+        return;
+      }
+      if (isWikimedia && family === 6) {
+        void downloadAndCache(url, redirectCount, cacheKeyUrl, uaIndex, 4).then(safeResolve);
+        return;
+      }
       setImageError(`network: ${err.message}`);
       downloadFailures++;
       safeResolve(null);

@@ -85,6 +85,7 @@ async function main() {
   const image = loadDist('plugins/image-cache.js');
   const liquipedia = loadDist('plugins/liquipedia-image.js');
   const fandom = loadDist('plugins/fandom-image.js');
+  const csgoSkins = loadDist('plugins/csgo-skins-api.js');
 
   console.log('=== CS真实数据测试 ===');
   const source = hltv.getCsDataSourceInfo();
@@ -153,6 +154,50 @@ async function main() {
       warnings++;
       console.log(`WARN ${cardKindName(kind)} ${card.name} 外部真实图暂不可用，线上会发本地签位卡兜底`);
     }
+  }
+
+  const skin = testApi.dailySkinFor(userId, scopeId);
+  const skinCandidates = [
+    { label: 'steam-csgo-api-skin', url: await csgoSkins.resolveCsgoSkinImage(skin.weapon, skin.name) },
+    skin.fandomFile ? { label: 'fandom-file', url: await fandom.resolveFandomFileImage(skin.fandomFile) } : null,
+    skin.fandomPage ? { label: 'fandom-page', url: await fandom.resolveFandomPageImage(skin.fandomPage) } : null,
+    skin.image ? { label: 'static-card-url', url: skin.image } : null,
+  ].filter(Boolean);
+  const skinHit = await firstWorkingImage(skinCandidates, image.getImageDataUrl);
+  if (skinHit) {
+    console.log(`OK 皮肤 ${skin.name} -> ${skinHit.label}`);
+  } else {
+    warnings++;
+    console.log(`WARN 皮肤 ${skin.name} 外部真实图暂不可用，线上会发本地签位卡兜底`);
+  }
+
+  const knife = testApi.dailyKnifeFor(userId, scopeId);
+  const knifeSkin = testApi.dailyKnifeSkinFor(userId, scopeId);
+  const knifeCandidates = [
+    { label: 'steam-csgo-api-knife-skin', url: await csgoSkins.resolveCsgoSkinImage(knife.name, knifeSkin.name) },
+    knife.fandomFile ? { label: 'fandom-knife-file', url: await fandom.resolveFandomFileImage(knife.fandomFile) } : null,
+    knife.fandomPage ? { label: 'fandom-knife-page', url: await fandom.resolveFandomPageImage(knife.fandomPage) } : null,
+    knife.image ? { label: 'static-knife-url', url: knife.image } : null,
+  ].filter(Boolean);
+  const knifeHit = await firstWorkingImage(knifeCandidates, image.getImageDataUrl);
+  if (knifeHit) {
+    console.log(`OK 发刀 ${knife.name} | ${knifeSkin.name} -> ${knifeHit.label}`);
+  } else {
+    warnings++;
+    console.log(`WARN 发刀 ${knife.name} | ${knifeSkin.name} 外部真实图暂不可用，线上会发本地签位卡兜底`);
+  }
+
+  const character = testApi.dailyCharacterFor(userId, scopeId);
+  const characterCandidates = [
+    character.file ? { label: 'bandori-file', url: await fandom.resolveFandomFileImage(character.file, 'bandori') } : null,
+    { label: 'bandori-page', url: await fandom.resolveFandomPageImage(character.page, 'bandori') },
+  ].filter(Boolean);
+  const characterHit = await firstWorkingImage(characterCandidates, image.getImageDataUrl);
+  if (characterHit) {
+    console.log(`OK 木柜子 ${character.name} -> ${characterHit.label}`);
+  } else {
+    warnings++;
+    console.log(`WARN 木柜子 ${character.name} 外部真实图暂不可用，线上会发本地签位卡兜底`);
   }
 
   const stats = image.getCacheStats();

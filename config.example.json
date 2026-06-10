@@ -24,7 +24,7 @@
     "max_tokens": 2400,
     "temperature": 0.78,
     "trigger_mode": "smart",
-    "trigger_keywords": ["玩机器", "机器", "MachineWJQ", "Machine", "6657", "CS2", "CSGO", "Major", "BLAST", "IEM", "ESL", "队伍", "选手", "切片", "语录", "直播", "礼物", "白给", "残局", "道具", "阵容", "转会", "比分", "赛程", "今日CS", "每日CS", "抽选手", "抽队伍", "抽地图", "抽武器", "抽定位", "抽道具", "抽战术", "抽残局", "今日套餐"],
+    "trigger_keywords": ["玩机器", "机器", "MachineWJQ", "Machine", "6657", "CS2", "CSGO", "Major", "BLAST", "IEM", "ESL", "队伍", "选手", "切片", "语录", "直播", "礼物", "白给", "残局", "道具", "阵容", "转会", "比分", "赛程", "今日CS", "每日CS", "抽选手", "抽队伍", "抽地图", "抽武器", "抽皮肤", "抽定位", "抽道具", "抽战术", "抽残局", "今日套餐", "今日皮肤", "今日发刀", "发刀", "每日木柜子", "今日木柜子", "MyGO", "Ave Mujica"],
     "trigger_probability": 0.08,
     "passive_random_min_chars": 4,
     "passive_random_allow_numeric": false,

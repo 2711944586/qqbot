@@ -8,7 +8,12 @@ import * as zlib from 'zlib';
  * 但 MediaWiki API 能稳定返回 File:imageinfo 的真实图片 URL。
  */
 
-const API_BASE = 'https://counterstrike.fandom.com/api.php';
+type FandomWiki = 'counterstrike' | 'bandori';
+
+const API_BASES: Record<FandomWiki, string> = {
+  counterstrike: 'https://counterstrike.fandom.com/api.php',
+  bandori: 'https://bandori.fandom.com/api.php',
+};
 const USER_AGENT = 'wanjier-bot/1.0 (https://github.com/2711944586/qqbot; CS2 group chat bot)';
 const POSITIVE_TTL = 24 * 60 * 60 * 1000;
 const NEGATIVE_TTL = 60 * 60 * 1000;
@@ -77,17 +82,63 @@ function extractImageInfoUrl(json: any): string {
   return '';
 }
 
-export async function resolveFandomFileImage(filename: string): Promise<string | null> {
+function apiBaseForWiki(wiki: FandomWiki): string {
+  return API_BASES[wiki] || API_BASES.counterstrike;
+}
+
+function normalizeWikiaImageUrl(url: string): string {
+  return `${url}${url.includes('?') ? '&' : '?'}format=original`;
+}
+
+export async function resolveFandomFileImage(filename: string, wiki: FandomWiki = 'counterstrike'): Promise<string | null> {
   const clean = filename.replace(/^File:/i, '').trim();
   if (!clean) return null;
-  const key = `file:${clean.toLowerCase()}`;
+  const key = `${wiki}:file:${clean.toLowerCase()}`;
   const cached = cache.get(key);
   if (cached && cached.expiresAt > Date.now()) {
     return cached.url || null;
   }
 
-  const url = `${API_BASE}?action=query&titles=${encodeURIComponent(`File:${clean}`)}&prop=imageinfo&iiprop=url&format=json&origin=*`;
+  const url = `${apiBaseForWiki(wiki)}?action=query&titles=${encodeURIComponent(`File:${clean}`)}&prop=imageinfo&iiprop=url&format=json&origin=*`;
   const resolved = extractImageInfoUrl(await fetchJson(url));
+  cache.set(key, {
+    url: resolved,
+    expiresAt: Date.now() + (resolved ? POSITIVE_TTL : NEGATIVE_TTL),
+  });
+  if (cache.size > 200) {
+    const sorted = [...cache.entries()].sort((a, b) => a[1].expiresAt - b[1].expiresAt);
+    for (const [k] of sorted.slice(0, 30)) cache.delete(k);
+  }
+  return resolved || null;
+}
+
+function extractPageImageUrl(json: any): string {
+  const pages = json?.query?.pages;
+  if (!pages) return '';
+  for (const id in pages) {
+    const original = pages[id]?.original?.source;
+    const thumbnail = pages[id]?.thumbnail?.source;
+    const url = typeof original === 'string' && /^https?:\/\//i.test(original)
+      ? original
+      : typeof thumbnail === 'string' && /^https?:\/\//i.test(thumbnail)
+        ? thumbnail
+        : '';
+    if (url) return normalizeWikiaImageUrl(url);
+  }
+  return '';
+}
+
+export async function resolveFandomPageImage(title: string, wiki: FandomWiki = 'counterstrike'): Promise<string | null> {
+  const clean = title.trim();
+  if (!clean) return null;
+  const key = `${wiki}:page:${clean.toLowerCase()}`;
+  const cached = cache.get(key);
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.url || null;
+  }
+
+  const url = `${apiBaseForWiki(wiki)}?action=query&titles=${encodeURIComponent(clean)}&prop=pageimages&piprop=original|thumbnail&pithumbsize=900&format=json&origin=*`;
+  const resolved = extractPageImageUrl(await fetchJson(url));
   cache.set(key, {
     url: resolved,
     expiresAt: Date.now() + (resolved ? POSITIVE_TTL : NEGATIVE_TTL),

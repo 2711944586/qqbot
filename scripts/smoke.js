@@ -5194,12 +5194,28 @@ async function testFunCsPlayer() {
     player: async (player) => `https://example.com/player-${encodeURIComponent(player)}.jpg`,
     team: async (_page, teamName) => `https://example.com/team-${encodeURIComponent(teamName)}.png`,
     fandom: async (filename) => `https://example.com/fandom-${encodeURIComponent(filename)}.png`,
+    fandomPage: async (title, wiki) => `https://example.com/${wiki || 'counterstrike'}-page-${encodeURIComponent(title)}.png`,
+    csgoSkin: async (weapon, skin) => `https://example.com/csgo-skin-${encodeURIComponent(weapon)}-${encodeURIComponent(skin)}.png`,
   });
 
   try {
     const player = funTest.dailyPlayerFor(61, 6657);
     assert.ok(funTest.csPlayers.every((item) => item.image), 'all daily CS players should have image URLs');
     assert.ok(funTest.csPlayers.every((item) => item.imageSource), 'all daily CS players should have image source labels');
+    assert.ok(funTest.csTeams.length >= 30, 'daily CS team pool should cover major, regional, and classic teams');
+    assert.ok(funTest.csMaps.length >= 18, 'daily CS map pool should include active, classic, and hostage maps');
+    assert.ok(funTest.csWeapons.length >= 35, 'daily CS weapon pool should cover the full gun pool');
+    assert.ok(funTest.csClutches.length >= 12, 'daily CS clutch pool should include richer scenarios');
+    assert.strictEqual(funTest.csKnives.length, 20, 'daily knife pool should cover all CS2/CSGO knife families');
+    assert.ok(funTest.knifeSkins.length >= 15, 'daily knife skin pool should include the major finishes');
+    assert.ok(funTest.csSkins.length >= 55, 'daily CS skin pool should cover the full weapon pool');
+    assert.strictEqual(funTest.dailyCharacters.length, 10, 'mokoko pool should cover MyGO and Ave Mujica members');
+    const skinWeapons = new Set(funTest.csSkins.map((item) => item.weapon));
+    assert.deepStrictEqual(
+      funTest.csWeapons.filter((item) => !skinWeapons.has(item.name)).map((item) => item.name),
+      [],
+      'every daily CS weapon should have at least one matching skin',
+    );
     const directMessage = await funTest.buildCsPlayerMessage(61, player, funTest.dailyPlayerScore(61, 6657));
     assert.ok(directMessage.some((seg) => seg.type === 'at'), 'daily player direct builder should at the user');
     assert.ok(directMessage.some((seg) => seg.type === 'text' && seg.data.text.includes(player.nick)), 'daily player text should include nick');
@@ -5213,6 +5229,11 @@ async function testFunCsPlayer() {
     assert.strictEqual(funTest.isDailyCardRequest(null, '今天抽个CS队伍', 'team'), true, 'fuzzy daily team should trigger');
     assert.strictEqual(funTest.isDailyCardRequest(null, '今天抽个CS地图', 'map'), true, 'fuzzy daily map should trigger');
     assert.strictEqual(funTest.isDailyCardRequest(null, '今天用什么枪', 'weapon'), true, 'fuzzy daily weapon should trigger');
+    assert.strictEqual(funTest.isDailyCardRequest(null, '今天什么皮肤', 'skin'), true, 'fuzzy daily skin should trigger');
+    assert.strictEqual(funTest.isDailyKnifeRequest(null, '今日发刀'), true, 'daily knife fuzzy should trigger');
+    assert.strictEqual(funTest.isDailyKnifeRequest(null, '发刀'), true, 'short daily knife fuzzy should trigger');
+    assert.strictEqual(funTest.isDailyKnifeRequest(null, '.d'), true, '.d should trigger daily knife');
+    assert.strictEqual(funTest.isDailyMokokoRequest(null, '每日木柜子'), true, 'daily mokoko fuzzy should trigger');
     assert.strictEqual(funTest.isDailyCardRequest(null, '今天打什么位', 'role'), true, 'fuzzy daily role should trigger');
     assert.strictEqual(funTest.isDailyCardRequest(null, '今天丢什么道具', 'utility'), true, 'fuzzy daily utility should trigger');
     assert.strictEqual(funTest.isDailyCardRequest(null, '今天打什么战术', 'tactic'), true, 'fuzzy daily tactic should trigger');
@@ -5222,6 +5243,17 @@ async function testFunCsPlayer() {
     assert.strictEqual(funTest.isCsTrainingRequest(null, '训练语音'), false, 'voice training should not be hijacked by CS training');
     assert.strictEqual(funTest.isCsQuizRequest('csquiz', '/csquiz'), true, 'csquiz command should be recognized');
     assert.strictEqual(funTest.isCsQuizRequest(null, '今天考我CS'), true, 'fuzzy daily CS quiz should trigger');
+    const weaponForSkin = funTest.csWeapons.find((item) => item.name === 'AK-47');
+    const matchingSkin = funTest.dailySkinForWeapon(weaponForSkin, 61, 6657);
+    assert.strictEqual(matchingSkin.weapon, 'AK-47', 'daily weapon skin should match the selected weapon when possible');
+    const knifeMessage = await funTest.buildKnifeMessage(61, funTest.dailyKnifeFor(61, 6657), funTest.dailyKnifeSkinFor(61, 6657), funTest.dailyScoreForKind('csknife', 61, 6657), false);
+    assert.ok(firstText(knifeMessage).includes('今日发刀'), 'daily knife builder should include title');
+    assert.ok(firstText(knifeMessage).includes('皮肤：'), 'daily knife builder should include skin name');
+    assert.ok(knifeMessage.some((seg) => seg.type === 'image'), 'daily knife builder should include image');
+    const mokokoMessage = await funTest.buildMokokoMessage(61, funTest.dailyCharacterFor(61, 6657), funTest.dailyScoreForKind('mokoko', 61, 6657), false);
+    assert.ok(firstText(mokokoMessage).includes('每日木柜子'), 'daily mokoko builder should include title');
+    assert.ok(firstText(mokokoMessage).includes('MyGO!!!!!') || firstText(mokokoMessage).includes('Ave Mujica'), 'daily mokoko builder should include band');
+    assert.ok(mokokoMessage.some((seg) => seg.type === 'image'), 'daily mokoko builder should include image');
     const parsedTraining = funTest.parseTrainingLogInput(['35', 'Mirage', 'AK', '急停']);
     assert.strictEqual(parsedTraining.area, 'aim', 'training log parser should infer aim practice');
     assert.strictEqual(parsedTraining.minutes, 35, 'training log parser should extract minutes');
@@ -5414,6 +5446,23 @@ async function testFunCsPlayer() {
   handler.handleEvent(makePlainEvent(622, 79, '今天考我CS'));
   await waitFor(() => sent.length === 24, 'daily CS quiz fuzzy');
   assert.ok(firstText(sent[23].message).includes('今日CS小考'), 'daily CS quiz fuzzy should include title');
+
+  handler.handleEvent(makePlainEvent(624, 80, '/csskin'));
+  await waitFor(() => sent.length === 25, 'daily CS skin command');
+  assert.ok(firstText(sent[24].message).includes('今日CS皮肤'), 'daily CS skin command should include title');
+  assert.ok(firstText(sent[24].message).includes('出货指数'), 'daily CS skin command should include score label');
+  assert.ok(sent[24].message.some((seg) => seg.type === 'image'), 'daily CS skin command should include image');
+
+  handler.handleEvent(makePlainEvent(625, 81, '.d'));
+  await waitFor(() => sent.length === 26, 'daily knife dot command');
+  assert.ok(firstText(sent[25].message).includes('今日发刀'), 'daily knife command should include title');
+  assert.ok(firstText(sent[25].message).includes('皮肤：'), 'daily knife command should include skin');
+  assert.ok(sent[25].message.some((seg) => seg.type === 'image'), 'daily knife command should include image');
+
+  handler.handleEvent(makePlainEvent(626, 82, '每日木柜子'));
+  await waitFor(() => sent.length === 27, 'daily mokoko fuzzy');
+  assert.ok(firstText(sent[26].message).includes('每日木柜子'), 'daily mokoko fuzzy should include title');
+  assert.ok(sent[26].message.some((seg) => seg.type === 'image'), 'daily mokoko fuzzy should include image');
   } finally {
     funTest.__setImageResolverForTests();
     funTest.__setImageSourceResolversForTests();

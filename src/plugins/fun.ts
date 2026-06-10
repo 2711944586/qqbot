@@ -7,7 +7,8 @@ import { webSearch } from './web-search';
 import { fetchOngoingMatches, fetchTeamRanking, fetchRecentResults } from './hltv-api';
 import { detectFuzzyCommand } from './fuzzy-command';
 import { getLiquipediaImageStats, resolvePlayerImage, resolveTeamImage } from './liquipedia-image';
-import { resolveFandomFileImage } from './fandom-image';
+import { resolveFandomFileImage, resolveFandomPageImage } from './fandom-image';
+import { getCsgoSkinsApiStats, resolveCsgoSkinImage } from './csgo-skins-api';
 import { buildDailyCardImageDataUrl } from './daily-card-image';
 import { getCsPredictTrainingHint } from './cs-predict';
 import { buildUserProfileDailyCsHint } from './user-profile';
@@ -54,18 +55,51 @@ interface DailyCard {
   liquipediaPage?: string;
   playerImageFallback?: string;
   fandomFile?: string;
+  fandomPage?: string;
 }
 
-type DailyCardKind = 'team' | 'map' | 'weapon' | 'role' | 'loadout' | 'utility' | 'tactic' | 'clutch';
+type DailyCardKind = 'team' | 'map' | 'weapon' | 'skin' | 'role' | 'loadout' | 'utility' | 'tactic' | 'clutch';
 type CsQuizKind = 'map' | 'weapon' | 'utility' | 'tactic' | 'clutch';
-type CsImageProbeKind = DailyCardKind | 'player' | 'all';
+type CsImageProbeKind = DailyCardKind | 'player' | 'knife' | 'mokoko' | 'all';
 type TrainingArea = 'aim' | 'utility' | 'map' | 'role' | 'clutch' | 'review' | 'match';
 type TrainingWeaknessKey = 'death' | 'trade' | 'utility' | 'aim' | 'clutch' | 'map' | 'review';
+
+type FandomWiki = 'counterstrike' | 'bandori';
+
+interface SkinCard extends DailyCard {
+  weapon: string;
+  rarity: string;
+}
+
+interface KnifeCard extends DailyCard {
+  aliases: string[];
+  skinFilePrefixes: string[];
+}
+
+interface DailyCharacter {
+  key: string;
+  title: string;
+  name: string;
+  band: 'MyGO!!!!!' | 'Ave Mujica';
+  role: string;
+  voice: string;
+  note: string;
+  page: string;
+  file?: string;
+}
 
 interface ImageCandidate {
   url: string;
   label: string;
-  source: 'liquipedia-team' | 'fandom-file' | 'representative-player-dynamic' | 'representative-player-static' | 'liquipedia-player' | 'static-url';
+  source:
+    | 'liquipedia-team'
+    | 'csgo-api-skin'
+    | 'fandom-page'
+    | 'fandom-file'
+    | 'representative-player-dynamic'
+    | 'representative-player-static'
+    | 'liquipedia-player'
+    | 'static-url';
 }
 
 interface CsTrainingLogEntry {
@@ -111,11 +145,13 @@ interface CsQuiz {
 let imageDataUrlResolver: (url: string) => Promise<string | null> = getImageDataUrl;
 let playerImageResolver: (player: string) => Promise<string | null> = resolvePlayerImage;
 let teamImageResolver: (page: string, teamName: string) => Promise<string | null> = resolveTeamImage;
-let fandomImageResolver: (filename: string) => Promise<string | null> = resolveFandomFileImage;
+let fandomImageResolver: (filename: string, wiki?: FandomWiki) => Promise<string | null> = resolveFandomFileImage;
+let fandomPageImageResolver: (title: string, wiki?: FandomWiki) => Promise<string | null> = resolveFandomPageImage;
+let csgoSkinImageResolver: (weapon: string, skin: string) => Promise<string | null> = resolveCsgoSkinImage;
 
 const csPlayers: CSPlayer[] = [
   { nick: 'ZywOo', name: 'Mathieu Herbaut', team: 'Vitality', role: 'AWPer / 核心大哥', note: '今天就按这个纪律打，枪硬但别急着开香槟。', image: 'https://liquipedia.net/commons/images/2/2b/ZywOo_at_BLAST_Bounty_Winter_2026.jpg', imageSource: 'liquipedia', aliases: ['载物'] },
-  { nick: 's1mple', name: 'Oleksandr Kostyliev', team: 'NAVI / Falcons 语境', role: 'AWPer / 巨星位', note: '手感上来就是不讲道理，但别学他每一波都想当主角。', image: 'https://liquipedia.net/commons/images/d/d8/S1mple_at_IEM_Krak%C3%B3w_2026.jpg', imageSource: 'liquipedia', aliases: ['森破'] },
+  { nick: 's1mple', name: 'Oleksandr Kostyliev', team: 'NAVI / Falcons 语境', role: 'AWPer / 巨星位', note: '手感上来就是不讲道理，但别学他每一波都想当主角。', image: 'https://upload.wikimedia.org/wikipedia/commons/7/70/Oleksandr_s1mple_Kostyliev_%28cropped%29.jpg', imageSource: 'wikimedia', aliases: ['森破'] },
   { nick: 'donk', name: 'Danil Kryshkovets', team: 'Team Spirit', role: 'Rifler / Entry', note: '这签攻击性拉满，见人就想撕口子，但补枪也得跟上。', image: 'https://liquipedia.net/commons/images/a/a5/Donk_at_BLAST_Open_Spring_2026.jpg', imageSource: 'liquipedia' },
   { nick: 'sh1ro', name: 'Dmitriy Sokolov', team: 'Team Spirit', role: 'AWPer', note: '别急，架住关键枪，今天靠纪律赢回合。', image: 'https://liquipedia.net/commons/images/4/4c/Sh1ro_at_BLAST_Open_Spring_2025.jpg', imageSource: 'liquipedia' },
   { nick: 'ropz', name: 'Robin Kool', team: 'FaZe / Vitality 语境', role: 'Lurker / Rifler', note: '今天你得学会晚点出手，timing 到了再收。', image: 'https://liquipedia.net/commons/images/f/f4/Ropz_at_BLAST_Open_Spring_2026.jpg', imageSource: 'liquipedia' },
@@ -164,6 +200,20 @@ const csPlayers: CSPlayer[] = [
   { nick: 'XANTARES', name: 'Can Dortkardes', team: 'Eternal Fire', role: 'Rifler', note: '爆头线签，正面拉出来要有东西，但别把队友补枪甩没。', image: 'https://liquipedia.net/commons/images/d/d5/XANTARES_at_BLAST_Open_Spring_2026.jpg', imageSource: 'liquipedia' },
   { nick: 'woxic', name: 'Ozgur Eker', team: 'Eternal Fire', role: 'AWPer', note: '土耳其狙签，今天先架住关键枪，别急着换位置。', image: 'https://liquipedia.net/commons/images/4/49/Woxic_at_BLAST_Open_Spring_2026.jpg', imageSource: 'liquipedia' },
 ];
+
+csPlayers.push(
+  { nick: 'bLitz', name: 'Garidmagnai Byambasuren', team: 'The MongolZ', role: 'IGL / Rifler', note: '蒙古指挥签，今天别乱，第一波交换要清楚。', image: 'https://liquipedia.net/commons/images/3/30/The_MongolZ_2023_allmode.png', imageSource: 'liquipedia' },
+  { nick: '910', name: 'Usukhbayar Banzragch', team: 'The MongolZ', role: 'AWPer', note: '亚洲狙签，先架住关键枪，别急着换位置找节目。', image: 'https://liquipedia.net/commons/images/3/30/The_MongolZ_2023_allmode.png', imageSource: 'liquipedia' },
+  { nick: 'Techno4K', name: 'Sodbayar Munkhbold', team: 'The MongolZ', role: 'Rifler', note: '正面枪男签，今天可以硬，但补枪距离别断。', image: 'https://liquipedia.net/commons/images/3/30/The_MongolZ_2023_allmode.png', imageSource: 'liquipedia' },
+  { nick: 'somebody', name: 'Haowen Xu', team: 'TYLOO', role: 'Rifler', note: '中国CS老熟人签，枪可以敢开，残局别急。', image: 'https://liquipedia.net/commons/images/2/2f/TYLOO_2019_allmode.png', imageSource: 'liquipedia' },
+  { nick: 'JamYoung', name: 'Yi Yang', team: 'TYLOO / 中国CS语境', role: 'Rifler', note: '年轻火力签，别只打自信枪，回合目标要跟上。', image: 'https://liquipedia.net/commons/images/2/2f/TYLOO_2019_allmode.png', imageSource: 'liquipedia' },
+  { nick: 'Westmelon', name: 'Qinghui Liu', team: 'Lynn Vision', role: 'Rifler', note: 'LVG火力签，今天正面别怂，但别让队形散。', image: 'https://liquipedia.net/commons/images/0/0a/Lynn_Vision_Gaming_2023_allmode.png', imageSource: 'liquipedia' },
+  { nick: 'Jame', name: 'Dzhami Ali', team: 'Virtus.pro', role: 'AWPer / IGL', note: 'Jame Time签，保枪可以，前提是你真算明白了。', image: 'https://liquipedia.net/commons/images/1/12/Jame_at_IEM_Katowice_2024.jpg', imageSource: 'liquipedia' },
+  { nick: 'torzsi', name: 'Adam Torzsas', team: 'MOUZ', role: 'AWPer', note: 'MOUZ狙签，今天稳住第一枪，空了就换点。', image: 'https://liquipedia.net/commons/images/b/b7/Torzsi_at_IEM_Dallas_2024.jpg', imageSource: 'liquipedia' },
+  { nick: 'xertioN', name: 'Dorian Berman', team: 'MOUZ', role: 'Rifler / Entry', note: '第一身位签，敢打没问题，死前信息要给满。', image: 'https://liquipedia.net/commons/images/e/e1/XertioN_at_PGL_Copenhagen_2024_EU_RMR_A.jpg', imageSource: 'liquipedia' },
+  { nick: 'iM', name: 'Ivan Mihai', team: 'NAVI', role: 'Rifler', note: 'NAVI步枪签，少乱拉，多补枪，关键局别掉线。', image: 'https://liquipedia.net/commons/images/6/69/IM_at_BLAST_Open_Spring_2026.jpg', imageSource: 'liquipedia' },
+  { nick: 'zont1x', name: 'Myroslav Plakhotia', team: 'Team Spirit', role: 'Rifler / Anchor', note: '年轻锚点签，今天别急着前压，包点站住就是价值。', image: 'https://liquipedia.net/commons/images/5/58/Zont1x_at_BLAST_Bounty_Winter_2026.jpg', imageSource: 'liquipedia', aliases: ['zontix'] },
+);
 
 const csTeams: DailyCard[] = [
   {
@@ -335,6 +385,232 @@ const csClutches: DailyCard[] = [
   { key: 'eco-clutch', title: '今日CS残局', name: 'ECO偷回合', subtitle: '短枪和道具 / 抓对面大意', scoreLabel: '残局指数', advice: '靠近点、叠人、骗道具，别和长枪正常对枪。', avoid: '别拿小枪打远点还说差一点。', line: 'ECO签最会骗人，但真骗到就是血赚。', fandomFile: 'CS2_MAC-10_Inventory.png' },
   { key: 'awp-save', title: '今日CS残局', name: '大狙残局', subtitle: '高价值武器 / 站位选择', scoreLabel: '残局指数', advice: '有机会就打一枪换位，没机会就把狙带走。', avoid: '别为了镜头把全队最贵的枪送了。', line: '狙残局签挺帅，但帅之前先别空。', fandomFile: 'CS2_AWP_Inventory.png' },
 ];
+
+csTeams.push(
+  { key: 'astralis', title: '今日CS队伍', name: 'Astralis', subtitle: '丹麦体系 / 纪律和地图理解', scoreLabel: '签位强度', advice: '今天少拼嗓门，多把交叉火力和道具顺序打明白。', avoid: '别把体系打成排队单挑。', line: 'Astralis签就是老派味，细节不够就露馅。', liquipediaPage: 'Astralis', playerImageFallback: 'dev1ce' },
+  { key: 'furia', title: '今日CS队伍', name: 'FURIA', subtitle: '巴西进攻性 / 节奏压迫', scoreLabel: '签位强度', advice: '主动没问题，但第二时间补枪一定要跟上。', avoid: '别把快节奏打成快送。', line: 'FURIA签有火，但火别烧到自己。', liquipediaPage: 'FURIA Esports', playerImageFallback: 'KSCERATO' },
+  { key: 'mongolz', title: '今日CS队伍', name: 'The MongolZ', subtitle: '亚洲强队 / 枪法和韧性', scoreLabel: '签位强度', advice: '正面别虚，残局别急，交换距离打近一点。', avoid: '别优势局一松就把节奏还回去。', line: '蒙古签抽到，今天别先认怂。', liquipediaPage: 'The MongolZ', playerImageFallback: 'bLitz' },
+  { key: 'virtuspro', title: '今日CS队伍', name: 'Virtus.pro', subtitle: '慢控和纪律 / Jame Time语境', scoreLabel: '签位强度', advice: '慢可以，但慢要拿信息，不是原地发呆。', avoid: '别保枪保到队友心态先没。', line: 'VP签就是耐心测试，急的人先出局。', liquipediaPage: 'Virtus.pro', playerImageFallback: 'electroNic' },
+  { key: 'eternal-fire', title: '今日CS队伍', name: 'Eternal Fire', subtitle: '土耳其火力 / 正面爆发', scoreLabel: '签位强度', advice: '第一枪要硬，回合纪律也得跟上。', avoid: '别只剩爆头线，没有回合计划。', line: '土耳其签一出来，正面压力直接拉满。', liquipediaPage: 'Eternal Fire', playerImageFallback: 'XANTARES', image: 'https://eternalfire.gg/wp-content/uploads/2022/10/eflogowhite.png' },
+  { key: 'aurora', title: '今日CS队伍', name: 'Aurora', subtitle: '东欧枪男 / 节奏切换', scoreLabel: '签位强度', advice: '用枪法撬开局面，但中期别断信息链。', avoid: '别打着打着全队变单排。', line: 'Aurora签有锐度，别锐到没队友。', liquipediaPage: 'Aurora Gaming', playerImageFallback: 'woxic' },
+  { key: 'heroic', title: '今日CS队伍', name: 'HEROIC', subtitle: '体系重建 / 信息和补枪', scoreLabel: '签位强度', advice: '今天别散，第一波交换和道具目的先讲清楚。', avoid: '别每个回合都像临时拼车。', line: 'HEROIC签要的是队形，不是各自精彩。', liquipediaPage: 'HEROIC', playerImageFallback: 'cadiaN' },
+  { key: '3dmax', title: '今日CS队伍', name: '3DMAX', subtitle: '法国体系 / 冲击强队位', scoreLabel: '签位强度', advice: '把默认控图打扎实，别让对面免费拿首杀。', avoid: '别一到强队局就先自乱阵脚。', line: '3DMAX签不花，但要打得硬。', liquipediaPage: '3DMAX', playerImageFallback: 'apEX' },
+  { key: 'pain', title: '今日CS队伍', name: 'paiN Gaming', subtitle: '巴西韧性 / 中期决策', scoreLabel: '签位强度', advice: '正面要敢换，残局要慢算时间。', avoid: '别优势人数还一个个送。', line: 'paiN签像名字一样，急了就疼。', liquipediaPage: 'paiN Gaming', playerImageFallback: 'coldzera' },
+  { key: 'tyloo', title: '今日CS队伍', name: 'TYLOO', subtitle: '中国CS老牌 / 节奏和枪感', scoreLabel: '签位强度', advice: '枪要敢开，补枪距离别拉散。', avoid: '别开局想太多，中期又没人说话。', line: 'TYLOO签抽到，今天给点中国CS信仰分。', liquipediaPage: 'TYLOO', playerImageFallback: 'somebody' },
+  { key: 'lynnvision', title: '今日CS队伍', name: 'Lynn Vision', subtitle: '中国新锐 / 正面和执行力', scoreLabel: '签位强度', advice: '按计划提速，别道具到了人没到。', avoid: '别小优势局打得像在试探人生。', line: 'LVG签有冲劲，关键是别断档。', liquipediaPage: 'Lynn Vision Gaming', playerImageFallback: 'Westmelon' },
+  { key: 'big', title: '今日CS队伍', name: 'BIG', subtitle: '德国纪律 / 道具和默认', scoreLabel: '签位强度', advice: '先把默认打清楚，道具别省也别乱交。', avoid: '别默认控到时间没了才想起来进点。', line: 'BIG签很讲规矩，规矩乱了就很难看。', liquipediaPage: 'BIG', playerImageFallback: 'tabseN' },
+  { key: 'complexity', title: '今日CS队伍', name: 'Complexity', subtitle: '北美冲击 / 正面交换', scoreLabel: '签位强度', advice: '今天别等奇迹，第一时间补枪要到位。', avoid: '别经济局刚有机会就把枪送回去。', line: 'COL签主打一个别复杂化。', liquipediaPage: 'Complexity Gaming', playerImageFallback: 'EliGE' },
+);
+
+csMaps.push(
+  { key: 'train', title: '今日CS地图', name: 'Train', subtitle: '内外场控图 / 绿通和回防', scoreLabel: '手感指数', advice: '外场信息别断，进点前先把关键狙位处理掉。', avoid: '别一出门就被架死还说没办法。', line: '列车停放站这签，慢一秒和快一秒都要命。', fandomPage: 'Train', fandomFile: 'De_train_cs2.png' },
+  { key: 'cache', title: '今日CS地图', name: 'Cache', subtitle: '中路控制 / A叉和B点爆弹', scoreLabel: '手感指数', advice: '中路别白给，A叉压力和B区假动作要讲清楚。', avoid: '别烟还没封，人已经过马路了。', line: '死城之谜这图，信息一断就开始猜谜。', fandomPage: 'Cache', fandomFile: 'De_cache.png' },
+  { key: 'cobblestone', title: '今日CS地图', name: 'Cobblestone', subtitle: '长距离枪线 / B区执行', scoreLabel: '手感指数', advice: '长枪线要耐心，进B之前道具和补枪距离先摆好。', avoid: '别龙区散步散到被逐个点名。', line: '古堡签有年代感，但白给一直很现代。', fandomPage: 'Cobblestone', fandomFile: 'De_cbble.png' },
+  { key: 'tuscan', title: '今日CS地图', name: 'Tuscan', subtitle: '经典回归 / 中路和两翼夹击', scoreLabel: '手感指数', advice: '先拿中路空间，再看两翼同步，别让队伍断成两截。', avoid: '别复古图打出复古沟通。', line: 'Tuscan签有老味，细节不到位就很苦。', fandomPage: 'Tuscan', fandomFile: 'De_tuscan_cs2.png' },
+  { key: 'vertigo', title: '今日CS地图', name: 'Vertigo', subtitle: '楼梯和A坡 / 垂直空间', scoreLabel: '手感指数', advice: 'A坡争夺要有烟闪火顺序，别干拉看天。', avoid: '别掉下去，物理白给最难洗。', line: '殒命大厦签，楼上楼下都能出节目。', fandomPage: 'Vertigo', fandomFile: 'De_vertigo_cs2.png' },
+  { key: 'office', title: '今日CS地图', name: 'Office', subtitle: '人质图 / 近点混战', scoreLabel: '手感指数', advice: '别急冲窄口，先用道具清近点和交叉。', avoid: '别一进门就把自己交给霰弹枪。', line: '办公室签很欢乐，但欢乐不等于乱送。', fandomPage: 'Office', fandomFile: 'Cs_office_cs2.png' },
+  { key: 'italy', title: '今日CS地图', name: 'Italy', subtitle: '巷战和人质 / 近点信息', scoreLabel: '手感指数', advice: '巷道信息要慢慢拿，别无道具硬进。', avoid: '别把人质图打成单挑赛。', line: '意大利小镇签，优雅不了一点。', fandomPage: 'Italy', fandomFile: 'Cs_italy_cs2.png' },
+);
+
+csWeapons.push(
+  { key: 'm4a4', title: '今日CS武器', name: 'M4A4', subtitle: '高弹量步枪 / 正面压制', scoreLabel: '爆头指数', advice: '多用弹量优势打多目标转移，别站桩扫到没子弹。', avoid: '别和A1一样玩偷人，枪不一样思路也不一样。', line: 'M4A4签就是稳压，压不住就是你急。', fandomFile: 'CS2_M4A4_Inventory.png' },
+  { key: 'usp', title: '今日CS武器', name: 'USP-S', subtitle: '手枪局纪律 / 消音点射', scoreLabel: '爆头指数', advice: '第一枪慢一点，打头线和换位，不要连续硬peek。', avoid: '别一梭子打完还站原地。', line: 'USP签很冷静，冷静完别怂。', fandomFile: 'CS2_USP-S_Inventory.png' },
+  { key: 'glock', title: '今日CS武器', name: 'Glock-18', subtitle: 'T方手枪 / 跑动和集火', scoreLabel: '爆头指数', advice: '抱团提速，近点集火，别一个人远距离点半天。', avoid: '别手枪局单摸当大哥。', line: '格洛克签要人多，孤狼没节目。', fandomFile: 'CS2_Glock-18_Inventory.png' },
+  { key: 'famas', title: '今日CS武器', name: 'FAMAS', subtitle: 'CT半甲步枪 / 经济管理', scoreLabel: '爆头指数', advice: '利用位置和交叉火力，别拿它去和AK硬碰硬。', avoid: '别嫌便宜枪，便宜枪也要打干净。', line: 'FAMAS签就是会过日子，别过成捐款。', fandomFile: 'CS2_FAMAS_Inventory.png' },
+  { key: 'aug', title: '今日CS武器', name: 'AUG', subtitle: '开镜稳定 / 长枪线', scoreLabel: '爆头指数', advice: '长点架住就收，不要开镜开到队友都没了。', avoid: '别因为能开镜就忘了换位。', line: 'AUG签有点稳健，也有点容易上头。', fandomFile: 'CS2_AUG_Inventory.png' },
+  { key: 'sg553', title: '今日CS武器', name: 'SG 553', subtitle: 'T方开镜步枪 / 远点压制', scoreLabel: '爆头指数', advice: '远点拿信息和首杀，拿完就别贪第二枪。', avoid: '别开镜走路慢到被近点吃掉。', line: 'SG签是望远镜，但别望到回合没了。', fandomFile: 'CS2_SG_553_Inventory.png' },
+  { key: 'p250', title: '今日CS武器', name: 'P250', subtitle: '低成本破甲 / 经济局偷人', scoreLabel: '爆头指数', advice: '贴近打第一枪，杀一个就赚，别远点硬讲道理。', avoid: '别把经济局打成单人送温暖。', line: 'P250签小钱办大事，办不了也别嘴硬。', fandomFile: 'CS2_P250_Inventory.png' },
+  { key: 'five-seven', title: '今日CS武器', name: 'Five-SeveN', subtitle: 'CT近点手枪 / 爆发输出', scoreLabel: '爆头指数', advice: '近点蹲住交叉，等对面进你的距离再开火。', avoid: '别远距离和步枪互相尊重。', line: '57签最会阴人，阴不到就是白给。', fandomFile: 'CS2_Five-SeveN_Inventory.png' },
+  { key: 'tec9', title: '今日CS武器', name: 'Tec-9', subtitle: '提速手枪 / 第一身位', scoreLabel: '爆头指数', advice: '吃闪冲近点，帮队友拉枪线，别停在半路犹豫。', avoid: '别冲了没人跟，回头一看全在出生点。', line: 'Tec-9签就是冲，但冲要有队友。', fandomFile: 'CS2_Tec-9_Inventory.png' },
+  { key: 'p90', title: '今日CS武器', name: 'P90', subtitle: '跑打和火力压制 / 整活也能赢', scoreLabel: '爆头指数', advice: '近距离压迫可以，打完就转位置，别贪。', avoid: '别拿P90中远距离当AK。', line: 'P90签节目效果很足，别足到被踢。', fandomFile: 'CS2_P90_Inventory.png' },
+  { key: 'xm1014', title: '今日CS武器', name: 'XM1014', subtitle: '近点霰弹 / 经济偷局', scoreLabel: '爆头指数', advice: '守窄口和近点，杀到一个就换位，别追出去送枪。', avoid: '别拿喷子出门追远点。', line: '连喷签很脏，但脏活也要讲位置。', fandomFile: 'CS2_XM1014_Inventory.png' },
+  { key: 'ssg08', title: '今日CS武器', name: 'SSG 08', subtitle: '鸟狙 / 经济局远点威胁', scoreLabel: '爆头指数', advice: '打一枪就走，靠机动性和信息赚价值。', avoid: '别空一枪还站原地摆姿势。', line: '鸟狙签很轻，但压力不轻。', fandomFile: 'CS2_SSG_08_Inventory.png' },
+);
+
+csClutches.push(
+  { key: 'one-v-two', title: '今日CS残局', name: '1v2拆分残局', subtitle: '隔离单挑 / 信息反推', scoreLabel: '残局指数', advice: '先把两个人拆开打，不要同时接两条枪线。', avoid: '别急着冲进交叉火力。', line: '1v2签不是硬刚签，是拆题签。', fandomFile: 'CS2_USP-S_Inventory.png' },
+  { key: 'one-v-three', title: '今日CS残局', name: '1v3偷时间', subtitle: '假动作 / 转点 / 对面心态', scoreLabel: '残局指数', advice: '先造动静逼对面乱，再找落单点，不要正面硬撞三个人。', avoid: '别一开局就暴露所有信息。', line: '1v3签先别说赢，先让对面开始慌。', fandomFile: 'Flashbanghud_csgo.png' },
+  { key: 'two-v-four', title: '今日CS残局', name: '2v4反打', subtitle: '交叉火力 / 道具重置', scoreLabel: '残局指数', advice: '两个人别分太远，先靠道具和双拉拿第一个击杀。', avoid: '别一个人想当英雄，另一个人只能观战。', line: '2v4签看配合，个人主义先收一收。', fandomFile: 'Smokegrenadehud_csgo.png' },
+  { key: 'pistol-retake', title: '今日CS残局', name: '手枪局回防', subtitle: '人多节奏 / 近点清理', scoreLabel: '残局指数', advice: '一起进，一起补，先清近点再碰包。', avoid: '别三个人三秒进三次门。', line: '手枪回防签，散了就只剩点头。', fandomFile: 'CS2_Glock-18_Inventory.png' },
+  { key: 'ninja-defuse', title: '今日CS残局', name: '偷拆残局', subtitle: '烟雾和声音 / 胆子与判断', scoreLabel: '残局指数', advice: '烟里偷拆前先确认对面距离和子弹压力，能骗再骗。', avoid: '别没烟没钳还硬演忍者。', line: '偷拆签很帅，但失败也很安静。', fandomFile: 'Defuserhud_csgo.png' },
+  { key: 'fake-defuse', title: '今日CS残局', name: '假拆真拉', subtitle: '声音博弈 / 逼对面出枪', scoreLabel: '残局指数', advice: '点包骗枪位，拉出来只接一个角，别同时看三处。', avoid: '别假拆假到自己都信了。', line: '假拆签就是演技，演完得真会打。', fandomFile: 'Defuserhud_csgo.png' },
+  { key: 'lowhp', title: '今日CS残局', name: '残血残局', subtitle: '一枪死 / 信息和角度选择', scoreLabel: '残局指数', advice: '残血就别硬换血，靠角度、道具和时间打。', avoid: '别还剩7滴血硬当突破手。', line: '残血签最考验嘴硬含金量。', fandomFile: 'CS2_P250_Inventory.png' },
+);
+
+const csSkins: SkinCard[] = [
+  { key: 'ak-redline', title: '今日CS皮肤', name: 'AK-47 | Redline', weapon: 'AK-47', rarity: 'Classified', subtitle: '经典红线 / 朴素但有压迫感', scoreLabel: '出货指数', advice: '今天皮肤不花，但枪要干净，第一发别急。', avoid: '别拿经典皮肤打出抽象弹道。', line: '红线签很稳，稳不住就是人的问题。', fandomFile: 'AK-47_Redline.png', fandomPage: 'Redline' },
+  { key: 'ak-fire-serpent', title: '今日CS皮肤', name: 'AK-47 | Fire Serpent', weapon: 'AK-47', rarity: 'Covert', subtitle: '火蛇 / 老贵族味', scoreLabel: '出货指数', advice: '今天别急，火蛇是气场，不是免死金牌。', avoid: '别皮肤比回合价值高。', line: '火蛇签抽到，先别开香槟，枪线站好。', fandomFile: 'AK-47_Fire_Serpent.png' },
+  { key: 'ak-asiimov', title: '今日CS皮肤', name: 'AK-47 | Asiimov', weapon: 'AK-47', rarity: 'Covert', subtitle: '白橙科幻 / 高辨识度', scoreLabel: '出货指数', advice: '枪要打得像皮肤一样干净，别泼成涂鸦。', avoid: '别只会看检视，不会看小地图。', line: '二西莫夫签很亮，别亮完就白给。', fandomFile: 'AK-47_Asiimov.png', fandomPage: 'Asiimov' },
+  { key: 'ak-bloodsport', title: '今日CS皮肤', name: 'AK-47 | Bloodsport', weapon: 'AK-47', rarity: 'Covert', subtitle: '红白赛车感 / 正面火力', scoreLabel: '出货指数', advice: '今天正面可以硬，但补枪距离要跟上。', avoid: '别打得像没保险的赛车。', line: '血腥运动签很躁，躁也要有章法。', fandomFile: 'AK-47_Bloodsport.png' },
+  { key: 'awp-dragon-lore', title: '今日CS皮肤', name: 'AWP | Dragon Lore', weapon: 'AWP', rarity: 'Covert', subtitle: '龙狙 / 传说级节目效果', scoreLabel: '出货指数', advice: '第一枪要稳，拿到优势就收，不要把龙狙送出去。', avoid: '别空枪后还在原地检视。', line: '龙狙签抽到，今天责任也跟着涨价。', fandomFile: 'AWP_Dragon_Lore.png', fandomPage: 'Dragon Lore' },
+  { key: 'awp-asiimov', title: '今日CS皮肤', name: 'AWP | Asiimov', weapon: 'AWP', rarity: 'Covert', subtitle: '科幻大狙 / 经典白橙', scoreLabel: '出货指数', advice: '架点拿完就换位，别因为皮肤帅就多站半秒。', avoid: '别集锦没剪出来，经济先没了。', line: 'AWP二西莫夫签，帅可以，别空。', fandomFile: 'AWP_Asiimov.png', fandomPage: 'Asiimov' },
+  { key: 'awp-containment', title: '今日CS皮肤', name: 'AWP | Containment Breach', weapon: 'AWP', rarity: 'Covert', subtitle: '怪物破笼 / 压迫感', scoreLabel: '出货指数', advice: '今天架点要狠，但空枪后撤更重要。', avoid: '别把自己关在同一个点位里。', line: '突破签配突破皮，听着就有事。', fandomFile: 'AWP_Containment_Breach.png' },
+  { key: 'm4a1s-printstream', title: '今日CS皮肤', name: 'M4A1-S | Printstream', weapon: 'M4A1-S', rarity: 'Covert', subtitle: '白黑珍珠 / 干净偷人', scoreLabel: '出货指数', advice: '用消音和换位偷价值，别正面硬扫。', avoid: '别皮肤极简，打法极乱。', line: '印花集签很干净，别打脏。', fandomFile: 'M4A1-S_Printstream.png', fandomPage: 'Printstream' },
+  { key: 'm4a1s-hyper-beast', title: '今日CS皮肤', name: 'M4A1-S | Hyper Beast', weapon: 'M4A1-S', rarity: 'Covert', subtitle: '怪兽涂装 / 老经典', scoreLabel: '出货指数', advice: '站位可以大胆一点，但换位别忘。', avoid: '别画面很凶，回合很软。', line: '暴怒野兽签，凶得有理才行。', fandomFile: 'M4A1-S_Hyper_Beast.png', fandomPage: 'Hyper Beast' },
+  { key: 'm4a4-howl', title: '今日CS皮肤', name: 'M4A4 | Howl', weapon: 'M4A4', rarity: 'Contraband', subtitle: '咆哮 / 争议传奇', scoreLabel: '出货指数', advice: '弹量优势用来压制和转移，不是用来乱扫。', avoid: '别咆哮完人没了。', line: '咆哮签抽到，声音可以大，枪别飘。', fandomFile: 'M4A4_Howl.png', fandomPage: 'Howl' },
+  { key: 'usp-kill-confirmed', title: '今日CS皮肤', name: 'USP-S | Kill Confirmed', weapon: 'USP-S', rarity: 'Covert', subtitle: '爆头确认 / 手枪局压迫', scoreLabel: '出货指数', advice: '第一发慢一点，手枪局别急着连续peek。', avoid: '别确认的是自己的死亡。', line: '枪响确认签，确认前先瞄头。', fandomFile: 'USP-S_Kill_Confirmed.png' },
+  { key: 'deagle-blaze', title: '今日CS皮肤', name: 'Desert Eagle | Blaze', weapon: 'Desert Eagle', rarity: 'Restricted', subtitle: '火沙鹰 / 一发梦', scoreLabel: '出货指数', advice: '别急开枪，等准星和脚步都稳了再讲道理。', avoid: '别七发火光，全是空气。', line: '火沙鹰签最骗自信，但骗成了真帅。', fandomFile: 'Desert_Eagle_Blaze.png', fandomPage: 'Blaze' },
+  { key: 'glock-fade', title: '今日CS皮肤', name: 'Glock-18 | Fade', weapon: 'Glock-18', rarity: 'Restricted', subtitle: '渐变 / 手枪局小豪华', scoreLabel: '出货指数', advice: '抱团提速，靠近打，别远点单点到天荒地老。', avoid: '别渐变很贵，打法很散。', line: '格洛克渐变签，手枪局别演。', fandomFile: 'Glock-18_Fade.png', fandomPage: 'Fade' },
+  { key: 'mp9-starlight', title: '今日CS皮肤', name: 'MP9 | Starlight Protector', weapon: 'MP9', rarity: 'Covert', subtitle: '星光守护者 / 近点爆发', scoreLabel: '出货指数', advice: '近点杀一个就走，别恋战。', avoid: '别守护的是对面经济。', line: 'MP9星光签，闪亮但要跑得快。', fandomFile: 'MP9_Starlight_Protector.png' },
+  { key: 'mac10-disco', title: '今日CS皮肤', name: 'MAC-10 | Disco Tech', weapon: 'MAC-10', rarity: 'Classified', subtitle: '迪斯科科技 / 第一身位节目', scoreLabel: '出货指数', advice: '冲锋要有闪和补枪，不要自己开舞池。', avoid: '别进点跳舞，队友进不来。', line: '迪斯科签很嗨，嗨完得换到空间。', fandomFile: 'MAC-10_Disco_Tech.png' },
+];
+
+interface KnifeSkin {
+  key: string;
+  name: string;
+  rarity: string;
+  advice: string;
+  avoid: string;
+  line: string;
+  fileSuffixes: string[];
+}
+
+const csKnives: KnifeCard[] = [
+  { key: 'bayonet', title: '今日发刀', name: 'Bayonet', subtitle: '刺刀 / 老派经典', scoreLabel: '刀运指数', advice: '今天抽到老经典，稳一点，别检视到被偷。', avoid: '别刀还没掏明白，人先没了。', line: '刺刀签很直，别玩弯的。', fandomPage: 'Bayonet', fandomFile: 'Cs2-knife-bayonet-stock-market.png', aliases: ['bayonet'], skinFilePrefixes: ['Bayonet'] } as KnifeCard & { skinFilePrefixes: string[] },
+  { key: 'm9-bayonet', title: '今日发刀', name: 'M9 Bayonet', subtitle: 'M9刺刀 / 厚重大哥', scoreLabel: '刀运指数', advice: '这刀气场够，回合也得够硬。', avoid: '别只会切刀不看身后。', line: 'M9签抽到，今天多少有点排面。', fandomPage: 'M9 Bayonet', fandomFile: 'Cs2-knife-m9-bayonet-stock.png', aliases: ['m9'], skinFilePrefixes: ['M9_Bayonet', 'M9Bayonet'] } as KnifeCard & { skinFilePrefixes: string[] },
+  { key: 'karambit', title: '今日发刀', name: 'Karambit', subtitle: '爪子刀 / 顶级人气', scoreLabel: '刀运指数', advice: '抽到爪子先别飘，回合先赢再检视。', avoid: '别转刀转到忘补枪。', line: '爪子签有节目，节目别变事故。', fandomPage: 'Karambit', fandomFile: 'Cs2-knife-karambit-stock.png', aliases: ['爪子刀', '爪子'], skinFilePrefixes: ['Karambit'] } as KnifeCard & { skinFilePrefixes: string[] },
+  { key: 'butterfly', title: '今日发刀', name: 'Butterfly Knife', subtitle: '蝴蝶刀 / 检视之王', scoreLabel: '刀运指数', advice: '可以检视，但别检视到被timing抓。', avoid: '别刀花活比枪法多。', line: '蝴蝶签来了，先把手稳住。', fandomPage: 'Butterfly Knife', fandomFile: 'Cs2-knife-butterfly-stock-market.png', aliases: ['蝴蝶刀', '蝴蝶'], skinFilePrefixes: ['Butterfly_Knife', 'Butterfly'] } as KnifeCard & { skinFilePrefixes: string[] },
+  { key: 'flip', title: '今日发刀', name: 'Flip Knife', subtitle: '折叠刀 / 实用经典', scoreLabel: '刀运指数', advice: '朴素但耐看，今天少花活多赢回合。', avoid: '别觉得不够贵就乱玩。', line: '折刀签不装，但能打。', fandomPage: 'Flip Knife', fandomFile: 'Weapon_knife_flip_cs2.png', aliases: ['折刀'], skinFilePrefixes: ['Flip_Knife', 'Flip'] } as KnifeCard & { skinFilePrefixes: string[] },
+  { key: 'gut', title: '今日发刀', name: 'Gut Knife', subtitle: '穿肠刀 / 老资历', scoreLabel: '刀运指数', advice: '冷门刀也有味，别自己先嫌弃。', avoid: '别刀冷门，打法也冷场。', line: '穿肠签抽到，今天主打朴实。', fandomPage: 'Gut Knife', fandomFile: 'Weapon_knife_gut_cs2.png', aliases: ['穿肠刀'], skinFilePrefixes: ['Gut_Knife', 'Gut'] } as KnifeCard & { skinFilePrefixes: string[] },
+  { key: 'huntsman', title: '今日发刀', name: 'Huntsman Knife', subtitle: '猎杀者匕首 / 厚实硬朗', scoreLabel: '刀运指数', advice: '今天别怕正面，但枪线别乱冲。', avoid: '别猎杀到最后猎的是自己。', line: '猎杀者签，有点硬汉味。', fandomPage: 'Huntsman Knife', fandomFile: 'Weapon_knife_tactical_cs2.png', aliases: ['猎杀者'], skinFilePrefixes: ['Huntsman_Knife', 'Huntsman'] } as KnifeCard & { skinFilePrefixes: string[] },
+  { key: 'falchion', title: '今日发刀', name: 'Falchion Knife', subtitle: '弯刀 / 动作有记忆点', scoreLabel: '刀运指数', advice: '今天节奏别弯，回合路线要直。', avoid: '别甩刀甩到忘了换弹。', line: '弯刀签，花但不能乱。', fandomPage: 'Falchion Knife', fandomFile: 'Weapon_knife_falchion_cs2.png', aliases: ['弯刀'], skinFilePrefixes: ['Falchion_Knife', 'Falchion'] } as KnifeCard & { skinFilePrefixes: string[] },
+  { key: 'bowie', title: '今日发刀', name: 'Bowie Knife', subtitle: '鲍伊猎刀 / 大开大合', scoreLabel: '刀运指数', advice: '气势够了，今天枪也得够干净。', avoid: '别刀大，胆子小。', line: '鲍伊签很有重量，别把回合打轻了。', fandomPage: 'Bowie Knife', fandomFile: 'Weapon_knife_survival_bowie_cs2.png', aliases: ['鲍伊'], skinFilePrefixes: ['Bowie_Knife', 'Bowie'] } as KnifeCard & { skinFilePrefixes: string[] },
+  { key: 'shadow-daggers', title: '今日发刀', name: 'Shadow Daggers', subtitle: '暗影双匕 / 整活气质', scoreLabel: '刀运指数', advice: '双刀签很有节目，但别双倍白给。', avoid: '别以为两把刀等于两条命。', line: '暗影双匕签，节目效果先到位。', fandomPage: 'Shadow Daggers', fandomFile: 'Weapon_knife_push_cs2.png', aliases: ['双匕', '拳套刀'], skinFilePrefixes: ['Shadow_Daggers', 'Shadow'] } as KnifeCard & { skinFilePrefixes: string[] },
+  { key: 'navaja', title: '今日发刀', name: 'Navaja Knife', subtitle: '折刀小刀 / 低调冷门', scoreLabel: '刀运指数', advice: '刀可以低调，回合别低迷。', avoid: '别冷门刀配冷门枪法。', line: '纳瓦哈签，主打一个别嫌。', fandomPage: 'Navaja Knife', fandomFile: 'Weapon_knife_gypsy_jackknife_cs2.png', aliases: ['纳瓦哈'], skinFilePrefixes: ['Navaja_Knife', 'Navaja'] } as KnifeCard & { skinFilePrefixes: string[] },
+  { key: 'stiletto', title: '今日发刀', name: 'Stiletto Knife', subtitle: '短剑 / 细长利落', scoreLabel: '刀运指数', advice: '今天打法要利落，别拖泥带水。', avoid: '别刀很优雅，枪很狼狈。', line: '短剑签有味，关键是别手抖。', fandomPage: 'Stiletto Knife', fandomFile: 'Weapon_knife_stiletto_cs2.png', aliases: ['短剑'], skinFilePrefixes: ['Stiletto_Knife', 'Stiletto'] } as KnifeCard & { skinFilePrefixes: string[] },
+  { key: 'talon', title: '今日发刀', name: 'Talon Knife', subtitle: '锯齿爪刀 / 爪子兄弟', scoreLabel: '刀运指数', advice: '这签很锋利，但回合判断别割裂。', avoid: '别检视检到被背刺。', line: '锯齿爪签，今天排面够。', fandomPage: 'Talon Knife', fandomFile: 'Weapon_knife_widowmaker_cs2.png', aliases: ['锯齿爪'], skinFilePrefixes: ['Talon_Knife', 'Talon'] } as KnifeCard & { skinFilePrefixes: string[] },
+  { key: 'ursus', title: '今日发刀', name: 'Ursus Knife', subtitle: '熊刀 / 简洁硬派', scoreLabel: '刀运指数', advice: '少花活，多赢回合，熊刀就吃这个味。', avoid: '别硬派刀配软脚步。', line: '熊刀签，朴实但不丢人。', fandomPage: 'Ursus Knife', fandomFile: 'Weapon_knife_ursus_cs2.png', aliases: ['熊刀'], skinFilePrefixes: ['Ursus_Knife', 'Ursus'] } as KnifeCard & { skinFilePrefixes: string[] },
+  { key: 'classic', title: '今日发刀', name: 'Classic Knife', subtitle: '经典刀 / CS血统', scoreLabel: '刀运指数', advice: '经典刀签，今天把基本功打回来。', avoid: '别经典的是刀，抽象的是人。', line: '经典刀签一出，老味来了。', fandomPage: 'Classic Knife', fandomFile: 'Weapon_knife_css_cs2.png', aliases: ['经典刀'], skinFilePrefixes: ['Classic_Knife', 'Classic'] } as KnifeCard & { skinFilePrefixes: string[] },
+  { key: 'paracord', title: '今日发刀', name: 'Paracord Knife', subtitle: '系绳匕首 / 实战风', scoreLabel: '刀运指数', advice: '今天别花，打得实用一点。', avoid: '别战术风皮肤配无战术打法。', line: '系绳刀签，低调但能看。', fandomPage: 'Paracord Knife', fandomFile: 'Weapon_knife_cord_cs2.png', aliases: ['系绳刀'], skinFilePrefixes: ['Paracord_Knife', 'Paracord'] } as KnifeCard & { skinFilePrefixes: string[] },
+  { key: 'survival', title: '今日发刀', name: 'Survival Knife', subtitle: '求生匕首 / 硬朗工具感', scoreLabel: '刀运指数', advice: '今天先活下来再谈操作，别第一身位白给。', avoid: '别求生刀抽到了，人却不求生。', line: '求生刀签，字面意义先别死。', fandomPage: 'Survival Knife', fandomFile: 'Weapon_knife_canis_cs2.png', aliases: ['求生刀'], skinFilePrefixes: ['Survival_Knife', 'Survival'] } as KnifeCard & { skinFilePrefixes: string[] },
+  { key: 'nomad', title: '今日发刀', name: 'Nomad Knife', subtitle: '流浪者匕首 / 干净利落', scoreLabel: '刀运指数', advice: '走位可以灵活，但别真流浪到队友找不到你。', avoid: '别绕后绕成失踪人口。', line: '流浪者签，别流浪过头。', fandomPage: 'Nomad Knife', fandomFile: 'Weapon_knife_outdoor_cs2.png', aliases: ['流浪者'], skinFilePrefixes: ['Nomad_Knife', 'Nomad'] } as KnifeCard & { skinFilePrefixes: string[] },
+  { key: 'skeleton', title: '今日发刀', name: 'Skeleton Knife', subtitle: '骷髅刀 / 高人气硬货', scoreLabel: '刀运指数', advice: '抽到骷髅刀，今天回合得打出骨架。', avoid: '别只有刀有骨架，战术没骨架。', line: '骷髅刀签，有点硬通货味。', fandomPage: 'Skeleton Knife', fandomFile: 'Weapon_knife_skeleton_cs2.png', aliases: ['骷髅刀'], skinFilePrefixes: ['Skeleton_Knife', 'Skeleton'] } as KnifeCard & { skinFilePrefixes: string[] },
+  { key: 'kukri', title: '今日发刀', name: 'Kukri Knife', subtitle: '廓尔喀刀 / CS2新刀型', scoreLabel: '刀运指数', advice: '新刀签，今天可以有点新思路，但别乱。', avoid: '别新刀新鲜，回合发霉。', line: '廓尔喀签抽到，新鲜感有了。', fandomPage: 'Kukri Knife', fandomFile: 'CS2_weapon_knife_kukri.png', aliases: ['廓尔喀', '库克里'], skinFilePrefixes: ['Kukri_Knife', 'Kukri'] } as KnifeCard & { skinFilePrefixes: string[] },
+];
+
+const knifeSkins: KnifeSkin[] = [
+  { key: 'doppler', name: 'Doppler', rarity: 'Covert', advice: '多普勒签很亮，亮归亮，别把自己亮给对面。', avoid: '别检视比补枪还积极。', line: 'Doppler一出，群里先沉默三秒。', fileSuffixes: ['Doppler', 'doppler_phase2', 'doppler_phase3', 'doppler_phase4'] },
+  { key: 'gamma-doppler', name: 'Gamma Doppler', rarity: 'Covert', advice: '绿宝石气质拉满，但回合别绿。', avoid: '别为了看颜色忘了看包点。', line: 'Gamma Doppler签，今天有点贵气。', fileSuffixes: ['Gamma_Doppler', 'gamma_doppler'] },
+  { key: 'fade', name: 'Fade', rarity: 'Covert', advice: '渐变签很顺眼，打法也要顺。', avoid: '别渐变很丝滑，急停很抽象。', line: 'Fade签，老审美不会错。', fileSuffixes: ['Fade'] },
+  { key: 'marble-fade', name: 'Marble Fade', rarity: 'Covert', advice: '大理石渐变可以花，回合别花。', avoid: '别花刀配花活，最后花式白给。', line: 'Marble Fade签，颜色先赢了。', fileSuffixes: ['Marble_Fade'] },
+  { key: 'tiger-tooth', name: 'Tiger Tooth', rarity: 'Covert', advice: '虎牙签就是锋利，今天正面可以硬一点。', avoid: '别虎牙变乳牙。', line: 'Tiger Tooth签，咬住别松。', fileSuffixes: ['Tiger_Tooth'] },
+  { key: 'case-hardened', name: 'Case Hardened', rarity: 'Covert', advice: '淬火签看脸，回合可不能全看脸。', avoid: '别蓝顶没出，红温先出。', line: 'Case Hardened签，赌狗气质来了。', fileSuffixes: ['Case_Hardened', 'case_hardened'] },
+  { key: 'crimson-web', name: 'Crimson Web', rarity: 'Covert', advice: '红网签压迫感强，但别自己陷进去。', avoid: '别卡在自己编的网里。', line: 'Crimson Web签，红得有道理。', fileSuffixes: ['Crimson_Web', 'Crimson_web'] },
+  { key: 'slaughter', name: 'Slaughter', rarity: 'Covert', advice: '屠夫签要狠，但狠之前先确认队友位置。', avoid: '别屠的是队伍经济。', line: 'Slaughter签，今天别手软也别上头。', fileSuffixes: ['Slaughter'] },
+  { key: 'lore', name: 'Lore', rarity: 'Covert', advice: '传说签有味，今天拿信息要有耐心。', avoid: '别传说没打出来，笑话先出来。', line: 'Lore签，老金色排面。', fileSuffixes: ['Lore'] },
+  { key: 'autotronic', name: 'Autotronic', rarity: 'Covert', advice: '自动化签很硬，打法别像没上电。', avoid: '别机械感有了，判断没了。', line: 'Autotronic签，红银硬货。', fileSuffixes: ['Autotronic', 'autotronic'] },
+  { key: 'black-laminate', name: 'Black Laminate', rarity: 'Covert', advice: '黑层压低调，今天就靠纪律说话。', avoid: '别低调到队友找不到你。', line: 'Black Laminate签，冷静派。', fileSuffixes: ['Black_Laminate', 'black_laminate'] },
+  { key: 'damascus', name: 'Damascus Steel', rarity: 'Covert', advice: '大马士革签要稳，细节纹路别打散。', avoid: '别刀纹很细，枪法很粗。', line: 'Damascus Steel签，老工艺感。', fileSuffixes: ['Damascus_Steel'] },
+  { key: 'ultraviolet', name: 'Ultraviolet', rarity: 'Covert', advice: '紫外线签低调酷，今天少嘴硬多补枪。', avoid: '别紫得发黑，回合也发黑。', line: 'Ultraviolet签，冷色但别冷场。', fileSuffixes: ['Ultraviolet'] },
+  { key: 'freehand', name: 'Freehand', rarity: 'Covert', advice: '自由手签可以飘，但打法别飘。', avoid: '别自由到没有队形。', line: 'Freehand签，花纹随意，人别随意。', fileSuffixes: ['Freehand'] },
+  { key: 'rust-coat', name: 'Rust Coat', rarity: 'Covert', advice: '锈蚀签很接地气，今天别嫌，赢回合才香。', avoid: '别刀生锈，脑子也生锈。', line: 'Rust Coat签，穷也穷得有态度。', fileSuffixes: ['Rust_Coat'] },
+  { key: 'bright-water', name: 'Bright Water', rarity: 'Covert', advice: '澄澈之水签，今天信息也要清楚。', avoid: '别水很亮，人很迷。', line: 'Bright Water签，清爽但要能打。', fileSuffixes: ['Bright_Water'] },
+  { key: 'safari-mesh', name: 'Safari Mesh', rarity: 'Covert', advice: '狩猎网格签朴素，朴素不是白给。', avoid: '别被对面当猎物。', line: 'Safari Mesh签，主打实用主义。', fileSuffixes: ['Safari_Mesh'] },
+];
+
+const dailyCharacters: DailyCharacter[] = [
+  { key: 'tomori', title: '每日木柜子', name: '高松灯 / Takamatsu Tomori', band: 'MyGO!!!!!', role: 'Vocal', voice: '羊宫妃那', note: '今天是灯签，慢热但真诚，别把话说太满。', page: 'Takamatsu Tomori' },
+  { key: 'anon', title: '每日木柜子', name: '千早爱音 / Chihaya Anon', band: 'MyGO!!!!!', role: 'Guitar', voice: '立石凛', note: '今天是爱音签，社交能量有了，但别把自己安排太满。', page: 'Chihaya Anon' },
+  { key: 'rana', title: '每日木柜子', name: '要乐奈 / Kaname Rana', band: 'MyGO!!!!!', role: 'Guitar', voice: '青木阳菜', note: '今天是乐奈签，自由发挥可以，但别突然消失。', page: 'Kaname Raana' },
+  { key: 'soyo', title: '每日木柜子', name: '长崎爽世 / Nagasaki Soyo', band: 'MyGO!!!!!', role: 'Bass', voice: '小日向美香', note: '今天是爽世签，温柔可以，别把心事全憋成战术。', page: 'Nagasaki Soyo' },
+  { key: 'taki', title: '每日木柜子', name: '椎名立希 / Shiina Taki', band: 'MyGO!!!!!', role: 'Drums', voice: '林鼓子', note: '今天是立希签，嘴硬归嘴硬，节奏要稳。', page: 'Shiina Taki' },
+  { key: 'uika', title: '每日木柜子', name: '三角初华 / Misumi Uika', band: 'Ave Mujica', role: 'Doloris / Guitar & Vocal', voice: '佐佐木李子', note: '今天是初华签，舞台感拉满，但别把真实心情全藏起来。', page: 'Misumi Uika' },
+  { key: 'mutsumi', title: '每日木柜子', name: '若叶睦 / Wakaba Mutsumi', band: 'Ave Mujica', role: 'Mortis / Guitar', voice: '渡濑结月', note: '今天是睦签，安静不是没想法，别急着替她下结论。', page: 'Wakaba Mutsumi' },
+  { key: 'umiri', title: '每日木柜子', name: '八幡海铃 / Yahata Umiri', band: 'Ave Mujica', role: 'Timoris / Bass', voice: '冈田梦以', note: '今天是海铃签，可靠但有距离感，做事别拖。', page: 'Yahata Umiri' },
+  { key: 'nyamu', title: '每日木柜子', name: '祐天寺若麦 / Yutenji Nyamu', band: 'Ave Mujica', role: 'Amoris / Drums', voice: '米泽茜', note: '今天是若麦签，镜头感很强，但别只顾节目效果。', page: 'Yuutenji Nyamu' },
+  { key: 'sakiko', title: '每日木柜子', name: '丰川祥子 / Togawa Sakiko', band: 'Ave Mujica', role: 'Oblivionis / Keyboard', voice: '高尾奏音', note: '今天是祥子签，计划感很强，但别把自己逼太紧。', page: 'Togawa Sakiko' },
+];
+
+csSkins.push(
+  { key: 'm4a4-asiimov', title: '今日CS皮肤', name: 'M4A4 | Asiimov', weapon: 'M4A4', rarity: 'Covert', subtitle: '白橙科幻 / 老牌大枪皮', scoreLabel: '出货指数', advice: '弹量优势用来转移和压制，别扫到自己都慌。', avoid: '别皮肤很科幻，打法很原始。', line: 'M4A4二西莫夫签，干净点。', fandomFile: 'M4A4_Asiimov.png', fandomPage: 'Asiimov' },
+  { key: 'm4a4-desolate-space', title: '今日CS皮肤', name: 'M4A4 | Desolate Space', weapon: 'M4A4', rarity: 'Classified', subtitle: '荒凉太空 / 冷色压迫', scoreLabel: '出货指数', advice: '今天别站桩，打完一波马上换位。', avoid: '别荒凉的是队伍经济。', line: '荒凉太空签，画面可以冷，人别冷场。', fandomFile: 'M4A4_Desolate_Space.png' },
+  { key: 'usp-orion', title: '今日CS皮肤', name: 'USP-S | Orion', weapon: 'USP-S', rarity: 'Classified', subtitle: '猎户 / 经典手枪皮', scoreLabel: '出货指数', advice: '手枪局第一枪别急，头线放稳。', avoid: '别猎户没猎到，自己先被点。', line: 'Orion签，老手枪味。', fandomFile: 'USP-S_Orion.png' },
+  { key: 'usp-printstream', title: '今日CS皮肤', name: 'USP-S | Printstream', weapon: 'USP-S', rarity: 'Classified', subtitle: '印花集 / 黑白珍珠', scoreLabel: '出货指数', advice: '点射要干净，别连续peek送第二枪。', avoid: '别皮肤极简，操作极乱。', line: 'USP印花集签，干净就完事。', fandomFile: 'USP-S_Printstream.png', fandomPage: 'Printstream' },
+  { key: 'glock-water-elemental', title: '今日CS皮肤', name: 'Glock-18 | Water Elemental', weapon: 'Glock-18', rarity: 'Classified', subtitle: '水灵 / 手枪局老朋友', scoreLabel: '出货指数', advice: '抱团近点集火，别远点单点硬耗。', avoid: '别水灵变水枪。', line: '水灵签，手枪局别散。', fandomFile: 'Glock-18_Water_Elemental.png' },
+  { key: 'glock-vogue', title: '今日CS皮肤', name: 'Glock-18 | Vogue', weapon: 'Glock-18', rarity: 'Classified', subtitle: '时尚 / 高饱和配色', scoreLabel: '出货指数', advice: '提速可以，但要有补枪，不要一个人开秀。', avoid: '别时尚走秀走到包点门口倒了。', line: 'Vogue签，节目效果先到。', fandomFile: 'Glock-18_Vogue.png' },
+  { key: 'deagle-printstream', title: '今日CS皮肤', name: 'Desert Eagle | Printstream', weapon: 'Desert Eagle', rarity: 'Covert', subtitle: '印花集沙鹰 / 一发头信仰', scoreLabel: '出货指数', advice: '等停稳再开枪，别让皮肤替你瞄准。', avoid: '别七发全空还在看珍珠光。', line: '沙鹰印花集签，一发有说法。', fandomFile: 'Desert_Eagle_Printstream.png', fandomPage: 'Printstream' },
+  { key: 'deagle-code-red', title: '今日CS皮肤', name: 'Desert Eagle | Code Red', weapon: 'Desert Eagle', rarity: 'Covert', subtitle: '红色代号 / 高压单点', scoreLabel: '出货指数', advice: '别急，沙鹰越急越没戏。', avoid: '别红色代号变红温代号。', line: 'Code Red签，先稳第一发。', fandomFile: 'Desert_Eagle_Code_Red.png' },
+  { key: 'galil-chatterbox', title: '今日CS皮肤', name: 'Galil AR | Chatterbox', weapon: 'Galil AR', rarity: 'Covert', subtitle: '喧闹骷髅 / 穷哥们也有排面', scoreLabel: '出货指数', advice: '便宜枪也要控好前十发，别嫌弃。', avoid: '别嘴比枪还碎。', line: '喋喋不休签，枪别碎。', fandomFile: 'Galil_AR_Chatterbox.png' },
+  { key: 'galil-eco', title: '今日CS皮肤', name: 'Galil AR | Eco', weapon: 'Galil AR', rarity: 'Classified', subtitle: '经济环保 / 性价比精神', scoreLabel: '出货指数', advice: '今天主打性价比，能换一个就不亏。', avoid: '别经济枪打成捐款枪。', line: 'Eco签，很符合钱包。', fandomFile: 'Galil_AR_Eco.png' },
+  { key: 'famas-mecha', title: '今日CS皮肤', name: 'FAMAS | Mecha Industries', weapon: 'FAMAS', rarity: 'Classified', subtitle: '机械工业 / 半甲局硬撑', scoreLabel: '出货指数', advice: '靠位置和交叉火力打，别正面硬碰AK。', avoid: '别枪机械，人没脑。', line: 'FAMAS机械签，会过日子。', fandomFile: 'FAMAS_Mecha_Industries.png' },
+  { key: 'famas-commemoration', title: '今日CS皮肤', name: 'FAMAS | Commemoration', weapon: 'FAMAS', rarity: 'Covert', subtitle: '纪念碑 / 金色压迫', scoreLabel: '出货指数', advice: '经济枪也要打出仪式感，第一波别掉。', avoid: '别纪念的是自己白给。', line: '纪念碑签，别让队友给你立碑。', fandomFile: 'FAMAS_Commemoration.png' },
+  { key: 'aug-chameleon', title: '今日CS皮肤', name: 'AUG | Chameleon', weapon: 'AUG', rarity: 'Covert', subtitle: '变色龙 / 开镜稳定', scoreLabel: '出货指数', advice: '长枪线拿完优势就换位，别一直开镜发呆。', avoid: '别变色龙变成固定靶。', line: 'AUG变色龙签，别站死。', fandomFile: 'AUG_Chameleon.png' },
+  { key: 'aug-bengal', title: '今日CS皮肤', name: 'AUG | Bengal Tiger', weapon: 'AUG', rarity: 'Classified', subtitle: '孟加拉虎 / 老皮肤气质', scoreLabel: '出货指数', advice: '开镜架点可以，但换位要快。', avoid: '别虎皮披上，打法像猫步。', line: '孟加拉虎签，有点老派。', fandomFile: 'AUG_Bengal_Tiger.png' },
+  { key: 'sg-integrale', title: '今日CS皮肤', name: 'SG 553 | Integrale', weapon: 'SG 553', rarity: 'Classified', subtitle: '整合 / 稀有感强', scoreLabel: '出货指数', advice: '远点拿信息和首杀，别开镜走太慢。', avoid: '别走位慢到像没加载完。', line: 'Integrale签，懂的都懂。', fandomFile: 'SG_553_Integrale.png' },
+  { key: 'sg-cyrex', title: '今日CS皮肤', name: 'SG 553 | Cyrex', weapon: 'SG 553', rarity: 'Classified', subtitle: '红黑科技 / 远点压制', scoreLabel: '出货指数', advice: '开镜打一枪就走，别在同一条线等复仇。', avoid: '别科技感有了，撤退键没了。', line: 'Cyrex签，红黑经典。', fandomFile: 'SG_553_Cyrex.png' },
+  { key: 'p250-see-ya', title: '今日CS皮肤', name: 'P250 | See Ya Later', weapon: 'P250', rarity: 'Covert', subtitle: '鳄鱼 / 低成本狠活', scoreLabel: '出货指数', advice: '贴近点第一枪，杀一个就是赚。', avoid: '别还没later，自己先see ya。', line: 'P250鳄鱼签，小枪也能咬人。', fandomFile: 'P250_See_Ya_Later.png' },
+  { key: 'p250-asiimov', title: '今日CS皮肤', name: 'P250 | Asiimov', weapon: 'P250', rarity: 'Classified', subtitle: '小二西莫夫 / 经济局科幻', scoreLabel: '出货指数', advice: '别贪远点，贴近打破甲价值。', avoid: '别皮肤比eco计划更完整。', line: 'P250二西莫夫签，穷但帅。', fandomFile: 'P250_Asiimov.png', fandomPage: 'Asiimov' },
+  { key: 'five-seven-hyper-beast', title: '今日CS皮肤', name: 'Five-SeveN | Hyper Beast', weapon: 'Five-SeveN', rarity: 'Covert', subtitle: '暴怒野兽 / CT近点爆发', scoreLabel: '出货指数', advice: '等对面进距离再开火，别远点对步枪。', avoid: '别野兽没咬到，人先倒。', line: '57暴怒野兽签，近点有说法。', fandomFile: 'Five-SeveN_Hyper_Beast.png', fandomPage: 'Hyper Beast' },
+  { key: 'five-seven-monkey-business', title: '今日CS皮肤', name: 'Five-SeveN | Monkey Business', weapon: 'Five-SeveN', rarity: 'Classified', subtitle: '猴戏 / 近点整活', scoreLabel: '出货指数', advice: '近点打交叉，别真的开始猴。', avoid: '别整活整到队友沉默。', line: '猴戏签，节目效果很足。', fandomFile: 'Five-SeveN_Monkey_Business.png' },
+  { key: 'tec9-fuel-injector', title: '今日CS皮肤', name: 'Tec-9 | Fuel Injector', weapon: 'Tec-9', rarity: 'Classified', subtitle: '燃料喷射 / 提速硬冲', scoreLabel: '出货指数', advice: '吃闪提速，第一身位要换到空间。', avoid: '别喷射到半路没人补。', line: 'Tec-9燃料签，冲但别孤独。', fandomFile: 'Tec-9_Fuel_Injector.png' },
+  { key: 'tec9-decimator', title: '今日CS皮肤', name: 'Tec-9 | Decimator', weapon: 'Tec-9', rarity: 'Classified', subtitle: '屠杀者 / 紫粉科技', scoreLabel: '出货指数', advice: '近点硬一点，死也要给信息。', avoid: '别紫粉很亮，信息很暗。', line: 'Decimator签，提速有画面。', fandomFile: 'Tec-9_Decimator.png' },
+  { key: 'p90-death-by-kitty', title: '今日CS皮肤', name: 'P90 | Death by Kitty', weapon: 'P90', rarity: 'Covert', subtitle: '喵喵杀机 / 老牌整活', scoreLabel: '出货指数', advice: '近点压迫可以，别中远距离硬扫。', avoid: '别猫还没出手，自己先倒。', line: 'P90猫猫签，欢乐但别乱。', fandomFile: 'P90_Death_by_Kitty.png' },
+  { key: 'p90-asiimov', title: '今日CS皮肤', name: 'P90 | Asiimov', weapon: 'P90', rarity: 'Covert', subtitle: 'P90二西莫夫 / 跑打科幻', scoreLabel: '出货指数', advice: '打近点压迫，杀一个就换位。', avoid: '别科幻冲锋变科幻白给。', line: 'P90二西莫夫签，节目和火力都有。', fandomFile: 'P90_Asiimov.png', fandomPage: 'Asiimov' },
+  { key: 'xm-tranquility', title: '今日CS皮肤', name: 'XM1014 | Tranquility', weapon: 'XM1014', rarity: 'Classified', subtitle: '宁静 / 近点不宁静', scoreLabel: '出货指数', advice: '守窄口和近点，打完马上换位。', avoid: '别追出去和步枪讲道理。', line: '连喷宁静签，名字越静越脏。', fandomFile: 'XM1014_Tranquility.png' },
+  { key: 'xm-seasons', title: '今日CS皮肤', name: 'XM1014 | Seasons', weapon: 'XM1014', rarity: 'Restricted', subtitle: '四季 / 霰弹小清新', scoreLabel: '出货指数', advice: '今天用近点和道具偷价值，别贪远。', avoid: '别四季轮换，经济也轮没。', line: 'XM四季签，近点等人来。', fandomFile: 'XM1014_Seasons.png' },
+  { key: 'ssg-dragonfire', title: '今日CS皮肤', name: 'SSG 08 | Dragonfire', weapon: 'SSG 08', rarity: 'Covert', subtitle: '龙火 / 轻狙威胁', scoreLabel: '出货指数', advice: '打一枪就走，靠机动性赚信息。', avoid: '别轻狙重站桩。', line: '鸟狙龙火签，轻但有火。', fandomFile: 'SSG_08_Dragonfire.png' },
+  { key: 'ssg-bloodshot', title: '今日CS皮肤', name: 'SSG 08 | Bloodshot', weapon: 'SSG 08', rarity: 'Classified', subtitle: '血腥快照 / 经济局威慑', scoreLabel: '出货指数', advice: '第一枪压住，空了就撤，别留第二枪给对面。', avoid: '别截图没截到，自己先上镜。', line: 'Bloodshot签，打一枪就跑。', fandomFile: 'SSG_08_Bloodshot.png' },
+);
+
+csTeams.push(
+  { key: 'nip', title: '今日CS队伍', name: 'Ninjas in Pyjamas', subtitle: '老牌豪门 / 体系重塑', scoreLabel: '签位强度', advice: '先把默认和补枪做完整，别只靠队名加成。', avoid: '别老牌味只剩回忆。', line: 'NiP签有历史包袱，今天得靠回合说话。', liquipediaPage: 'Ninjas in Pyjamas', playerImageFallback: 'f0rest' },
+  { key: 'fnatic', title: '今日CS队伍', name: 'fnatic', subtitle: '经典豪门 / 中期调整', scoreLabel: '签位强度', advice: '少乱转，多确认信息，别把老经验打成老问题。', avoid: '别优势局先怀旧。', line: 'fnatic签老味很足，细节也得跟上。', liquipediaPage: 'Fnatic', playerImageFallback: 'olofmeister' },
+  { key: 'cloud9', title: '今日CS队伍', name: 'Cloud9', subtitle: '北美名门 / 国际阵容语境', scoreLabel: '签位强度', advice: '靠个人能力开局面，但别让回合结构散掉。', avoid: '别打着打着像临时组队。', line: 'C9签有流量，流量不能替你补枪。', liquipediaPage: 'Cloud9', playerImageFallback: 'sh1ro' },
+  { key: 'ence', title: '今日CS队伍', name: 'ENCE', subtitle: '欧洲体系 / 默认和纪律', scoreLabel: '签位强度', advice: '今天慢控要有目的，拿到信息再提速。', avoid: '别默认默认到时间没了。', line: 'ENCE签就是把小细节磨出来。', liquipediaPage: 'ENCE', playerImageFallback: 'gla1ve' },
+  { key: 'gamerlegion', title: '今日CS队伍', name: 'GamerLegion', subtitle: '黑马气质 / 执行和韧性', scoreLabel: '签位强度', advice: '别怕强队，先把自己回合打完整。', avoid: '别领先后突然不会收。', line: 'GL签经常有惊喜，但惊喜要靠纪律。', liquipediaPage: 'GamerLegion', playerImageFallback: 'siuhy' },
+  { key: 'saw', title: '今日CS队伍', name: 'SAW', subtitle: '葡萄牙体系 / 团队执行', scoreLabel: '签位强度', advice: '道具和同步要打满，靠团队交换磨回合。', avoid: '别单点硬拉把体系拆了。', line: 'SAW签不花，但很讲耐心。', liquipediaPage: 'SAW' },
+  { key: 'flyquest', title: '今日CS队伍', name: 'FlyQuest', subtitle: '大洋洲代表 / 冲击节奏', scoreLabel: '签位强度', advice: '正面可以敢打，但补枪距离别断。', avoid: '别打快变成送快。', line: 'FlyQuest签有冲劲，先别自己断电。', liquipediaPage: 'FlyQuest' },
+  { key: 'mibr', title: '今日CS队伍', name: 'MIBR', subtitle: '巴西传统 / 情绪和枪法', scoreLabel: '签位强度', advice: '气势要有，细节也要有，别只靠吼。', avoid: '别第一波没换到就红温。', line: 'MIBR签一出，巴西味到位了。', liquipediaPage: 'MIBR', playerImageFallback: 'coldzera' },
+  { key: 'm80', title: '今日CS队伍', name: 'M80', subtitle: '北美新锐 / 正面交换', scoreLabel: '签位强度', advice: '打出年轻队的速度，但别把站位拉散。', avoid: '别年轻气盛变成年轻白给。', line: 'M80签有劲，劲要往回合目标上使。', liquipediaPage: 'M80' },
+  { key: 'betboom', title: '今日CS队伍', name: 'BetBoom Team', subtitle: '独联体枪男 / 节奏爆发', scoreLabel: '签位强度', advice: '用枪法拿首杀后马上收口，别贪第二波。', avoid: '别优势枪位打成赌博。', line: 'BetBoom签很敢打，敢打也要敢收。', liquipediaPage: 'BetBoom Team', playerImageFallback: 'Jame' },
+  { key: 'b8', title: '今日CS队伍', name: 'B8', subtitle: '东欧韧性 / 回合阅读', scoreLabel: '签位强度', advice: '中期别断信息，人数劣势也要找交换窗口。', avoid: '别小劣势直接散架。', line: 'B8签主打韧性，急了就没味。', liquipediaPage: 'B8' },
+  { key: 'rare-atom', title: '今日CS队伍', name: 'Rare Atom', subtitle: '中国CS语境 / 枪感和执行', scoreLabel: '签位强度', advice: '先把默认控图做细，机会来了再提速。', avoid: '别对枪敢了，补枪忘了。', line: 'RA签抽到，今天给点CNCS期待。', liquipediaPage: 'Rare Atom', playerImageFallback: 'JamYoung' },
+);
+
+csMaps.push(
+  { key: 'agency', title: '今日CS地图', name: 'Agency', subtitle: '人质图 / 多层结构和近点清理', scoreLabel: '手感指数', advice: '先用道具切空间，楼梯和近点别硬闯。', avoid: '别把人质图打成无道具冲锋。', line: 'Agency签很考沟通，沉默就容易迷路。', fandomPage: 'Agency', fandomFile: 'Cs_agency.png' },
+  { key: 'assault', title: '今日CS地图', name: 'Assault', subtitle: '仓库人质 / 长枪线和突破口', scoreLabel: '手感指数', advice: '进仓库前先清关键架点，别一个门排队进。', avoid: '别冲进去才想起来没人补闪。', line: 'Assault签很老派，白给也很复古。', fandomPage: 'Assault', fandomFile: 'Cs_assault.png' },
+  { key: 'militia', title: '今日CS地图', name: 'Militia', subtitle: '野外和房区 / 信息搜集', scoreLabel: '手感指数', advice: '慢慢拿外场信息，进房区前先处理近点。', avoid: '别逛图逛到时间没了。', line: 'Militia签像郊游，问题是对面有枪。', fandomPage: 'Militia', fandomFile: 'Cs_militia.png' },
+  { key: 'aztec', title: '今日CS地图', name: 'Aztec', subtitle: '经典雨林 / 长廊和桥位', scoreLabel: '手感指数', advice: '长枪线别硬赌，先用烟闪切角度。', avoid: '别把经典图打成经典白给。', line: 'Aztec签老古董，但枪线一点不客气。', fandomPage: 'Aztec', fandomFile: 'De_aztec.png' },
+);
+
+csWeapons.push(
+  { key: 'p2000', title: '今日CS武器', name: 'P2000', subtitle: 'CT手枪 / 稳定点射', scoreLabel: '爆头指数', advice: '头线放稳，别连续peek，打完马上换位。', avoid: '别把备用手枪打成备用人生。', line: 'P2000签低调，低调也能点头。', fandomPage: 'P2000', fandomFile: 'CS2_P2000_Inventory.png' },
+  { key: 'dual-berettas', title: '今日CS武器', name: 'Dual Berettas', subtitle: '双持手枪 / 近点火力', scoreLabel: '爆头指数', advice: '贴近打人数和弹量优势，别远点乱泼。', avoid: '别两把枪打出半把效果。', line: '双枪签节目感很强，但准星也得有。', fandomPage: 'Dual Berettas', fandomFile: 'CS2_Dual_Berettas_Inventory.png' },
+  { key: 'cz75', title: '今日CS武器', name: 'CZ75-Auto', subtitle: '自动手枪 / 近点爆发', scoreLabel: '爆头指数', advice: '等对面进距离再泼，杀一个就撤，子弹很贵。', avoid: '别第一梭空了还想续命。', line: 'CZ签就是一波流，犹豫就没了。', fandomPage: 'CZ75-Auto', fandomFile: 'CS2_CZ75-Auto_Inventory.png' },
+  { key: 'r8', title: '今日CS武器', name: 'R8 Revolver', subtitle: '左轮 / 慢热高伤害', scoreLabel: '爆头指数', advice: '预瞄提前，别临脸才想起来蓄力。', avoid: '别枪声很大，作用很小。', line: '左轮签很有性格，性格别大过回合。', fandomPage: 'R8 Revolver', fandomFile: 'CS2_R8_Revolver_Inventory.png' },
+  { key: 'ump45', title: '今日CS武器', name: 'UMP-45', subtitle: '稳健SMG / 近中距离', scoreLabel: '爆头指数', advice: '打近中距离和补枪，杀一个就赚经济。', avoid: '别拿UMP远点对AK讲道理。', line: 'UMP签朴实，朴实也能赚钱。', fandomPage: 'UMP-45', fandomFile: 'CS2_UMP-45_Inventory.png' },
+  { key: 'pp-bizon', title: '今日CS武器', name: 'PP-Bizon', subtitle: '大弹鼓 / 低甲压制', scoreLabel: '爆头指数', advice: '靠弹量压近点，别把扫射当战术全部。', avoid: '别一梭子热闹完没有击杀。', line: '野牛签很欢乐，但欢乐要换人头。', fandomPage: 'PP-Bizon', fandomFile: 'CS2_PP-Bizon_Inventory.png' },
+  { key: 'mp7', title: '今日CS武器', name: 'MP7', subtitle: '均衡SMG / 经济滚雪球', scoreLabel: '爆头指数', advice: '贴近打干净交换，别贪远点。', avoid: '别花钱买了枪，打法还像无甲。', line: 'MP7签稳，稳里也得有杀意。', fandomPage: 'MP7', fandomFile: 'CS2_MP7_Inventory.png' },
+  { key: 'mp5sd', title: '今日CS武器', name: 'MP5-SD', subtitle: '消音SMG / 偷人和转点', scoreLabel: '爆头指数', advice: '用消音和近点位偷节奏，打完换位置。', avoid: '别偷人偷成自己失踪。', line: 'MP5签很轻，轻到队友可能忘了你在。', fandomPage: 'MP5-SD', fandomFile: 'CS2_MP5-SD_Inventory.png' },
+  { key: 'nova', title: '今日CS武器', name: 'Nova', subtitle: '经济喷子 / 近点一枪', scoreLabel: '爆头指数', advice: '卡窄口，等近点，打完就跑。', avoid: '别拿喷子追远点长枪。', line: 'Nova签很现实，距离对了才有道理。', fandomPage: 'Nova', fandomFile: 'CS2_Nova_Inventory.png' },
+  { key: 'mag7', title: '今日CS武器', name: 'MAG-7', subtitle: 'CT近点喷子 / 跳打和压迫', scoreLabel: '爆头指数', advice: '守近点和拐角，利用移动优势偷第一枪。', avoid: '别跳出去发现距离不对。', line: 'MAG-7签很脏，脏得有位置才行。', fandomPage: 'MAG-7', fandomFile: 'CS2_MAG-7_Inventory.png' },
+  { key: 'sawedoff', title: '今日CS武器', name: 'Sawed-Off', subtitle: 'T方短喷 / 近点伏击', scoreLabel: '爆头指数', advice: '贴脸才有威胁，别提前露声音和位置。', avoid: '别手短还站远点。', line: '截短喷签，距离就是生命线。', fandomPage: 'Sawed-Off', fandomFile: 'CS2_Sawed-Off_Inventory.png' },
+  { key: 'm249', title: '今日CS武器', name: 'M249', subtitle: '重机枪 / 价格和节目效果', scoreLabel: '爆头指数', advice: '真起了就架住关键口，别移动扫射当烟花。', avoid: '别钱花最多，作用最少。', line: 'M249签一出，队伍经济开始冒汗。', fandomPage: 'M249', fandomFile: 'CS2_M249_Inventory.png' },
+  { key: 'negev', title: '今日CS武器', name: 'Negev', subtitle: '压制机枪 / 火力封锁', scoreLabel: '爆头指数', advice: '提前架住窄口压制，别临场才开始预热弹道。', avoid: '别扫得很热闹，包点没人看。', line: 'Negev签主打弹幕，别真把自己当弹幕。', fandomPage: 'Negev', fandomFile: 'CS2_Negev_Inventory.png' },
+  { key: 'g3sg1', title: '今日CS武器', name: 'G3SG1', subtitle: 'T方连狙 / 高压长枪线', scoreLabel: '爆头指数', advice: '架住关键长线，拿到优势就别贪。', avoid: '别连狙起出来还被沙鹰一发收。', line: 'G3SG1签很招恨，招恨前先打中。', fandomPage: 'G3SG1', fandomFile: 'CS2_G3SG1_Inventory.png' },
+  { key: 'scar20', title: '今日CS武器', name: 'SCAR-20', subtitle: 'CT连狙 / 封锁和压迫', scoreLabel: '爆头指数', advice: '控长线和回防入口，别站死等对面道具清你。', avoid: '别连狙没打出压迫，只打出骂声。', line: 'SCAR签，火力压迫可以，别压迫队友钱包。', fandomPage: 'SCAR-20', fandomFile: 'CS2_SCAR-20_Inventory.png' },
+  { key: 'zeus-x27', title: '今日CS武器', name: 'Zeus x27', subtitle: '电击枪 / 贴脸胆量测试', scoreLabel: '爆头指数', advice: '藏近点，听脚步，距离到了再出手。', avoid: '别没电到人，自己先成素材。', line: '电击枪签很短，也很刺激。', fandomPage: 'Zeus x27', fandomFile: 'CS2_Zeus_x27_Inventory.png' },
+);
+
+csSkins.push(
+  { key: 'p2000-fire-elemental', title: '今日CS皮肤', name: 'P2000 | Fire Elemental', weapon: 'P2000', rarity: 'Covert', subtitle: '火灵 / CT手枪压迫感', scoreLabel: '出货指数', advice: '手枪局先稳第一枪，别被皮肤烧上头。', avoid: '别火灵变火葬。', line: 'P2000火灵签，老手枪也有排面。' },
+  { key: 'dual-berettas-melondrama', title: '今日CS皮肤', name: 'Dual Berettas | Melondrama', weapon: 'Dual Berettas', rarity: 'Classified', subtitle: '瓜戏 / 双持整活', scoreLabel: '出货指数', advice: '近点用弹量压人，别远点乱点。', avoid: '别戏很多，击杀很少。', line: 'Melondrama签，节目效果先满。' },
+  { key: 'cz75-victoria', title: '今日CS皮肤', name: 'CZ75-Auto | Victoria', weapon: 'CZ75-Auto', rarity: 'Covert', subtitle: '维多利亚 / 自动手枪老贵气', scoreLabel: '出货指数', advice: '第一梭要打出价值，打完赶紧撤。', avoid: '别贵气没了，子弹也没了。', line: 'CZ维多利亚签，开局就得讲效率。' },
+  { key: 'r8-fade', title: '今日CS皮肤', name: 'R8 Revolver | Fade', weapon: 'R8 Revolver', rarity: 'Covert', subtitle: '渐变左轮 / 慢枪也有排面', scoreLabel: '出货指数', advice: '预瞄提前，别临脸才慢悠悠蓄力。', avoid: '别渐变很丝滑，开枪很拖沓。', line: 'R8渐变签，帅但要命中。' },
+  { key: 'ump-primal-saber', title: '今日CS皮肤', name: 'UMP-45 | Primal Saber', weapon: 'UMP-45', rarity: 'Classified', subtitle: '原始剑齿虎 / SMG硬派皮', scoreLabel: '出货指数', advice: '近中距离打干净交换，别贪远点。', avoid: '别剑齿虎变家猫。', line: 'UMP剑齿虎签，有点凶。' },
+  { key: 'bizon-judgement', title: '今日CS皮肤', name: 'PP-Bizon | Judgement of Anubis', weapon: 'PP-Bizon', rarity: 'Covert', subtitle: '阿努比斯审判 / 大弹鼓仪式感', scoreLabel: '出货指数', advice: '靠弹量压近点，但别忘了停枪换位。', avoid: '别审判的是自己经济。', line: '野牛审判签，名字比枪还狠。' },
+  { key: 'mp7-bloodsport', title: '今日CS皮肤', name: 'MP7 | Bloodsport', weapon: 'MP7', rarity: 'Covert', subtitle: '血腥运动 / SMG红白科技', scoreLabel: '出货指数', advice: '打经济局要收干净，别送钱。', avoid: '别运动起来只剩跑。', line: 'MP7血腥运动签，干净利落。' },
+  { key: 'mp5-phosphor', title: '今日CS皮肤', name: 'MP5-SD | Phosphor', weapon: 'MP5-SD', rarity: 'Classified', subtitle: '磷光 / 消音流光', scoreLabel: '出货指数', advice: '用消音偷节奏，别一直站同一个点。', avoid: '别光很亮，信息很暗。', line: 'MP5磷光签，低调里带点骚。' },
+  { key: 'nova-hyper-beast', title: '今日CS皮肤', name: 'Nova | Hyper Beast', weapon: 'Nova', rarity: 'Classified', subtitle: '暴怒野兽 / 喷子也有名皮', scoreLabel: '出货指数', advice: '卡近点一枪说话，别追远点。', avoid: '别野兽还没咬，人先送了。', line: 'Nova暴怒野兽签，近点别手软。' },
+  { key: 'mag7-justice', title: '今日CS皮肤', name: 'MAG-7 | Justice', weapon: 'MAG-7', rarity: 'Classified', subtitle: '正义 / CT近点判官', scoreLabel: '出货指数', advice: '等距离到了再开火，杀完就撤。', avoid: '别正义没来，经济先没。', line: 'MAG-7正义签，判得准才算数。' },
+  { key: 'sawedoff-kraken', title: '今日CS皮肤', name: 'Sawed-Off | The Kraken', weapon: 'Sawed-Off', rarity: 'Covert', subtitle: '海怪 / 短喷经典', scoreLabel: '出货指数', advice: '贴脸伏击，打一枪就换位置。', avoid: '别海怪上岸就搁浅。', line: '截短喷海怪签，近点有故事。' },
+  { key: 'm249-nebula-crusader', title: '今日CS皮肤', name: 'M249 | Nebula Crusader', weapon: 'M249', rarity: 'Restricted', subtitle: '星云十字军 / 重机枪科幻感', scoreLabel: '出货指数', advice: '架住窄口打压制，别移动泼水。', avoid: '别花最多的钱打最少的作用。', line: 'M249星云签，钱包先敬礼。' },
+  { key: 'negev-mjolnir', title: '今日CS皮肤', name: 'Negev | Mjolnir', weapon: 'Negev', rarity: 'Covert', subtitle: '雷神之锤 / 稀有重火力', scoreLabel: '出货指数', advice: '提前压枪线，别临时抱枪乱扫。', avoid: '别锤的是队伍经济。', line: 'Negev雷锤签，贵得很有存在感。' },
+  { key: 'g3sg1-executioner', title: '今日CS皮肤', name: 'G3SG1 | The Executioner', weapon: 'G3SG1', rarity: 'Classified', subtitle: '行刑者 / T方连狙压迫', scoreLabel: '出货指数', advice: '架住长线，拿到击杀别贪同角度。', avoid: '别行刑者先被处刑。', line: 'G3SG1行刑者签，很招恨也很有用。' },
+  { key: 'scar20-bloodsport', title: '今日CS皮肤', name: 'SCAR-20 | Bloodsport', weapon: 'SCAR-20', rarity: 'Classified', subtitle: '血腥运动 / CT连狙红白科技', scoreLabel: '出货指数', advice: '封锁入口，别站死吃道具。', avoid: '别连狙起出来只贡献音效。', line: 'SCAR血腥运动签，压迫感拉满。' },
+  { key: 'zeus-olympus', title: '今日CS皮肤', name: 'Zeus x27 | Olympus', weapon: 'Zeus x27', rarity: 'Classified', subtitle: '奥林匹斯 / 贴脸闪电', scoreLabel: '出货指数', advice: '等距离，听脚步，一下就要电中。', avoid: '别闪电没劈到，自己先倒。', line: 'Zeus奥林匹斯签，短但刺激。' },
+);
 
 const DEFAULT_TRAINING_STORE_PATH = path.resolve(__dirname, '..', '..', 'data', 'cs-training.json');
 const MAX_TRAINING_LOGS = 2000;
@@ -785,6 +1061,22 @@ function dailyCardFor(kind: string, userId: number, scopeId: number, cards: Dail
   return cards[dailySeedForKind(kind, userId, scopeId) % cards.length];
 }
 
+function dailySkinFor(userId: number, scopeId: number): SkinCard {
+  return csSkins[dailySeedForKind('csskin', userId, scopeId) % csSkins.length];
+}
+
+function dailyKnifeFor(userId: number, scopeId: number): KnifeCard {
+  return csKnives[dailySeedForKind('csknife', userId, scopeId) % csKnives.length];
+}
+
+function dailyKnifeSkinFor(userId: number, scopeId: number): KnifeSkin {
+  return knifeSkins[dailySeedForKind('csknife_skin', userId, scopeId) % knifeSkins.length];
+}
+
+function dailyCharacterFor(userId: number, scopeId: number): DailyCharacter {
+  return dailyCharacters[dailySeedForKind('mokoko', userId, scopeId) % dailyCharacters.length];
+}
+
 function dailyScoreForKind(kind: string, userId: number, scopeId: number): number {
   return (dailySeedForKind(`${kind}_score`, userId, scopeId) % 100) + 1;
 }
@@ -964,6 +1256,7 @@ function sceneBlueprintFor(query: string, sourceLine: string): SceneBlueprint {
 function dailyCardImagePlan(card: DailyCard): string {
   const parts: string[] = [];
   if (card.liquipediaPage) parts.push('Liquipedia队伍图');
+  if (card.fandomPage) parts.push('Counter-Strike Wiki页面主图');
   if (card.fandomFile) parts.push('Counter-Strike Wiki/Fandom');
   if (card.playerImageFallback) parts.push(`代表选手${card.playerImageFallback}`);
   if (card.image) parts.push('静态真实图URL');
@@ -1030,9 +1323,12 @@ function normalizeCsImageKind(input: string): CsImageProbeKind {
   const text = normalizeDrawText(input || '');
   if (/^(all|全部|全量|所有)$/.test(text)) return 'all';
   if (/^(player|选手|csplayer|今日选手)$/.test(text)) return 'player';
+  if (/^(knife|刀|发刀|csknife|今日发刀)$/.test(text)) return 'knife';
+  if (/^(mokoko|木柜子|mygo|avemujica|角色|每日木柜子)$/.test(text)) return 'mokoko';
   if (/^(team|队伍|战队|csteam|今日队伍|今日战队)$/.test(text)) return 'team';
   if (/^(map|地图|csmap|今日地图)$/.test(text)) return 'map';
   if (/^(weapon|gun|枪|武器|枪械|csweapon|今日武器)$/.test(text)) return 'weapon';
+  if (/^(skin|skins|皮肤|csskin|今日皮肤)$/.test(text)) return 'skin';
   if (/^(role|position|定位|位置|csrole|今日定位)$/.test(text)) return 'role';
   if (/^(loadout|pack|套餐|套装|今日cs|csloadout)$/.test(text)) return 'loadout';
   if (/^(utility|nade|道具|投掷物|csutility)$/.test(text)) return 'utility';
@@ -1045,6 +1341,7 @@ function cardsForImageKind(kind: CsImageProbeKind): DailyCard[] {
   if (kind === 'team') return csTeams;
   if (kind === 'map') return csMaps;
   if (kind === 'weapon') return csWeapons;
+  if (kind === 'skin') return csSkins;
   if (kind === 'role') return csRoles;
   if (kind === 'loadout') return csTeams;
   if (kind === 'utility') return csUtilities;
@@ -1063,11 +1360,32 @@ function isCsPlayerDrawRequest(command: string | null, rawText: string): boolean
   return hasDrawWord && hasPlayerWord;
 }
 
+function isDailyKnifeRequest(command: string | null, rawText: string): boolean {
+  if (['csknife', 'knife', 'csdao', '今日发刀', '每日发刀', '发刀', '抽刀', 'd'].includes(command || '')) return true;
+  const raw = rawText.trim().toLowerCase();
+  if (/^\.d(?:\s|$)/i.test(raw)) return true;
+  const text = normalizeDrawText(rawText);
+  if (!text) return false;
+  if (['今日发刀', '每日发刀', '发刀', '抽刀', '来把刀', '给我发刀', '今天发刀', '今天抽刀'].includes(text)) return true;
+  const hasDraw = /(今日|每日|今天|抽|来个|来把|给我|发)/.test(text);
+  return hasDraw && /(刀|刀签|爪子|蝴蝶|蝴蝶刀|廓尔喀|发刀)/.test(text);
+}
+
+function isDailyMokokoRequest(command: string | null, rawText: string): boolean {
+  if (['mokoko', 'mygo', 'avemujica', 'ave', '木柜子', '每日木柜子', '今日木柜子', '抽木柜子'].includes(command || '')) return true;
+  const text = normalizeDrawText(rawText);
+  if (!text) return false;
+  if (['每日木柜子', '今日木柜子', '木柜子', '抽木柜子', '今天木柜子', '今日mygo', '今日avemujica'].includes(text)) return true;
+  const hasDaily = /(今日|每日|今天|抽|来个|给我)/.test(text);
+  return hasDaily && /(木柜子|mygo|avemujica|ave|mujica|迷子|母鸡卡)/.test(text);
+}
+
 function isDailyCardRequest(command: string | null, rawText: string, kind: DailyCardKind): boolean {
   const commandMap: Record<DailyCardKind, string[]> = {
     team: ['csteam', 'csteamday', 'todayteam', '今日队伍', '每日队伍', '抽队伍', '今日战队', '每日战队'],
     map: ['csmap', 'mapday', 'todaymap', '今日地图', '每日地图', '抽地图'],
     weapon: ['csweapon', 'weaponday', 'todayweapon', '今日武器', '每日武器', '抽武器', '今日枪械'],
+    skin: ['csskin', 'cskin', 'skinsday', 'todayskin', '今日皮肤', '每日皮肤', '抽皮肤'],
     role: ['csrole', 'roleday', 'todayrole', '今日定位', '每日定位', '抽定位', '今日位置'],
     loadout: ['csloadout', 'cspack', 'csdaily', '今日cs', '每日cs', '今日cs2', '每日cs2', '今日套餐', '每日套餐', '今日套装', '每日套装'],
     utility: ['csutility', 'csnade', 'todaynade', '今日道具', '每日道具', '抽道具', '今日投掷物'],
@@ -1083,6 +1401,7 @@ function isDailyCardRequest(command: string | null, rawText: string, kind: Daily
   if (kind === 'team') return /(cs队伍|cs2队伍|队伍签|战队|主队|今日队伍|每日队伍)/.test(text);
   if (kind === 'map') return /(cs地图|cs2地图|地图签|今日地图|每日地图|哪张图)/.test(text);
   if (kind === 'weapon') return /(cs武器|cs2武器|枪械|武器签|今日武器|每日武器|今天用什么枪)/.test(text);
+  if (kind === 'skin') return /(cs皮肤|cs2皮肤|枪皮肤|武器皮肤|皮肤签|今日皮肤|每日皮肤|今天什么皮肤)/.test(text);
   if (kind === 'role') return /(cs定位|cs2定位|位置|定位签|今日定位|每日定位|今天打什么位)/.test(text);
   if (kind === 'utility') return /(cs道具|cs2道具|投掷物|道具签|今日道具|每日道具|今天丢什么)/.test(text);
   if (kind === 'tactic') return /(cs战术|cs2战术|战术签|今日战术|每日战术|今天怎么打|今天打什么战术)/.test(text);
@@ -1177,8 +1496,30 @@ function shortUrl(url: string): string {
   return url.length > 96 ? `${url.slice(0, 92)}...` : url;
 }
 
+function isSkinCard(card?: DailyCard): card is SkinCard {
+  return Boolean(card && typeof (card as SkinCard).weapon === 'string' && typeof (card as SkinCard).rarity === 'string');
+}
+
 async function buildImageCandidates(url?: string, fallbackPlayerNick?: string, fallbackCard?: DailyCard): Promise<ImageCandidate[]> {
   const candidateUrls: ImageCandidate[] = [];
+
+  if (isSkinCard(fallbackCard)) {
+    try {
+      const skinUrl = await Promise.race([
+        csgoSkinImageResolver(fallbackCard.weapon, fallbackCard.name),
+        new Promise<null>((r) => setTimeout(() => r(null), 6000)),
+      ]);
+      if (skinUrl) {
+        candidateUrls.push({
+          url: skinUrl,
+          label: `${fallbackCard.name}/csgo-api-skin`,
+          source: 'csgo-api-skin',
+        });
+      }
+    } catch (err) {
+      console.warn(`[fun] ${fallbackCard.name} CSGO-API皮肤图解析失败:`, err instanceof Error ? err.message : err);
+    }
+  }
 
   if (fallbackCard?.liquipediaPage) {
     try {
@@ -1201,7 +1542,7 @@ async function buildImageCandidates(url?: string, fallbackPlayerNick?: string, f
   if (fallbackCard?.fandomFile) {
     try {
       const fandomUrl = await Promise.race([
-        fandomImageResolver(fallbackCard.fandomFile),
+        fandomImageResolver(fallbackCard.fandomFile, 'counterstrike'),
         new Promise<null>((r) => setTimeout(() => r(null), 6000)),
       ]);
       if (fandomUrl) {
@@ -1213,6 +1554,24 @@ async function buildImageCandidates(url?: string, fallbackPlayerNick?: string, f
       }
     } catch (err) {
       console.warn(`[fun] ${fallbackCard.name} Fandom图片解析失败:`, err instanceof Error ? err.message : err);
+    }
+  }
+
+  if (fallbackCard?.fandomPage) {
+    try {
+      const fandomUrl = await Promise.race([
+        fandomPageImageResolver(fallbackCard.fandomPage, 'counterstrike'),
+        new Promise<null>((r) => setTimeout(() => r(null), 6000)),
+      ]);
+      if (fandomUrl) {
+        candidateUrls.push({
+          url: fandomUrl,
+          label: `${fallbackCard.name}/fandom-page`,
+          source: 'fandom-page',
+        });
+      }
+    } catch (err) {
+      console.warn(`[fun] ${fallbackCard.name} Fandom页面图解析失败:`, err instanceof Error ? err.message : err);
     }
   }
 
@@ -1313,8 +1672,39 @@ async function probeDailyCard(kind: CsImageProbeKind, userId: number, scopeId: n
     const candidates = await buildImageCandidates(player.image, player.nick);
     return probeImageCandidates(`今日选手 ${player.nick}`, candidates);
   }
+  if (kind === 'knife') {
+    const knife = dailyKnifeFor(userId, scopeId);
+    const skin = dailyKnifeSkinFor(userId, scopeId);
+    const score = dailyScoreForKind('csknife', userId, scopeId);
+    const card: DailyCard = {
+      key: `probe-${knife.key}-${skin.key}`,
+      title: '今日发刀',
+      name: `${knife.name} | ${skin.name}`,
+      subtitle: knife.subtitle,
+      scoreLabel: '刀运指数',
+      advice: `${knife.advice} ${skin.advice}`,
+      avoid: `${knife.avoid} ${skin.avoid}`,
+      line: `${knife.line} ${skin.line}`,
+    };
+    return probeImageCandidates(`今日发刀 ${knife.name} | ${skin.name}`, await buildKnifeImageCandidates(knife, skin), card, score);
+  }
+  if (kind === 'mokoko') {
+    const character = dailyCharacterFor(userId, scopeId);
+    const score = dailyScoreForKind('mokoko', userId, scopeId);
+    const card: DailyCard = {
+      key: `probe-${character.key}`,
+      title: character.title,
+      name: character.name,
+      subtitle: `${character.band} / ${character.role}`,
+      scoreLabel: '木柜子指数',
+      advice: character.note,
+      avoid: '这是角色抽签，不是CS事实。',
+      line: character.voice,
+    };
+    return probeImageCandidates(`每日木柜子 ${character.name}`, await buildCharacterImageCandidates(character), card, score);
+  }
   if (kind === 'all') {
-    const kinds: CsImageProbeKind[] = ['player', 'team', 'map', 'weapon', 'role', 'utility', 'tactic', 'clutch'];
+    const kinds: CsImageProbeKind[] = ['player', 'team', 'map', 'weapon', 'skin', 'role', 'utility', 'tactic', 'clutch', 'knife', 'mokoko'];
     const lines = ['CS真实图片批量测试'];
     for (const item of kinds) {
       if (item === 'player') {
@@ -1329,6 +1719,35 @@ async function probeDailyCard(kind: CsImageProbeKind, userId: number, scopeId: n
           }
         }
         if (!ok) lines.push(`FAIL player ${player.nick}`);
+        continue;
+      }
+      if (item === 'knife') {
+        const knife = dailyKnifeFor(userId, scopeId);
+        const skin = dailyKnifeSkinFor(userId, scopeId);
+        const candidates = await buildKnifeImageCandidates(knife, skin);
+        let ok = false;
+        for (const candidate of candidates.slice(0, 4)) {
+          if (await tryImageDataUrl(candidate.url, candidate.label)) {
+            ok = true;
+            lines.push(`OK knife ${knife.name} | ${skin.name} -> ${candidate.source}`);
+            break;
+          }
+        }
+        if (!ok) lines.push(`FAIL knife ${knife.name} | ${skin.name}`);
+        continue;
+      }
+      if (item === 'mokoko') {
+        const character = dailyCharacterFor(userId, scopeId);
+        const candidates = await buildCharacterImageCandidates(character);
+        let ok = false;
+        for (const candidate of candidates.slice(0, 4)) {
+          if (await tryImageDataUrl(candidate.url, candidate.label)) {
+            ok = true;
+            lines.push(`OK mokoko ${character.name} -> ${candidate.source}`);
+            break;
+          }
+        }
+        if (!ok) lines.push(`FAIL mokoko ${character.name}`);
         continue;
       }
       const cards = cardsForImageKind(item);
@@ -1426,6 +1845,128 @@ async function imageSegmentOrNote(url?: string, fallbackPlayerNick?: string, fal
   return [{ type: 'text', data: { text: buildImageFailureLine() } }];
 }
 
+function sameWeaponName(a: string, b: string): boolean {
+  const normalize = (value: string) => value.toLowerCase().replace(/[^a-z0-9]+/g, '');
+  return normalize(a) === normalize(b);
+}
+
+function dailySkinForWeapon(weapon: DailyCard, userId: number, scopeId: number): SkinCard {
+  const matching = csSkins.filter((skin) => sameWeaponName(skin.weapon, weapon.name));
+  const pool = matching.length > 0 ? matching : csSkins;
+  return pool[dailySeedForKind(`csskin_${weapon.key}`, userId, scopeId) % pool.length];
+}
+
+function localSkinCard(skin: SkinCard): DailyCard {
+  return {
+    ...skin,
+    imageLabel: skin.name,
+  };
+}
+
+function knifeSkinFileCandidates(knife: KnifeCard, skin: KnifeSkin): string[] {
+  const files: string[] = [];
+  for (const prefix of knife.skinFilePrefixes) {
+    for (const suffix of skin.fileSuffixes) {
+      files.push(`${prefix}_${suffix}.png`);
+      files.push(`${prefix}_${suffix.replace(/_/g, '-')}.png`);
+    }
+  }
+  return [...new Set(files)];
+}
+
+async function buildKnifeImageCandidates(knife: KnifeCard, skin: KnifeSkin): Promise<ImageCandidate[]> {
+  const candidateUrls: ImageCandidate[] = [];
+  try {
+    const skinUrl = await Promise.race([
+      csgoSkinImageResolver(knife.name, skin.name),
+      new Promise<null>((r) => setTimeout(() => r(null), 6000)),
+    ]);
+    if (skinUrl) {
+      candidateUrls.push({
+        url: skinUrl,
+        label: `${knife.name}/${skin.name}/csgo-api-skin`,
+        source: 'csgo-api-skin',
+      });
+    }
+  } catch (err) {
+    console.warn(`[fun] ${knife.name} ${skin.name} CSGO-API刀皮图片解析失败:`, err instanceof Error ? err.message : err);
+  }
+  for (const filename of knifeSkinFileCandidates(knife, skin).slice(0, 10)) {
+    try {
+      const fandomUrl = await Promise.race([
+        fandomImageResolver(filename, 'counterstrike'),
+        new Promise<null>((r) => setTimeout(() => r(null), 5000)),
+      ]);
+      if (fandomUrl) {
+        candidateUrls.push({
+          url: fandomUrl,
+          label: `${knife.name}/${skin.name}/${filename}`,
+          source: 'fandom-file',
+        });
+      }
+    } catch (err) {
+      console.warn(`[fun] ${knife.name} ${skin.name} 刀皮图片解析失败:`, err instanceof Error ? err.message : err);
+    }
+  }
+  candidateUrls.push(...await buildImageCandidates(knife.image, undefined, knife));
+  const seen = new Set<string>();
+  return candidateUrls.filter((item) => {
+    if (!item.url || seen.has(item.url)) return false;
+    seen.add(item.url);
+    return true;
+  });
+}
+
+async function imageFromCandidatesOrCard(candidates: ImageCandidate[], fallbackCard: DailyCard, score: number): Promise<MessageSegment[]> {
+  for (const candidate of candidates) {
+    const dataUrl = await tryImageDataUrl(candidate.url, candidate.label);
+    if (dataUrl) return [imageDataUrlToSegment(dataUrl)];
+  }
+  return [localDailyCardImage(fallbackCard, score)];
+}
+
+async function buildCharacterImageCandidates(character: DailyCharacter): Promise<ImageCandidate[]> {
+  const candidateUrls: ImageCandidate[] = [];
+  if (character.file) {
+    try {
+      const fileUrl = await Promise.race([
+        fandomImageResolver(character.file, 'bandori'),
+        new Promise<null>((r) => setTimeout(() => r(null), 5000)),
+      ]);
+      if (fileUrl) {
+        candidateUrls.push({
+          url: fileUrl,
+          label: `${character.name}/bandori-file`,
+          source: 'fandom-file',
+        });
+      }
+    } catch (err) {
+      console.warn(`[fun] ${character.name} Bandori文件图解析失败:`, err instanceof Error ? err.message : err);
+    }
+  }
+  try {
+    const pageUrl = await Promise.race([
+      fandomPageImageResolver(character.page, 'bandori'),
+      new Promise<null>((r) => setTimeout(() => r(null), 5000)),
+    ]);
+    if (pageUrl) {
+      candidateUrls.push({
+        url: pageUrl,
+        label: `${character.name}/bandori-page`,
+        source: 'fandom-page',
+      });
+    }
+  } catch (err) {
+    console.warn(`[fun] ${character.name} Bandori页面图解析失败:`, err instanceof Error ? err.message : err);
+  }
+  const seen = new Set<string>();
+  return candidateUrls.filter((item) => {
+    if (!item.url || seen.has(item.url)) return false;
+    seen.add(item.url);
+    return true;
+  });
+}
+
 async function buildCsPlayerMessage(userId: number, player: CSPlayer, score?: number): Promise<MessageSegment[]> {
   const scoreText = typeof score === 'number' ? `${scoreLine(score)} ${score}/100` : '';
   const roleAdvice = playerRoleAdvice(player, score);
@@ -1468,10 +2009,106 @@ async function buildDailyCardMessage(userId: number, card: DailyCard, score: num
   return message;
 }
 
+async function buildSkinMessage(userId: number, skin: SkinCard, score: number, isPrivate: boolean): Promise<MessageSegment[]> {
+  const text = [
+    `${skin.title} | ${skin.name}`,
+    `${skin.weapon} / ${skin.rarity}`,
+    skin.subtitle,
+    `${skin.scoreLabel}：${score}/100`,
+    `今天打法：${skin.advice}`,
+    `别急点：${skin.avoid}`,
+    `机器短评：${skin.line}`,
+    '图源：Steam饰品图/Counter-Strike Wiki真实皮肤图优先；失败才本地签位卡兜底',
+  ].join('\n');
+  const message: MessageSegment[] = [];
+  if (!isPrivate) message.push({ type: 'at', data: { qq: String(userId) } });
+  message.push({ type: 'text', data: { text: isPrivate ? text : ` ${text}` } });
+  message.push(...await imageSegmentOrNote(skin.image, undefined, localSkinCard(skin), score));
+  return message;
+}
+
+async function buildWeaponMessage(userId: number, weapon: DailyCard, skin: SkinCard, score: number, isPrivate: boolean): Promise<MessageSegment[]> {
+  const text = [
+    `${weapon.title} | ${weapon.name}`,
+    weapon.subtitle,
+    `${weapon.scoreLabel}：${score}/100`,
+    `配套皮肤：${skin.name} (${skin.rarity})`,
+    `今天打法：${weapon.advice}`,
+    `皮肤加成：${skin.advice}`,
+    `别急点：${weapon.avoid}`,
+    `机器短评：${weapon.line}`,
+  ].join('\n');
+  const message: MessageSegment[] = [];
+  if (!isPrivate) message.push({ type: 'at', data: { qq: String(userId) } });
+  message.push({ type: 'text', data: { text: isPrivate ? text : ` ${text}` } });
+  message.push(...await imageSegmentOrNote(weapon.image, undefined, weapon, score));
+  message.push(...await imageSegmentOrNote(skin.image, undefined, localSkinCard(skin), score));
+  return message;
+}
+
+async function buildKnifeMessage(userId: number, knife: KnifeCard, skin: KnifeSkin, score: number, isPrivate: boolean): Promise<MessageSegment[]> {
+  const card: DailyCard = {
+    key: `knife-${knife.key}-${skin.key}`,
+    title: '今日发刀',
+    name: `${knife.name} | ${skin.name}`,
+    subtitle: `${knife.subtitle} / ${skin.rarity}`,
+    scoreLabel: '刀运指数',
+    advice: `${knife.advice} ${skin.advice}`,
+    avoid: `${knife.avoid} ${skin.avoid}`,
+    line: `${knife.line} ${skin.line}`,
+    imageLabel: `${knife.name} ${skin.name}`,
+  };
+  const text = [
+    `${card.title} | ${knife.name}`,
+    `皮肤：${skin.name} (${skin.rarity})`,
+    knife.subtitle,
+    `${card.scoreLabel}：${score}/100`,
+    `今天打法：${card.advice}`,
+    `别急点：${card.avoid}`,
+    `机器短评：${card.line}`,
+    `覆盖：刀型池 ${csKnives.length} 类，皮肤池 ${knifeSkins.length} 种；今日按 QQ/群/日期固定`,
+    '图源：Steam饰品图/Counter-Strike Wiki刀具刀皮真实图优先；具体刀皮图失败时发对应刀型真实图',
+  ].join('\n');
+  const message: MessageSegment[] = [];
+  if (!isPrivate) message.push({ type: 'at', data: { qq: String(userId) } });
+  message.push({ type: 'text', data: { text: isPrivate ? text : ` ${text}` } });
+  message.push(...await imageFromCandidatesOrCard(await buildKnifeImageCandidates(knife, skin), card, score));
+  return message;
+}
+
+async function buildMokokoMessage(userId: number, character: DailyCharacter, score: number, isPrivate: boolean): Promise<MessageSegment[]> {
+  const card: DailyCard = {
+    key: `mokoko-${character.key}`,
+    title: character.title,
+    name: character.name,
+    subtitle: `${character.band} / ${character.role}`,
+    scoreLabel: '木柜子指数',
+    advice: character.note,
+    avoid: '别把每日木柜子当CS事实，这条是纯角色抽签。',
+    line: `${character.band} ${character.role}，CV：${character.voice}`,
+    imageLabel: character.name,
+  };
+  const text = [
+    `${character.title} | ${character.name}`,
+    `${character.band} / ${character.role}`,
+    `CV：${character.voice}`,
+    `木柜子指数：${score}/100`,
+    `今日短评：${character.note}`,
+    `覆盖：MyGO!!!!! 5人 + Ave Mujica 5人，共 ${dailyCharacters.length} 人；今日按 QQ/群/日期固定`,
+    '图源：BanG Dream Wiki真实角色图优先；失败才本地签位卡兜底',
+  ].join('\n');
+  const message: MessageSegment[] = [];
+  if (!isPrivate) message.push({ type: 'at', data: { qq: String(userId) } });
+  message.push({ type: 'text', data: { text: isPrivate ? text : ` ${text}` } });
+  message.push(...await imageFromCandidatesOrCard(await buildCharacterImageCandidates(character), card, score));
+  return message;
+}
+
 async function buildLoadoutMessage(userId: number, scopeId: number, isPrivate: boolean): Promise<MessageSegment[]> {
   const team = dailyCardFor('csteam_pack', userId, scopeId, csTeams);
   const map = dailyCardFor('csmap_pack', userId, scopeId, csMaps);
   const weapon = dailyCardFor('csweapon_pack', userId, scopeId, csWeapons);
+  const skin = dailySkinForWeapon(weapon, userId, scopeId);
   const role = dailyCardFor('csrole_pack', userId, scopeId, csRoles);
   const score = dailyScoreForKind('csloadout', userId, scopeId);
   const text = [
@@ -1479,9 +2116,11 @@ async function buildLoadoutMessage(userId: number, scopeId: number, isPrivate: b
     `队伍：${team.name}`,
     `地图：${map.name}`,
     `武器：${weapon.name}`,
+    `皮肤：${skin.name}`,
     `定位：${role.name}`,
     `综合节目效果：${score}/100`,
     `今天打法：${role.advice} ${weapon.advice}`,
+    `皮肤加成：${skin.advice}`,
     `别急点：${map.avoid}`,
     `机器短评：${score >= 80 ? '这套签有点东西，今天可以稍微主动一点。' : score >= 45 ? '能打，但别把自己当主角。' : '这套先稳住，别上来就送大的。'}`,
   ].join('\n');
@@ -1489,6 +2128,7 @@ async function buildLoadoutMessage(userId: number, scopeId: number, isPrivate: b
   if (!isPrivate) message.push({ type: 'at', data: { qq: String(userId) } });
   message.push({ type: 'text', data: { text: isPrivate ? text : ` ${text}` } });
   message.push(...await imageSegmentOrNote(team.image, undefined, team, score));
+  message.push(...await imageSegmentOrNote(skin.image, undefined, localSkinCard(skin), score));
   return message;
 }
 
@@ -2120,18 +2760,24 @@ export const funPlugin: Plugin = {
         '每日CS选手状态 / 图片状态',
         `选手池: ${csPlayers.length}人`,
         `队伍池: ${csTeams.length}队`,
-        `地图/武器/定位/道具/战术/残局: ${csMaps.length}/${csWeapons.length}/${csRoles.length}/${csUtilities.length}/${csTactics.length}/${csClutches.length}`,
-        `真实图策略: Liquipedia/Fandom/Wikimedia优先，外链全失败才发本地签位卡`,
+        `地图/武器/皮肤/定位/道具/战术/残局: ${csMaps.length}/${csWeapons.length}/${csSkins.length}/${csRoles.length}/${csUtilities.length}/${csTactics.length}/${csClutches.length}`,
+        `发刀池: 刀型${csKnives.length}类 / 刀皮${knifeSkins.length}种`,
+        `木柜子池: MyGO!!!!!/Ave Mujica 共${dailyCharacters.length}人`,
+        `真实图策略: Liquipedia/Steam饰品图/Fandom/Wikimedia/BanG Dream Wiki优先，外链全失败才发本地签位卡`,
         `队伍示例: ${csTeams.slice(0, 3).map((item) => `${item.name}(${dailyCardImagePlan(item).replace(/^图源：/, '')})`).join(' | ')}`,
         (() => {
           const liq = getLiquipediaImageStats();
           return `Liquipedia图解析: 缓存${liq.entries} 限流${liq.rateLimited ? 'yes' : 'no'}`;
         })(),
+        (() => {
+          const api = getCsgoSkinsApiStats();
+          return `饰品图API: 缓存${api.entries} 拉取中${api.inFlight ? 'yes' : 'no'}${api.lastError ? ` 错误=${api.lastError}` : ''}`;
+        })(),
         `图片缓存: ${stats.count}/${stats.maxFiles}张 ${stats.sizeMB}/${stats.maxSizeMB}MB`,
         `图片命中: ${stats.hits}/${stats.misses} 失败${stats.downloadFailures} 飞行${stats.inFlight}`,
         ...(stats.lastError ? [`最近图片错误: ${stats.lastError}`] : []),
         '',
-        '/csimage test team|map|weapon|role|utility|tactic|clutch|player|all 测真实图源',
+        '/csimage test team|map|weapon|skin|role|utility|tactic|clutch|knife|mokoko|player|all 测真实图源',
         'admin: /csprewarm 预下载所有选手图(慢，受限流影响)',
       ].join('\n'));
       return true;
@@ -2239,6 +2885,19 @@ export const funPlugin: Plugin = {
       ctx.reply(buildCsTrainingMessage(ctx.event.user_id, scopeId, ctx.isPrivate, predictHint, historyHint, profileHint));
       return true;
     }
+    if (isDailyKnifeRequest(ctx.command, raw)) {
+      const knife = dailyKnifeFor(ctx.event.user_id, scopeId);
+      const skin = dailyKnifeSkinFor(ctx.event.user_id, scopeId);
+      const score = dailyScoreForKind('csknife', ctx.event.user_id, scopeId);
+      ctx.reply(await buildKnifeMessage(ctx.event.user_id, knife, skin, score, ctx.isPrivate));
+      return true;
+    }
+    if (isDailyMokokoRequest(ctx.command, raw)) {
+      const character = dailyCharacterFor(ctx.event.user_id, scopeId);
+      const score = dailyScoreForKind('mokoko', ctx.event.user_id, scopeId);
+      ctx.reply(await buildMokokoMessage(ctx.event.user_id, character, score, ctx.isPrivate));
+      return true;
+    }
     if (isDailyCardRequest(ctx.command, raw, 'loadout') || fuzzy === 'csloadout') {
       ctx.reply(await buildLoadoutMessage(ctx.event.user_id, scopeId, ctx.isPrivate));
       return true;
@@ -2257,8 +2916,15 @@ export const funPlugin: Plugin = {
     }
     if (isDailyCardRequest(ctx.command, raw, 'weapon') || fuzzy === 'csweapon') {
       const card = dailyCardFor('csweapon', ctx.event.user_id, scopeId, csWeapons);
+      const skin = dailySkinForWeapon(card, ctx.event.user_id, scopeId);
       const score = dailyScoreForKind('csweapon', ctx.event.user_id, scopeId);
-      ctx.reply(await buildDailyCardMessage(ctx.event.user_id, card, score, ctx.isPrivate));
+      ctx.reply(await buildWeaponMessage(ctx.event.user_id, card, skin, score, ctx.isPrivate));
+      return true;
+    }
+    if (isDailyCardRequest(ctx.command, raw, 'skin')) {
+      const skin = dailySkinFor(ctx.event.user_id, scopeId);
+      const score = dailyScoreForKind('csskin', ctx.event.user_id, scopeId);
+      ctx.reply(await buildSkinMessage(ctx.event.user_id, skin, score, ctx.isPrivate));
       return true;
     }
     if (isDailyCardRequest(ctx.command, raw, 'role') || fuzzy === 'csrole') {
@@ -2295,16 +2961,27 @@ export const __test = {
   csTeams,
   csMaps,
   csWeapons,
+  csSkins,
   csRoles,
   csUtilities,
   csTactics,
   csClutches,
+  csKnives,
+  knifeSkins,
+  dailyCharacters,
   dailyPlayerFor,
   dailyPlayerScore,
   dailyCardFor,
+  dailySkinFor,
+  dailySkinForWeapon,
+  dailyKnifeFor,
+  dailyKnifeSkinFor,
+  dailyCharacterFor,
   dailyScoreForKind,
   isCsPlayerDrawRequest,
   isCsPlayerStatusRequest,
+  isDailyKnifeRequest,
+  isDailyMokokoRequest,
   isDailyCardRequest,
   isCsTrainingRequest,
   isCsQuizRequest,
@@ -2320,6 +2997,10 @@ export const __test = {
   loadTrainingStore,
   buildCsPlayerMessage,
   buildDailyCardMessage,
+  buildWeaponMessage,
+  buildSkinMessage,
+  buildKnifeMessage,
+  buildMokokoMessage,
   buildLoadoutMessage,
   buildCsTrainingMessage,
   dailyCsQuizFor,
@@ -2333,11 +3014,15 @@ export const __test = {
   __setImageSourceResolversForTests: (resolvers?: {
     player?: (player: string) => Promise<string | null>;
     team?: (page: string, teamName: string) => Promise<string | null>;
-    fandom?: (filename: string) => Promise<string | null>;
+    fandom?: (filename: string, wiki?: FandomWiki) => Promise<string | null>;
+    fandomPage?: (title: string, wiki?: FandomWiki) => Promise<string | null>;
+    csgoSkin?: (weapon: string, skin: string) => Promise<string | null>;
   }) => {
     playerImageResolver = resolvers?.player || resolvePlayerImage;
     teamImageResolver = resolvers?.team || resolveTeamImage;
     fandomImageResolver = resolvers?.fandom || resolveFandomFileImage;
+    fandomPageImageResolver = resolvers?.fandomPage || resolveFandomPageImage;
+    csgoSkinImageResolver = resolvers?.csgoSkin || resolveCsgoSkinImage;
   },
 };
 
