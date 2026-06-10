@@ -9,6 +9,7 @@ import { AIConfig } from '../types';
 const CACHE_DIR = path.resolve(__dirname, '..', '..', 'stt_cache');
 let cacheHits = 0;
 let cacheMisses = 0;
+let inFlightHits = 0;
 let downloadMisses = 0;
 let transcriptMisses = 0;
 let lastSttError = '';
@@ -18,9 +19,21 @@ let apiSttRuns = 0;
 let lastCleanupAt = 0;
 let lastCleanupDeleted = 0;
 let cleanupDeletedTotal = 0;
+const transcriptInFlight: Map<string, Promise<string>> = new Map();
 
 if (!fs.existsSync(CACHE_DIR)) {
   fs.mkdirSync(CACHE_DIR, { recursive: true });
+}
+
+export interface SttCacheInspectResult {
+  source: string;
+  status: 'disabled' | 'hit' | 'miss' | 'expired' | 'in-flight' | 'invalid';
+  cacheKey: string;
+  filepath: string;
+  chars: number;
+  ageSeconds: number;
+  ttlSeconds: number;
+  reason: string;
 }
 
 function cacheKey(input: string, config: AIConfig): string {
@@ -60,6 +73,85 @@ function getCachedTranscript(key: string, config: AIConfig): string | null {
   } catch {
     return null;
   }
+}
+
+export function inspectSttCacheSource(config: AIConfig, input: string): SttCacheInspectResult {
+  const raw = (input || '').trim();
+  const invalidBase = {
+    source: input,
+    cacheKey: '',
+    filepath: '',
+    chars: 0,
+    ageSeconds: 0,
+    ttlSeconds: 0,
+  };
+  if (!raw) {
+    return { ...invalidBase, status: 'invalid', reason: '空语音源' };
+  }
+  if (!config.enable_stt) {
+    return { ...invalidBase, source: raw, status: 'disabled', reason: 'enable_stt 未开启，不会读取或写入听写缓存' };
+  }
+
+  const key = cacheKey(raw, config);
+  const filepath = path.join(CACHE_DIR, `${key}.txt`);
+  const base = {
+    source: raw,
+    cacheKey: key,
+    filepath,
+    chars: 0,
+    ageSeconds: 0,
+    ttlSeconds: 0,
+  };
+  if (transcriptInFlight.has(key)) {
+    return { ...base, status: 'in-flight', reason: '同一语音源正在听写，真实链路会等待并复用该请求' };
+  }
+
+  try {
+    if (!fs.existsSync(filepath)) {
+      return { ...base, status: 'miss', reason: '未命中听写缓存，首次真实 /voice stt 或语音回复会下载并听写' };
+    }
+    const stat = fs.statSync(filepath);
+    if (!stat.isFile()) {
+      return { ...base, status: 'invalid', reason: '缓存路径不是有效文本文件' };
+    }
+    const ageSeconds = Math.max(0, Math.round((Date.now() - stat.mtimeMs) / 1000));
+    const ttlSeconds = Math.max(0, Math.round((stat.mtimeMs + maxCacheAgeMs(config) - Date.now()) / 1000));
+    if (ttlSeconds <= 0) {
+      return {
+        ...base,
+        status: 'expired',
+        chars: Math.max(0, Math.round(stat.size)),
+        ageSeconds,
+        ttlSeconds,
+        reason: '听写缓存已过期；真实听写会清理后重新下载/转写',
+      };
+    }
+    let chars = Math.max(0, Math.round(stat.size));
+    try {
+      chars = fs.readFileSync(filepath, 'utf-8').trim().length;
+    } catch { /* keep stat size */ }
+    if (chars <= 0) {
+      return { ...base, status: 'invalid', ageSeconds, ttlSeconds, reason: '缓存文本为空，真实听写会按未命中处理' };
+    }
+    return {
+      ...base,
+      status: 'hit',
+      chars,
+      ageSeconds,
+      ttlSeconds,
+      reason: '命中听写缓存，真实语音理解会直接复用转写文本',
+    };
+  } catch (err) {
+    return {
+      ...base,
+      status: 'invalid',
+      reason: `听写缓存检查失败: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+}
+
+export function inspectSttCacheSources(config: AIConfig, inputs: string[], limit = 6): SttCacheInspectResult[] {
+  return inputs.slice(0, Math.max(1, limit)).map((input) => inspectSttCacheSource(config, input));
 }
 
 function setCachedTranscript(key: string, text: string): void {
@@ -614,13 +706,7 @@ async function transcribeWithProvider(config: AIConfig, buffer: Buffer, mime: st
   return callAudioModel(config, buffer, mime, source);
 }
 
-export async function transcribeRecord(config: AIConfig, input: string): Promise<string> {
-  if (!config.enable_stt || !input) return '';
-  const key = cacheKey(input, config);
-  const cached = getCachedTranscript(key, config);
-  if (cached) return cached;
-  cacheMisses++;
-
+async function transcribeRecordUncached(config: AIConfig, input: string, key: string): Promise<string> {
   let buffer = await getRecordBuffer(input, config);
   if (!buffer || buffer.length < 128) {
     downloadMisses++;
@@ -643,6 +729,26 @@ export async function transcribeRecord(config: AIConfig, input: string): Promise
   }
   setCachedTranscript(key, transcript);
   return transcript;
+}
+
+export async function transcribeRecord(config: AIConfig, input: string): Promise<string> {
+  if (!config.enable_stt || !input) return '';
+  const key = cacheKey(input, config);
+  const cached = getCachedTranscript(key, config);
+  if (cached) return cached;
+
+  const inFlight = transcriptInFlight.get(key);
+  if (inFlight) {
+    cacheHits++;
+    inFlightHits++;
+    return inFlight;
+  }
+
+  cacheMisses++;
+  const request = transcribeRecordUncached(config, input, key)
+    .finally(() => transcriptInFlight.delete(key));
+  transcriptInFlight.set(key, request);
+  return request;
 }
 
 export async function transcribeRecords(config: AIConfig, inputs: string[]): Promise<string[]> {
@@ -710,6 +816,8 @@ export function getSttStats(config?: AIConfig): {
   sizeMB: number;
   hits: number;
   misses: number;
+  inFlight: number;
+  inFlightHits: number;
   downloadMisses: number;
   transcriptMisses: number;
   maxRecords: number;
@@ -748,6 +856,8 @@ export function getSttStats(config?: AIConfig): {
     sizeMB: Math.round(size / 1024 / 1024 * 10) / 10,
     hits: cacheHits,
     misses: cacheMisses,
+    inFlight: transcriptInFlight.size,
+    inFlightHits,
     downloadMisses,
     transcriptMisses,
     maxRecords: config?.stt_max_records || 1,

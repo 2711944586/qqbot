@@ -31,6 +31,10 @@ function cardKindName(kind) {
   }[kind] || kind;
 }
 
+function hasSourceLink(text) {
+  return /https:\/\/(?:api\.csapi\.de|www\.hltv\.org|liquipedia\.net)\//.test(String(text || ''));
+}
+
 async function timed(label, fn) {
   const start = Date.now();
   try {
@@ -98,6 +102,10 @@ async function main() {
   let warnings = 0;
   for (const check of checks) {
     if (!check.ok) failed++;
+    if (check.ok && !hasSourceLink(check.value)) {
+      warnings++;
+      console.log(`WARN ${check.label} 缺少可点击来源链接`);
+    }
     const detail = check.error || trimSnippet(check.value);
     console.log(`${check.ok ? 'OK' : 'FAIL'} ${check.label} ${check.ms}ms ${detail}`);
   }

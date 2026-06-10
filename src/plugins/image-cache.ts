@@ -49,6 +49,18 @@ const downloadInFlight: Map<string, Promise<CacheEntry | null>> = new Map();
 /** 主机级限流冷却（429/503 后） */
 const rateLimitedHosts: Map<string, number> = new Map();
 
+export interface ImageCacheInspectResult {
+  source: string;
+  kind: 'inline' | 'local' | 'remote' | 'unknown';
+  status: 'inline' | 'local-readable' | 'local-missing' | 'hit' | 'miss' | 'expired' | 'in-flight' | 'invalid' | 'too-large';
+  cacheKey: string;
+  filepath: string;
+  sizeKB: number;
+  ageSeconds: number;
+  ttlSeconds: number;
+  reason: string;
+}
+
 function setImageError(message: string): void {
   lastImageError = message.slice(0, 160);
 }
@@ -80,6 +92,110 @@ loadCacheIndex();
 
 function urlHash(url: string): string {
   return crypto.createHash('sha1').update(url).digest('hex').slice(0, 16);
+}
+
+function inspectLocalImage(input: string): ImageCacheInspectResult {
+  let filepath = input;
+  if (filepath.startsWith('file://')) filepath = filepath.slice('file://'.length);
+  filepath = filepath.replace(/^\/+([a-zA-Z]:)/, '$1');
+  const resultBase = {
+    source: input,
+    kind: 'local' as const,
+    cacheKey: '',
+    filepath,
+    sizeKB: 0,
+    ageSeconds: 0,
+    ttlSeconds: 0,
+  };
+  if (!filepath || /^https?:\/\//i.test(filepath)) {
+    return { ...resultBase, status: 'invalid', reason: '不是可读本地图片路径' };
+  }
+  try {
+    if (!fs.existsSync(filepath)) {
+      return { ...resultBase, status: 'local-missing', reason: '本地路径不存在；Docker/NapCat 容器路径常见这个情况' };
+    }
+    const stat = fs.statSync(filepath);
+    if (!stat.isFile() || stat.size <= 0) {
+      return { ...resultBase, status: 'invalid', sizeKB: Math.round((stat.size || 0) / 1024), reason: '路径不是有效图片文件' };
+    }
+    if (stat.size > maxFileSizeBytes) {
+      return {
+        ...resultBase,
+        status: 'too-large',
+        sizeKB: Math.round(stat.size / 1024),
+        reason: `超过单图上限 ${Math.round(maxFileSizeBytes / 1024)}KB`,
+      };
+    }
+    return {
+      ...resultBase,
+      status: 'local-readable',
+      cacheKey: crypto.createHash('sha1').update(`${filepath}:${stat.size}:${stat.mtimeMs}`).digest('hex').slice(0, 16),
+      sizeKB: Math.round(stat.size / 1024),
+      ageSeconds: Math.max(0, Math.round((Date.now() - stat.mtimeMs) / 1000)),
+      reason: '本地文件可读；生成识图 payload 时会直接读取，不走远程下载缓存',
+    };
+  } catch (err) {
+    return { ...resultBase, status: 'invalid', reason: `本地路径检查失败: ${err instanceof Error ? err.message : String(err)}` };
+  }
+}
+
+export function inspectImageCacheSource(source: string): ImageCacheInspectResult {
+  const raw = (source || '').trim();
+  if (!raw) {
+    return {
+      source,
+      kind: 'unknown',
+      status: 'invalid',
+      cacheKey: '',
+      filepath: '',
+      sizeKB: 0,
+      ageSeconds: 0,
+      ttlSeconds: 0,
+      reason: '空图片源',
+    };
+  }
+  if (raw.startsWith('base64://') || /^data:image\/[^;]+;base64,/i.test(raw)) {
+    return {
+      source: raw,
+      kind: 'inline',
+      status: 'inline',
+      cacheKey: '',
+      filepath: '',
+      sizeKB: 0,
+      ageSeconds: 0,
+      ttlSeconds: 0,
+      reason: '内联图片会直接进入 payload，不写图片下载缓存',
+    };
+  }
+  if (!/^https?:\/\//i.test(raw)) return inspectLocalImage(raw);
+
+  const hash = urlHash(raw);
+  const inFlight = downloadInFlight.has(hash);
+  const cached = memIndex.get(hash);
+  const base = {
+    source: raw,
+    kind: 'remote' as const,
+    cacheKey: hash,
+    filepath: cached?.filepath || path.join(CACHE_DIR, `${hash}.*`),
+    sizeKB: cached ? Math.round(cached.size / 1024) : 0,
+    ageSeconds: cached ? Math.max(0, Math.round((Date.now() - cached.createdAt) / 1000)) : 0,
+    ttlSeconds: 0,
+  };
+  if (inFlight) {
+    return { ...base, status: 'in-flight', reason: '同 URL 正在下载，后续识图会等待并复用同一次下载' };
+  }
+  if (!cached || !fs.existsSync(cached.filepath)) {
+    return { ...base, status: 'miss', reason: '未命中图片缓存，首次真实识图会下载并写入缓存' };
+  }
+  const ttlSeconds = Math.max(0, Math.round((cached.lastUsed + maxCacheAgeHours * 3600 * 1000 - Date.now()) / 1000));
+  if (ttlSeconds <= 0) {
+    return { ...base, status: 'expired', ttlSeconds, reason: '缓存已过期，清理后会按 miss 重新下载' };
+  }
+  return { ...base, status: 'hit', ttlSeconds, reason: '命中图片缓存，真实识图会直接读缓存文件' };
+}
+
+export function inspectImageCacheSources(sources: string[], limit = 6): ImageCacheInspectResult[] {
+  return sources.slice(0, Math.max(1, limit)).map(inspectImageCacheSource);
 }
 
 function detectMime(buffer: Buffer): { mime: string; ext: string } {

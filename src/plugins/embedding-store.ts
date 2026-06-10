@@ -34,6 +34,16 @@ interface SessionIndex {
   dirty: boolean;
 }
 
+export interface MemorySearchResult {
+  role: 'user' | 'assistant';
+  text: string;
+  ts: number;
+  similarity: number;
+  score: number;
+  recencyBoost: number;
+  ageSeconds: number;
+}
+
 const sessions: Map<string, SessionIndex> = new Map();
 let maxMessagesPerSession = 500; // 每个session最多保留500条历史
 let maxSessionsInMemory = 50;
@@ -124,6 +134,51 @@ function cosineSimilarity(a: IndexedMessage, b: IndexedMessage): number {
     if (other !== undefined) dot += val * other;
   }
   return dot / (a.norm * b.norm);
+}
+
+function recencyBoostForTimestamp(ts: number, now: number): { boost: number; ageSeconds: number } {
+  if (!ts || ts <= 0) return { boost: 0, ageSeconds: 0 };
+  const ageSeconds = Math.max(0, Math.round((now - ts) / 1000));
+  const ageHours = ageSeconds / 3600;
+  const boost = 0.08 * Math.exp(-ageHours / 12);
+  return {
+    boost: Math.round(boost * 1000) / 1000,
+    ageSeconds,
+  };
+}
+
+function normalizePruneText(input: string): string {
+  return (input || '')
+    .toLowerCase()
+    .replace(/^\[mid=\d+\s+uid=\d+\]\s*/, '')
+    .replace(/[^\u4e00-\u9fa5a-z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function pruneTerms(query: string): string[] {
+  const normalized = normalizePruneText(query);
+  if (!normalized) return [];
+  const terms = normalized
+    .split(/\s+/)
+    .map((term) => term.trim())
+    .filter((term) => term.length >= 2);
+  if (terms.length > 0) return terms.slice(0, 8);
+  return normalized.length >= 2 ? [normalized] : [];
+}
+
+function matchesPruneQuery(text: string, query: string): boolean {
+  const cleanText = normalizePruneText(text);
+  const cleanQuery = normalizePruneText(query);
+  if (!cleanText || !cleanQuery || cleanQuery.length < 2) return false;
+  if (cleanText.includes(cleanQuery)) return true;
+  const terms = pruneTerms(query);
+  return terms.length > 0 && terms.every((term) => cleanText.includes(term));
+}
+
+function indexedUserId(text: string): number | null {
+  const match = (text || '').match(/^\[mid=\d+\s+uid=(\d+)\]/);
+  return match ? Number(match[1]) : null;
 }
 
 function loadSession(sessionId: string): SessionIndex {
@@ -255,7 +310,7 @@ export function searchSimilar(
   query: string,
   topK: number = 3,
   minSimilarity: number = 0.15,
-): Array<{ role: 'user' | 'assistant'; text: string; ts: number; similarity: number }> {
+): MemorySearchResult[] {
   searchQueries++;
   if (!query || query.length < 4) {
     searchMisses++;
@@ -277,6 +332,7 @@ export function searchSimilar(
   const queryMsg: IndexedMessage = { id: '', ts: 0, role: 'user', text: query, vec: queryVec, norm: queryNorm };
 
   const queryShort = query.replace(/^\[mid=\d+\s+uid=\d+\]\s*[^:：]+[:：]\s*/, '').slice(0, 50).toLowerCase();
+  const now = Date.now();
 
   const scored = session.messages
     .filter((m) => {
@@ -291,7 +347,16 @@ export function searchSimilar(
       similarity: cosineSimilarity(queryMsg, m),
     }))
     .filter((item) => item.similarity >= minSimilarity && item.similarity < 0.99) // 0.99以上认为是同一条
-    .sort((a, b) => b.similarity - a.similarity)
+    .map((item) => {
+      const recency = recencyBoostForTimestamp(item.msg.ts, now);
+      return {
+        ...item,
+        recencyBoost: recency.boost,
+        ageSeconds: recency.ageSeconds,
+        score: item.similarity + recency.boost,
+      };
+    })
+    .sort((a, b) => b.score - a.score || b.similarity - a.similarity || b.msg.ts - a.msg.ts)
     .slice(0, topK);
 
   if (scored.length > 0) searchHits++;
@@ -302,6 +367,9 @@ export function searchSimilar(
     text: item.msg.text,
     ts: item.msg.ts,
     similarity: Math.round(item.similarity * 1000) / 1000,
+    score: Math.round(item.score * 1000) / 1000,
+    recencyBoost: item.recencyBoost,
+    ageSeconds: item.ageSeconds,
   }));
 }
 
@@ -311,6 +379,97 @@ export function clearSessionIndex(sessionId: string): void {
     const filepath = sessionPath(sessionId);
     if (fs.existsSync(filepath)) fs.unlinkSync(filepath);
   } catch { /* */ }
+}
+
+export function trimSessionIndex(sessionId: string, keepMessages: number): { before: number; after: number } {
+  const keep = Math.max(0, Math.min(5000, Math.floor(keepMessages)));
+  const session = loadSession(sessionId);
+  const before = session.messages.length;
+  if (session.messages.length > keep) {
+    session.messages = keep > 0 ? session.messages.slice(-keep) : [];
+    session.dirty = true;
+    session.lastWrite = Date.now();
+    flushSession(sessionId);
+  }
+  return { before, after: session.messages.length };
+}
+
+export function dropSessionIndexByQuery(sessionId: string, query: string, sampleLimit: number = 5): {
+  before: number;
+  after: number;
+  removed: number;
+  samples: Array<{ role: 'user' | 'assistant'; text: string; ts: number }>;
+} {
+  const cleanQuery = normalizePruneText(query);
+  const session = loadSession(sessionId);
+  const before = session.messages.length;
+  const samples: Array<{ role: 'user' | 'assistant'; text: string; ts: number }> = [];
+  if (cleanQuery.length < 2) {
+    return { before, after: before, removed: 0, samples };
+  }
+  const kept: IndexedMessage[] = [];
+  for (const message of session.messages) {
+    if (matchesPruneQuery(message.text, cleanQuery)) {
+      if (samples.length < sampleLimit) {
+        samples.push({ role: message.role, text: message.text, ts: message.ts });
+      }
+      continue;
+    }
+    kept.push(message);
+  }
+  if (kept.length !== session.messages.length) {
+    session.messages = kept;
+    session.dirty = true;
+    session.lastWrite = Date.now();
+    flushSession(sessionId);
+  }
+  return { before, after: session.messages.length, removed: before - session.messages.length, samples };
+}
+
+export function inspectSessionIndexByUser(sessionId: string, userId: number, sampleLimit: number = 5): {
+  total: number;
+  matched: number;
+  samples: Array<{ role: 'user' | 'assistant'; text: string; ts: number }>;
+} {
+  const session = loadSession(sessionId);
+  const samples: Array<{ role: 'user' | 'assistant'; text: string; ts: number }> = [];
+  let matched = 0;
+  for (const message of session.messages) {
+    if (indexedUserId(message.text) !== userId) continue;
+    matched++;
+    if (samples.length < sampleLimit) {
+      samples.push({ role: message.role, text: message.text, ts: message.ts });
+    }
+  }
+  return { total: session.messages.length, matched, samples };
+}
+
+export function dropSessionIndexByUser(sessionId: string, userId: number, sampleLimit: number = 5): {
+  before: number;
+  after: number;
+  removed: number;
+  samples: Array<{ role: 'user' | 'assistant'; text: string; ts: number }>;
+} {
+  const session = loadSession(sessionId);
+  const before = session.messages.length;
+  const samples: Array<{ role: 'user' | 'assistant'; text: string; ts: number }> = [];
+  const kept: IndexedMessage[] = [];
+  for (const message of session.messages) {
+    if (indexedUserId(message.text) === userId) {
+      if (samples.length < sampleLimit) {
+        samples.push({ role: message.role, text: message.text, ts: message.ts });
+      }
+      continue;
+    }
+    kept.push(message);
+  }
+  if (kept.length !== session.messages.length) {
+    session.messages = kept;
+    session.dirty = true;
+    session.lastWrite = Date.now();
+    flushSession(sessionId);
+  }
+  return { before, after: session.messages.length, removed: before - session.messages.length, samples };
 }
 
 export function getEmbeddingStats(): {

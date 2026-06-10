@@ -1,4 +1,6 @@
-import { MessageSegment, Plugin } from '../types';
+import * as fs from 'fs';
+import * as path from 'path';
+import { MessageSegment, Plugin, PluginContext } from '../types';
 import { getRandomKnowledgeLine } from './knowledge-base';
 import { getCacheStats, getImageDataUrl } from './image-cache';
 import { webSearch } from './web-search';
@@ -7,6 +9,8 @@ import { detectFuzzyCommand } from './fuzzy-command';
 import { getLiquipediaImageStats, resolvePlayerImage, resolveTeamImage } from './liquipedia-image';
 import { resolveFandomFileImage } from './fandom-image';
 import { buildDailyCardImageDataUrl } from './daily-card-image';
+import { getCsPredictTrainingHint } from './cs-predict';
+import { buildUserProfileDailyCsHint } from './user-profile';
 
 /** 随机选择 */
 function randomPick(items: string[]): string {
@@ -53,7 +57,10 @@ interface DailyCard {
 }
 
 type DailyCardKind = 'team' | 'map' | 'weapon' | 'role' | 'loadout' | 'utility' | 'tactic' | 'clutch';
+type CsQuizKind = 'map' | 'weapon' | 'utility' | 'tactic' | 'clutch';
 type CsImageProbeKind = DailyCardKind | 'player' | 'all';
+type TrainingArea = 'aim' | 'utility' | 'map' | 'role' | 'clutch' | 'review' | 'match';
+type TrainingWeaknessKey = 'death' | 'trade' | 'utility' | 'aim' | 'clutch' | 'map' | 'review';
 
 interface ImageCandidate {
   url: string;
@@ -61,7 +68,50 @@ interface ImageCandidate {
   source: 'liquipedia-team' | 'fandom-file' | 'representative-player-dynamic' | 'representative-player-static' | 'liquipedia-player' | 'static-url';
 }
 
+interface CsTrainingLogEntry {
+  id: string;
+  chatType: 'group' | 'private';
+  chatId: number;
+  groupId?: number;
+  userId: number;
+  displayName: string;
+  area: TrainingArea;
+  minutes: number;
+  map: string;
+  weapon: string;
+  note: string;
+  createdAt: number;
+}
+
+interface CsTrainingStore {
+  version: 1;
+  logs: CsTrainingLogEntry[];
+}
+
+interface TrainingWeaknessSignal {
+  key: TrainingWeaknessKey;
+  label: string;
+  count: number;
+  minutes: number;
+  sample: string;
+}
+
+interface CsQuiz {
+  kind: CsQuizKind;
+  title: string;
+  context: string;
+  question: string;
+  options: string[];
+  correctOptionIndex: number;
+  answer: string;
+  comment: string;
+  score: number;
+}
+
 let imageDataUrlResolver: (url: string) => Promise<string | null> = getImageDataUrl;
+let playerImageResolver: (player: string) => Promise<string | null> = resolvePlayerImage;
+let teamImageResolver: (page: string, teamName: string) => Promise<string | null> = resolveTeamImage;
+let fandomImageResolver: (filename: string) => Promise<string | null> = resolveFandomFileImage;
 
 const csPlayers: CSPlayer[] = [
   { nick: 'ZywOo', name: 'Mathieu Herbaut', team: 'Vitality', role: 'AWPer / 核心大哥', note: '今天就按这个纪律打，枪硬但别急着开香槟。', image: 'https://liquipedia.net/commons/images/2/2b/ZywOo_at_BLAST_Bounty_Winter_2026.jpg', imageSource: 'liquipedia', aliases: ['载物'] },
@@ -286,6 +336,434 @@ const csClutches: DailyCard[] = [
   { key: 'awp-save', title: '今日CS残局', name: '大狙残局', subtitle: '高价值武器 / 站位选择', scoreLabel: '残局指数', advice: '有机会就打一枪换位，没机会就把狙带走。', avoid: '别为了镜头把全队最贵的枪送了。', line: '狙残局签挺帅，但帅之前先别空。', fandomFile: 'CS2_AWP_Inventory.png' },
 ];
 
+const DEFAULT_TRAINING_STORE_PATH = path.resolve(__dirname, '..', '..', 'data', 'cs-training.json');
+const MAX_TRAINING_LOGS = 2000;
+const TRAINING_RETENTION_MS = 180 * 24 * 60 * 60 * 1000;
+let trainingStorePathOverride = '';
+
+function trainingStorePath(): string {
+  return trainingStorePathOverride || DEFAULT_TRAINING_STORE_PATH;
+}
+
+function emptyTrainingStore(): CsTrainingStore {
+  return { version: 1, logs: [] };
+}
+
+function cleanTrainingText(value: string, max = 80): string {
+  return (value || '')
+    .replace(/\s+/g, ' ')
+    .replace(/[|`<>]/g, '')
+    .trim()
+    .slice(0, max);
+}
+
+function loadTrainingStore(): CsTrainingStore {
+  const filepath = trainingStorePath();
+  if (!fs.existsSync(filepath)) return emptyTrainingStore();
+  try {
+    const parsed = JSON.parse(fs.readFileSync(filepath, 'utf-8'));
+    const logs = Array.isArray(parsed?.logs) ? parsed.logs : [];
+    return {
+      version: 1,
+      logs: logs
+        .filter((item: Partial<CsTrainingLogEntry>) => item && item.id && item.userId && item.chatId && item.createdAt)
+        .map((item: CsTrainingLogEntry) => ({
+          id: String(item.id),
+          chatType: item.chatType === 'private' ? 'private' : 'group',
+          chatId: Number(item.chatId),
+          groupId: item.groupId ? Number(item.groupId) : undefined,
+          userId: Number(item.userId),
+          displayName: cleanTrainingText(item.displayName || `user${item.userId}`, 24),
+          area: normalizeTrainingArea(item.area),
+          minutes: clampMinutes(item.minutes),
+          map: cleanTrainingText(item.map || '', 32),
+          weapon: cleanTrainingText(item.weapon || '', 32),
+          note: cleanTrainingText(item.note || '', 100),
+          createdAt: Number(item.createdAt || 0),
+        })),
+    };
+  } catch {
+    return emptyTrainingStore();
+  }
+}
+
+function saveTrainingStore(store: CsTrainingStore): void {
+  const filepath = trainingStorePath();
+  const cutoff = Date.now() - TRAINING_RETENTION_MS;
+  const logs = store.logs
+    .filter((item) => item.createdAt >= cutoff)
+    .sort((a, b) => b.createdAt - a.createdAt)
+    .slice(0, MAX_TRAINING_LOGS)
+    .sort((a, b) => a.createdAt - b.createdAt);
+  fs.mkdirSync(path.dirname(filepath), { recursive: true });
+  const tmp = `${filepath}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify({ version: 1, logs }, null, 2), 'utf-8');
+  fs.renameSync(tmp, filepath);
+}
+
+function clampMinutes(value: unknown): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return 30;
+  return Math.max(1, Math.min(360, Math.round(parsed)));
+}
+
+function normalizeTrainingArea(value: unknown): TrainingArea {
+  const text = String(value || '').toLowerCase();
+  if (['utility', 'nade', '道具', '投掷物'].includes(text)) return 'utility';
+  if (['map', '地图', '控图'].includes(text)) return 'map';
+  if (['role', '定位', '位置'].includes(text)) return 'role';
+  if (['clutch', '残局', '回防'].includes(text)) return 'clutch';
+  if (['review', 'demo', '复盘', '录像'].includes(text)) return 'review';
+  if (['match', '实战', '天梯', '排位'].includes(text)) return 'match';
+  return 'aim';
+}
+
+function areaLabel(area: TrainingArea): string {
+  const labels: Record<TrainingArea, string> = {
+    aim: '练枪',
+    utility: '道具',
+    map: '地图',
+    role: '定位',
+    clutch: '残局',
+    review: '复盘',
+    match: '实战',
+  };
+  return labels[area];
+}
+
+function compactTrainingCompare(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9\u4e00-\u9fa5]/g, '');
+}
+
+const trainingWeaknessSpecs: Record<TrainingWeaknessKey, {
+  label: string;
+  patterns: RegExp[];
+  advice: string;
+}> = {
+  death: {
+    label: '死亡质量',
+    patterns: [/死亡|死了|暴毙|白给|先死|首死|被抓|掉人|送了|干拉死|没换到/i],
+    advice: '先截3个死亡回合，分清是干拉、被抓timing还是没等补枪；下一局只改一个死法。',
+  },
+  trade: {
+    label: '补枪交换',
+    patterns: [/补枪|交易|trade|二身位|同步|跟不上|拉不开|距离太远|换不到|没补上/i],
+    advice: '把二身位距离拉到能2秒内补枪，突破时先喊“我出/你补”，别各打各的。',
+  },
+  utility: {
+    label: '道具时机',
+    patterns: [/道具|投掷物|烟|闪|火|雷|没闪|白了自己|封烟|烟没|忘丢|没丢|丢晚|丢早|nade|utility/i],
+    advice: '每张图只挑2颗高频烟闪火，练到能说清目的、落点和出手时机，再进实战。',
+  },
+  aim: {
+    label: '急停预瞄',
+    patterns: [/急停|预瞄|拉枪|控枪|压枪|爆头线|枪法|定位|peek|干拉|空枪|马枪|反应/i],
+    advice: '先把急停和预瞄线校准，DM里少追击杀数，多看第一枪是不是干净。',
+  },
+  clutch: {
+    label: '残局回防',
+    patterns: [/残局|回防|下包|拆包|保枪|1v\d?|clutch|postplant|时间不够|没钳/i],
+    advice: '残局先数人数、道具和时间；能等队友就等，不能打就保枪，别把优势打成单挑。',
+  },
+  map: {
+    label: '地图信息',
+    patterns: [/控图|默认|中路|香蕉道|长箱|短箱|a点|b点|包点|站位|架点|信息|timing|被绕|地图理解/i],
+    advice: '复盘开局30秒的信息链：谁拿空间、谁补道具、谁防绕后，先把默认打明白。',
+  },
+  review: {
+    label: '复盘闭环',
+    patterns: [/复盘|demo|录像|回看|死亡回合|截\d?|看录像|检讨/i],
+    advice: '复盘别只说“枪软”，每次写一个原因和一个下局动作，第二天再看有没有复发。',
+  },
+};
+
+function detectTrainingCardName(text: string, cards: DailyCard[]): string {
+  const compact = compactTrainingCompare(text);
+  for (const card of cards) {
+    const names = [card.key, card.name, card.title.replace(/^今日CS/, '')];
+    if (names.some((name) => {
+      const normalized = compactTrainingCompare(name);
+      return normalized && compact.includes(normalized);
+    })) {
+      return card.name;
+    }
+  }
+  return '';
+}
+
+function detectTrainingWeapon(text: string): string {
+  const compact = compactTrainingCompare(text);
+  if (/ak|ak47|ak-47/.test(compact)) return 'AK-47';
+  if (/m4|a1s|m4a1/.test(compact)) return 'M4A1-S';
+  if (/awp|大狙|狙/.test(compact)) return 'AWP';
+  if (/deagle|沙鹰/.test(compact)) return 'Desert Eagle';
+  return detectTrainingCardName(text, csWeapons);
+}
+
+function detectTrainingArea(text: string): TrainingArea {
+  const compact = compactTrainingCompare(text);
+  if (/(复盘|demo|录像|死亡回合|回看)/.test(compact)) return 'review';
+  if (/(道具|烟|闪|火|雷|投掷物|nade|utility)/i.test(text)) return 'utility';
+  if (/(残局|回防|下包|保枪|1v|clutch)/i.test(text)) return 'clutch';
+  if (/(定位|突破|辅助|锚点|自由人|指挥|狙击手|role)/i.test(text)) return 'role';
+  if (/(实战|天梯|排位|官匹|faceit|premier|match)/i.test(text)) return 'match';
+  if (/(练枪|枪法|急停|预瞄|拉枪|控枪|爆头|死斗|dm|bot|ak|awp|m4|沙鹰)/i.test(text)) return 'aim';
+  if (/(地图|控图|默认|mirage|inferno|nuke|ancient|anubis|dust2|overpass)/i.test(text)) return 'map';
+  return 'aim';
+}
+
+function detectTrainingWeaknesses(text: string): TrainingWeaknessKey[] {
+  const normalized = cleanTrainingText(text, 240).toLowerCase();
+  if (!normalized) return [];
+  return (Object.keys(trainingWeaknessSpecs) as TrainingWeaknessKey[])
+    .filter((key) => trainingWeaknessSpecs[key].patterns.some((pattern) => pattern.test(normalized)));
+}
+
+function primaryTrainingWeaknessText(keys: TrainingWeaknessKey[]): string {
+  return keys.map((key) => trainingWeaknessSpecs[key].label).join(' / ');
+}
+
+function weaknessLogCommand(parsed: ReturnType<typeof parseTrainingLogInput>): string {
+  if (!parsed) return '/cstrain log 30 Mirage AK 急停';
+  const noteCompact = compactTrainingCompare(parsed.note);
+  const mapPart = parsed.map && !noteCompact.includes(compactTrainingCompare(parsed.map)) ? parsed.map : '';
+  const weaponCompact = compactTrainingCompare(parsed.weapon);
+  const weaponPart = parsed.weapon
+    && !noteCompact.includes(weaponCompact)
+    && !(weaponCompact === 'ak47' && noteCompact.includes('ak'))
+    && !(weaponCompact === 'm4a1s' && noteCompact.includes('m4'))
+    ? parsed.weapon
+    : '';
+  const parts = [
+    '/cstrain log',
+    parsed.area,
+    String(parsed.minutes),
+    mapPart,
+    weaponPart,
+    parsed.note || '',
+  ].filter(Boolean);
+  return cleanTrainingText(parts.join(' '), 120);
+}
+
+function parseTrainingLogInput(args: string[]): { area: TrainingArea; minutes: number; map: string; weapon: string; note: string } | null {
+  const raw = args.join(' ').trim();
+  if (!raw) return null;
+  const minutesMatch = raw.match(/(?:^|\s)(\d{1,3})(?:\s*(?:分钟|min|m))?(?=\s|$)/i);
+  const minutes = minutesMatch ? clampMinutes(minutesMatch[1]) : 30;
+  const withoutMinutes = minutesMatch
+    ? `${raw.slice(0, minutesMatch.index).trim()} ${raw.slice((minutesMatch.index || 0) + minutesMatch[0].length).trim()}`.trim()
+    : raw;
+  if (!withoutMinutes && !minutesMatch) return null;
+  const area = normalizeTrainingArea(args[0]);
+  const detectedArea = area === 'aim' && !/^(?:aim|枪法|练枪)$/i.test(args[0] || '')
+    ? detectTrainingArea(raw)
+    : area;
+  const map = detectTrainingCardName(raw, csMaps);
+  const weapon = detectTrainingWeapon(raw);
+  const note = cleanTrainingText(withoutMinutes || raw, 100);
+  return { area: detectedArea, minutes, map, weapon, note };
+}
+
+function analyzeTrainingLogInput(args: string[]): {
+  parsed: NonNullable<ReturnType<typeof parseTrainingLogInput>>;
+  weaknesses: TrainingWeaknessKey[];
+} | null {
+  const parsed = parseTrainingLogInput(args);
+  if (!parsed) return null;
+  const weaknesses = detectTrainingWeaknesses([parsed.note, parsed.map, parsed.weapon, parsed.area].join(' '));
+  return { parsed, weaknesses };
+}
+
+function trainingDisplayName(ctx: PluginContext): string {
+  return cleanTrainingText(ctx.event.sender.card || ctx.event.sender.nickname || `user${ctx.event.user_id}`, 24);
+}
+
+function addTrainingLog(ctx: PluginContext, parsed: { area: TrainingArea; minutes: number; map: string; weapon: string; note: string }): CsTrainingLogEntry {
+  const store = loadTrainingStore();
+  const createdAt = Date.now();
+  const entry: CsTrainingLogEntry = {
+    id: `${createdAt.toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+    chatType: ctx.chatType,
+    chatId: Number(ctx.chatId),
+    groupId: ctx.groupId,
+    userId: ctx.event.user_id,
+    displayName: trainingDisplayName(ctx),
+    area: parsed.area,
+    minutes: parsed.minutes,
+    map: parsed.map,
+    weapon: parsed.weapon,
+    note: parsed.note,
+    createdAt,
+  };
+  store.logs.push(entry);
+  saveTrainingStore(store);
+  return entry;
+}
+
+function logsForUser(chatType: 'group' | 'private', chatId: number | string, userId: number, days = 14): CsTrainingLogEntry[] {
+  const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
+  return loadTrainingStore().logs
+    .filter((item) => item.chatType === chatType && String(item.chatId) === String(chatId) && item.userId === userId && item.createdAt >= cutoff)
+    .sort((a, b) => b.createdAt - a.createdAt);
+}
+
+function collectTrainingWeaknessSignals(logs: CsTrainingLogEntry[]): TrainingWeaknessSignal[] {
+  const signals = new Map<TrainingWeaknessKey, TrainingWeaknessSignal>();
+  for (const log of logs) {
+    const keys = detectTrainingWeaknesses([log.note, log.map, log.weapon, log.area].join(' '));
+    for (const key of keys) {
+      const spec = trainingWeaknessSpecs[key];
+      const existing = signals.get(key);
+      if (existing) {
+        existing.count += 1;
+        existing.minutes += log.minutes;
+        if (!existing.sample && log.note) existing.sample = log.note;
+      } else {
+        signals.set(key, {
+          key,
+          label: spec.label,
+          count: 1,
+          minutes: log.minutes,
+          sample: log.note,
+        });
+      }
+    }
+  }
+  return [...signals.values()].sort((a, b) => b.count - a.count || b.minutes - a.minutes || a.label.localeCompare(b.label, 'zh-CN'));
+}
+
+function summarizeTrainingLogs(logs: CsTrainingLogEntry[]): {
+  sessions: number;
+  minutes: number;
+  byArea: Partial<Record<TrainingArea, number>>;
+  topArea: TrainingArea | null;
+  missing: TrainingArea[];
+  weaknesses: TrainingWeaknessSignal[];
+  recent: CsTrainingLogEntry[];
+} {
+  const byArea: Partial<Record<TrainingArea, number>> = {};
+  let minutes = 0;
+  for (const log of logs) {
+    minutes += log.minutes;
+    byArea[log.area] = (byArea[log.area] || 0) + log.minutes;
+  }
+  const topArea = (Object.entries(byArea).sort((a, b) => b[1] - a[1])[0]?.[0] || null) as TrainingArea | null;
+  const missing = (['aim', 'utility', 'review', 'match'] as TrainingArea[]).filter((area) => !byArea[area]);
+  return { sessions: logs.length, minutes, byArea, topArea, missing, weaknesses: collectTrainingWeaknessSignals(logs), recent: logs.slice(0, 5) };
+}
+
+function formatTrainingWeaknessSignals(signals: TrainingWeaknessSignal[], limit = 3): string {
+  return signals.slice(0, limit).map((signal) => `${signal.label}${signal.count}次`).join(' / ');
+}
+
+function buildTrainingAdvice(summary: ReturnType<typeof summarizeTrainingLogs>): string {
+  if (summary.sessions === 0) return '还没训练记录，先用 /cstrain log 30 Mirage AK 急停 记一条，后面就能按你短板调计划。';
+  const topWeakness = summary.weaknesses[0];
+  if (topWeakness) {
+    const sample = topWeakness.sample ? `你日志里写过“${cleanTrainingText(topWeakness.sample, 28)}”，` : '';
+    return `${sample}${trainingWeaknessSpecs[topWeakness.key].advice}`;
+  }
+  if (summary.minutes < 90) return '训练频率还偏低，先别追花活，连续三天把热身+一项重点练完。';
+  if (summary.topArea === 'aim' && summary.missing.includes('utility')) return '最近练枪偏多，道具偏少；今天补一组烟闪火，别只靠枪法救坏决策。';
+  if (summary.missing.includes('review')) return '最近缺复盘；今天至少截3个死亡回合，看补枪距离和道具时机。';
+  if (summary.missing.includes('match')) return '最近实战记录少；练完打一局，把训练目标带进回合里，不然就是靶场幻觉。';
+  if (summary.topArea === 'utility') return '最近道具有练到，今天把道具和第一枪连起来，别只会站出生点背点位。';
+  return '训练结构还行，今天重点是少贪枪、练完复盘，别让训练变成打卡截图。';
+}
+
+function buildCsTrainingHistoryHint(chatType: 'group' | 'private', chatId: number | string, userId: number): string {
+  const logs = logsForUser(chatType, chatId, userId, 14);
+  if (logs.length === 0) return '';
+  const summary = summarizeTrainingLogs(logs);
+  const areaParts = (Object.entries(summary.byArea) as [TrainingArea, number][])
+    .sort((a, b) => b[1] - a[1])
+    .map(([area, minutes]) => `${areaLabel(area)}${minutes}m`)
+    .join(' / ');
+  const weaknessParts = formatTrainingWeaknessSignals(summary.weaknesses);
+  return [
+    `训练历史：近14天${summary.sessions}次/${summary.minutes}分钟${areaParts ? `，${areaParts}` : ''}`,
+    weaknessParts ? `日志短板：${weaknessParts}` : '',
+    `个人短板：${buildTrainingAdvice(summary)}`,
+  ].filter(Boolean).join('\n');
+}
+
+function formatTrainingLogEntry(entry: CsTrainingLogEntry): string {
+  const parts = [
+    areaLabel(entry.area),
+    `${entry.minutes}分钟`,
+    entry.map || '',
+    entry.weapon || '',
+  ].filter(Boolean);
+  return `${parts.join(' / ')}${entry.note ? ` | ${entry.note}` : ''}`;
+}
+
+function formatCsTrainingStats(chatType: 'group' | 'private', chatId: number | string, userId: number): string {
+  const logs = logsForUser(chatType, chatId, userId, 14);
+  const summary = summarizeTrainingLogs(logs);
+  if (summary.sessions === 0) {
+    return [
+      'CS训练记录',
+      '近14天还没有记录。',
+      '用法：/cstrain log 30 Mirage AK 急停',
+      '也可以：/cstrain log 道具 20 Inferno 烟闪',
+    ].join('\n');
+  }
+  const areaParts = (Object.entries(summary.byArea) as [TrainingArea, number][])
+    .sort((a, b) => b[1] - a[1])
+    .map(([area, minutes]) => `${areaLabel(area)}${minutes}m`)
+    .join(' / ');
+  return [
+    'CS训练记录',
+    `近14天: ${summary.sessions}次 / ${summary.minutes}分钟`,
+    `分布: ${areaParts}`,
+    summary.weaknesses.length ? `日志短板: ${formatTrainingWeaknessSignals(summary.weaknesses)}` : '',
+    `建议: ${buildTrainingAdvice(summary)}`,
+    '',
+    '最近记录:',
+    ...summary.recent.map((entry, index) => `${index + 1}. ${formatTrainingLogEntry(entry)}`),
+    '',
+    '/cstrain clear 可以清空你在当前会话的训练记录',
+  ].filter((line) => line !== '').join('\n');
+}
+
+function formatCsTrainingAnalysis(analysis: NonNullable<ReturnType<typeof analyzeTrainingLogInput>>): string {
+  const weaknessText = primaryTrainingWeaknessText(analysis.weaknesses) || '暂时没识别到明确短板';
+  const advice = analysis.weaknesses
+    .slice(0, 3)
+    .map((key, index) => `${index + 1}. ${trainingWeaknessSpecs[key].advice}`);
+  return [
+    'CS训练日志分析',
+    `识别重点: ${weaknessText}`,
+    `推断分类: ${areaLabel(analysis.parsed.area)} / ${analysis.parsed.minutes}分钟${analysis.parsed.map ? ` / ${analysis.parsed.map}` : ''}${analysis.parsed.weapon ? ` / ${analysis.parsed.weapon}` : ''}`,
+    analysis.parsed.note ? `原始摘要: ${analysis.parsed.note}` : '',
+    advice.length ? '建议动作:' : '',
+    ...advice,
+    advice.length ? '' : '建议动作: 先补一句具体问题，比如“死亡多、补枪慢、没闪、回防乱”，我再给你拆训练项。',
+    `要写入训练历史可以发: ${weaknessLogCommand(analysis.parsed)}`,
+    '真话边界：这里只分析你发的文字日志，不读取demo/截图，也不当作实时赛事事实。',
+  ].filter((line) => line !== '').join('\n');
+}
+
+function clearTrainingLogs(chatType: 'group' | 'private', chatId: number | string, userId: number): number {
+  const store = loadTrainingStore();
+  const before = store.logs.length;
+  store.logs = store.logs.filter((item) => !(item.chatType === chatType && String(item.chatId) === String(chatId) && item.userId === userId));
+  saveTrainingStore(store);
+  return before - store.logs.length;
+}
+
+function trainingCommandUsage(): string {
+  return [
+    'CS训练记录用法',
+    '/cstrain - 今日训练计划',
+    '/cstrain log 30 Mirage AK 急停',
+    '/cstrain log 道具 20 Inferno 烟闪',
+    '/cstrain analyze Mirage 死亡8次 补枪距离太远 没闪',
+    '/cstrain stats - 看近14天训练分布',
+    '/cstrain clear - 清空当前会话你的训练记录',
+  ].join('\n');
+}
+
 function todayKey(): string {
   return new Date().toLocaleDateString('zh-CN', { timeZone: 'Asia/Shanghai' });
 }
@@ -366,12 +844,121 @@ async function buildCsBrief(): Promise<string> {
 function buildSceneTemplate(query: string): string {
   const line = getRandomKnowledgeLine('scene', query) || getRandomKnowledgeLine('style', query);
   if (!line) return '场景库暂时没货。把授权切片笔记放 knowledge/inbox/，再用 /kb ingest 进候选。';
-  const topic = query || '随机';
+  const blueprint = sceneBlueprintFor(query, line);
+  const topic = query.trim() || blueprint.label;
   return [
     `直播场景 | ${topic}`,
-    line,
-    '用法：先按这个结构接情绪，再补一句具体判断；别把它当逐字原话复读。',
+    `触发：${blueprint.trigger}`,
+    `反应：${blueprint.reaction}`,
+    `判断：${blueprint.judgment}`,
+    `短句：${blueprint.shortLines.join(' / ')}`,
+    `素材：${line}`,
+    '禁用：不要当逐字原话；不要长段复述；事实、赛果、阵容、转会先看实时来源。',
   ].join('\n');
+}
+
+interface SceneBlueprint {
+  label: string;
+  trigger: string;
+  reaction: string;
+  judgment: string;
+  shortLines: string[];
+}
+
+function normalizeSceneQuery(input: string): string {
+  return input.toLowerCase().replace(/^\//, '').replace(/\s+/g, '').replace(/[：:，。！？!?、,.]/g, '');
+}
+
+function sceneBlueprintFor(query: string, sourceLine: string): SceneBlueprint {
+  const text = `${normalizeSceneQuery(query)} ${normalizeSceneQuery(sourceLine)}`;
+  if (/礼物|老板|gift|舰长|醒目|sc|superchat/.test(text)) {
+    return {
+      label: '礼物感谢',
+      trigger: '群友送礼、连送或大额礼物，需要先点名感谢，再接一个 CS 经济梗。',
+      reaction: '先短感谢，不谄媚；数量多再抬强度，最后轻轻玩梗收住。',
+      judgment: '这是拟态感谢模板，不说成现实直播原话，也不假装平台真的收款。',
+      shortLines: ['老板大气', '这波经济补上了', '火力支援到了'],
+    };
+  }
+  if (/白给|送|eco|经济|强起|保枪/.test(text)) {
+    return {
+      label: '经济局白给',
+      trigger: '经济劣势、单走送枪、补枪距离断，或者优势方打成逐个白给。',
+      reaction: '第一句先压住“这波不对劲”，第二句点出送在哪，第三句给可执行判断。',
+      judgment: '穷不是白给的理由；短枪要靠道具和补枪，优势方也别一个人开香槟。',
+      shortLines: ['先别急', '这枪送得太干脆了', '穷不是白给的理由'],
+    };
+  }
+  if (/残局|clutch|1v|一打|回防|拆包|下包/.test(text)) {
+    return {
+      label: '残局处理',
+      trigger: '1vX、回防、时间压力、假拆真拉、包点信息不完整。',
+      reaction: '先报人数和时间，再说信息差，最后评价这波是纪律赢还是操作硬抬。',
+      judgment: '残局别急着找人头，先确认包点、时间和对方可能位置。',
+      shortLines: ['别急找人', '信息先拿明白', '这把靠纪律赢'],
+    };
+  }
+  if (/道具|烟|闪|火|雷|utility|投掷|封烟/.test(text)) {
+    return {
+      label: '道具失误',
+      trigger: '烟闪火雷没服务 timing，闪到队友，封烟反而帮对面。',
+      reaction: '先说可见失误，再解释这颗道具本来该服务谁，最后给一句复盘建议。',
+      judgment: '道具是好道具，人得会用；别把节目效果打成回合成本。',
+      shortLines: ['这烟对面笑了', '道具是好道具', '人要会用'],
+    };
+  }
+  if (/优势|翻盘|开香槟|被翻|逆转|comeback/.test(text)) {
+    return {
+      label: '优势被翻',
+      trigger: '人数、经济或比分领先后开始松，补枪/清点/道具交换断掉。',
+      reaction: '先提醒先别开香槟，再点出哪个环节开始不对劲，最后给回合纪律。',
+      judgment: 'CS 最怕觉得稳；优势不是免死金牌，细节断一环就要还回去。',
+      shortLines: ['先别开香槟', '这把开始不对劲了', '优势不是免死金牌'],
+    };
+  }
+  if (/弹幕|嘴硬|理解|质疑|云|逆天/.test(text)) {
+    return {
+      label: '弹幕斗嘴',
+      trigger: '群友只看比分不看回合，或者用离谱理解强行洗一波操作。',
+      reaction: '先短促反问，再补一个被忽略的信息点，最后把话落回回合本身。',
+      judgment: '可以嘴硬，但要讲证据；喷理解不喷现实身份。',
+      shortLines: ['你认真的吗', '先看回合别只看比分', '这理解要回炉一下'],
+    };
+  }
+  if (/选手|状态|rating|adr|新人|老将|队伍|阵容|转会|排名/.test(text)) {
+    return {
+      label: '选手/队伍评价',
+      trigger: '聊选手状态、队伍阵容、排名、转会、角色定位或近期数据。',
+      reaction: '先查实时来源，再给短判断；没证据就说变得快，别硬编。',
+      judgment: '公开事实以 CS API、HLTV/Liquipedia、官方公告等来源为准，风格评价和事实分开。',
+      shortLines: ['这事得看最新来源', '别让我硬编', '数据先摆出来'],
+    };
+  }
+  if (/图片|识图|战绩图|截图|语音|听写|录音/.test(text)) {
+    return {
+      label: '多模态接话',
+      trigger: '群友发图、战绩截图或语音消息，需要按实际可见/听写内容回复。',
+      reaction: '先说看见或听写到什么；看不清、没听写就直说，不补不存在的细节。',
+      judgment: '多模态只按真实输入说话，截图数据和语音内容都要留边界。',
+      shortLines: ['我看图里是', '这块看不清', '听写到的是这个'],
+    };
+  }
+  if (/身份|本人|授权|bot|机器人|ai/.test(text)) {
+    return {
+      label: '身份边界',
+      trigger: '群友问是不是本人、是不是机器人、是否代表现实主播。',
+      reaction: '日常轻嘴硬带过；明确追问本人/授权/代表性时说明这是群 bot。',
+      judgment: '学的是直播反应节奏和 CS 话题知识，不冒充现实本人。',
+      shortLines: ['你管我是不是', '接着说事', '不代表本人表态'],
+    };
+  }
+  return {
+    label: '随机场景',
+    trigger: '弹幕抛来一个话题，需要先接情绪，再给一句具体判断。',
+    reaction: '少铺垫，先抓最关键的信息点；能查实时就查，不能查就留边界。',
+    judgment: '像直播间接话，不像背模板；一句玩梗后必须回到事实或操作判断。',
+    shortLines: ['这波有说法', '先别急', '我看这事不简单'],
+  };
 }
 
 function dailyCardImagePlan(card: DailyCard): string {
@@ -503,6 +1090,71 @@ function isDailyCardRequest(command: string | null, rawText: string, kind: Daily
   return /(cs套餐|cs2套餐|今日套餐|每日套餐|今日套装|每日套装|今天怎么打|今天打啥)/.test(text);
 }
 
+function isCsTrainingRequest(command: string | null, rawText: string): boolean {
+  if (['cstrain', 'cstraining', 'cspractice', 'cs训练', '练枪任务', '练枪计划'].includes(command || '')) return true;
+  const text = normalizeDrawText(rawText);
+  if (!text || /(语音|声音|克隆|朗读|tts|stt)/.test(text)) return false;
+  if ([
+    '今日cs训练',
+    '每日cs训练',
+    '今天cs训练',
+    '今日cs2训练',
+    '每日cs2训练',
+    '今天怎么练枪',
+    '今天练什么枪',
+    '今天练什么道具',
+    '来个cs训练',
+    '来个练枪任务',
+    '给我安排cs训练',
+    'cs训练计划',
+    'cs练枪计划',
+    '练枪任务',
+  ].includes(text)) return true;
+  const hasDailyIntent = /(今日|每日|今天|本日|来个|安排|给我)/.test(text);
+  const hasTrainingIntent = /(cs训练|cs2训练|练枪|练道具|训练计划|练习计划|道具练习)/.test(text);
+  return hasDailyIntent && hasTrainingIntent;
+}
+
+function isCsTrainingCommand(command: string | null): boolean {
+  return ['cstrain', 'cstraining', 'cspractice', 'cs训练', '练枪任务', '练枪计划'].includes(command || '');
+}
+
+function isCsQuizRequest(command: string | null, rawText: string): boolean {
+  if (['csquiz', 'cschallenge', 'cs小考', 'cs考题', 'cs问答', 'cs挑战', '今日cs题', '每日cs题'].includes(command || '')) return true;
+  const text = normalizeDrawText(rawText);
+  if (!text || /(语音|声音|克隆|朗读|tts|stt)/.test(text)) return false;
+  if ([
+    'csquiz',
+    'cschallenge',
+    'cs小考',
+    'cs2小考',
+    'cs考题',
+    'cs2考题',
+    'cs问答',
+    'cs2问答',
+    'cs挑战',
+    'cs2挑战',
+    '今日cs题',
+    '每日cs题',
+    '今日cs小考',
+    '每日cs小考',
+    '今日cs问答',
+    '每日cs问答',
+    '今天cs小考',
+    '今天cs考题',
+    '今天cs问答',
+    '今天考我cs',
+    '今天cs考我',
+    '来个cs问答',
+    '来个cs小考',
+    '来个cs挑战',
+    '给我来个cs题',
+  ].includes(text)) return true;
+  const hasDailyIntent = /(今日|每日|今天|本日|来个|给我|考我|挑战|小考)/.test(text);
+  const hasQuizIntent = /(cs小考|cs2小考|cs题|cs2题|cs考题|cs2考题|cs问答|cs2问答|cs挑战|cs2挑战|cs答题|cs2答题|cs考我|cs2考我)/.test(text);
+  return hasDailyIntent && hasQuizIntent;
+}
+
 function buildImageFailureLine(): string {
   const stats = getCacheStats();
   return stats.lastError ? `\n图片没发出来：${stats.lastError}` : '\n图片没发出来，先看文字签。';
@@ -531,7 +1183,7 @@ async function buildImageCandidates(url?: string, fallbackPlayerNick?: string, f
   if (fallbackCard?.liquipediaPage) {
     try {
       const dynamicUrl = await Promise.race([
-        resolveTeamImage(fallbackCard.liquipediaPage, fallbackCard.name),
+        teamImageResolver(fallbackCard.liquipediaPage, fallbackCard.name),
         new Promise<null>((r) => setTimeout(() => r(null), 6000)),
       ]);
       if (dynamicUrl) {
@@ -549,7 +1201,7 @@ async function buildImageCandidates(url?: string, fallbackPlayerNick?: string, f
   if (fallbackCard?.fandomFile) {
     try {
       const fandomUrl = await Promise.race([
-        resolveFandomFileImage(fallbackCard.fandomFile),
+        fandomImageResolver(fallbackCard.fandomFile),
         new Promise<null>((r) => setTimeout(() => r(null), 6000)),
       ]);
       if (fandomUrl) {
@@ -572,7 +1224,7 @@ async function buildImageCandidates(url?: string, fallbackPlayerNick?: string, f
     if (representative) {
       try {
         const dynamicUrl = await Promise.race([
-          resolvePlayerImage(representative.nick),
+          playerImageResolver(representative.nick),
           new Promise<null>((r) => setTimeout(() => r(null), 5000)),
         ]);
         if (dynamicUrl) {
@@ -596,7 +1248,7 @@ async function buildImageCandidates(url?: string, fallbackPlayerNick?: string, f
   if (fallbackPlayerNick) {
     try {
       const dynamicUrl = await Promise.race([
-        resolvePlayerImage(fallbackPlayerNick),
+        playerImageResolver(fallbackPlayerNick),
         new Promise<null>((r) => setTimeout(() => r(null), 5000)),
       ]);
       if (dynamicUrl) {
@@ -840,6 +1492,368 @@ async function buildLoadoutMessage(userId: number, scopeId: number, isPrivate: b
   return message;
 }
 
+const csQuizKinds: CsQuizKind[] = ['map', 'weapon', 'utility', 'tactic', 'clutch'];
+
+function quizScoreLine(score: number): string {
+  if (score >= 90) return '题感爆棚';
+  if (score >= 75) return '理解在线';
+  if (score >= 55) return '正常发挥';
+  if (score >= 35) return '先别嘴硬';
+  return '今天补课';
+}
+
+function quizOptionLabel(index: number): string {
+  return String.fromCharCode(65 + index);
+}
+
+function finalizeCsQuiz(quiz: CsQuiz, userId: number, scopeId: number): CsQuiz {
+  const ranked = quiz.options
+    .map((option, index) => ({
+      option,
+      originalIndex: index,
+      rank: dailySeedForKind(`csquiz_option_${quiz.kind}_${index}`, userId, scopeId),
+    }))
+    .sort((a, b) => a.rank - b.rank || a.originalIndex - b.originalIndex);
+  const correctOptionIndex = ranked.findIndex((item) => item.originalIndex === quiz.correctOptionIndex);
+  const correctLabel = quizOptionLabel(correctOptionIndex >= 0 ? correctOptionIndex : 0);
+  const answer = /^选\s*[A-Z一二三123][。.．,，:：\s]*/i.test(quiz.answer)
+    ? quiz.answer.replace(/^选\s*[A-Z一二三123][。.．,，:：\s]*/i, `选 ${correctLabel}。`)
+    : `选 ${correctLabel}。${quiz.answer}`;
+  return {
+    ...quiz,
+    options: ranked.map((item) => item.option),
+    correctOptionIndex: correctOptionIndex >= 0 ? correctOptionIndex : 0,
+    answer,
+  };
+}
+
+function normalizeCsQuizChoice(input: string): number | null {
+  const text = normalizeDrawText(input || '');
+  if (!text) return null;
+  const match = text.match(/^(?:answer|ans|check|答案|答题|提交|选择|选)?([abc123一二三])$/i);
+  if (!match) return null;
+  const token = match[1].toLowerCase();
+  if (token === 'a' || token === '1' || token === '一') return 0;
+  if (token === 'b' || token === '2' || token === '二') return 1;
+  if (token === 'c' || token === '3' || token === '三') return 2;
+  return null;
+}
+
+function parseCsQuizAnswerArgs(args: string[]): number | null {
+  if (args.length === 0) return null;
+  const first = (args[0] || '').toLowerCase();
+  const rest = ['answer', 'ans', 'check', 'submit', 'choose', '答', '答案', '答题', '提交', '选择', '选'].includes(first)
+    ? args.slice(1)
+    : args;
+  return normalizeCsQuizChoice(rest.join(' '));
+}
+
+function isCsQuizAnswerArgs(args: string[]): boolean {
+  if (args.length === 0) return false;
+  const first = (args[0] || '').toLowerCase();
+  return ['answer', 'ans', 'check', 'submit', 'choose', '答', '答案', '答题', '提交', '选择', '选'].includes(first)
+    || parseCsQuizAnswerArgs(args) !== null;
+}
+
+function formatCsQuizAnswer(userId: number, scopeId: number, args: string[]): string {
+  const quiz = dailyCsQuizFor(userId, scopeId);
+  const choiceIndex = parseCsQuizAnswerArgs(args);
+  const choices = quiz.options.map((option, index) => `${quizOptionLabel(index)}. ${option}`).join(' / ');
+  if (choiceIndex === null || choiceIndex < 0 || choiceIndex >= quiz.options.length) {
+    return [
+      `今日CS小考判分 | ${todayKey()}`,
+      `题型：${quiz.title}`,
+      `题目：${quiz.question}`,
+      `选项：${choices}`,
+      '用法：/csquiz answer A  或  /csquiz 答 B',
+      '真话边界：这是本地每日小考，不是实时赛事事实；问赛程/赛果用 /cs brief。',
+    ].join('\n');
+  }
+  const correct = choiceIndex === quiz.correctOptionIndex;
+  const choiceLabel = quizOptionLabel(choiceIndex);
+  const correctLabel = quizOptionLabel(quiz.correctOptionIndex);
+  return [
+    `今日CS小考判分 | ${todayKey()}`,
+    `题型：${quiz.title}`,
+    `你的选择：${choiceLabel}. ${quiz.options[choiceIndex]}`,
+    `结果：${correct ? '对了，有点东西' : '不对，先别嘴硬'}`,
+    `正确参考：${correctLabel}. ${quiz.options[quiz.correctOptionIndex]}`,
+    `解析：${quiz.answer}`,
+    `机器短评：${correct ? '这波理解在线，下一把别开香槟。' : quiz.comment}`,
+    '继续：/csquiz 看今日题面；/cstrain 按这个短板练一组。',
+    '真话边界：这是本地每日小考，不是实时赛事事实；问赛程/赛果用 /cs brief。',
+  ].join('\n');
+}
+
+function dailyCsQuizFor(userId: number, scopeId: number): CsQuiz {
+  const kind = csQuizKinds[dailySeedForKind('csquiz_kind', userId, scopeId) % csQuizKinds.length];
+  const player = dailyPlayerFor(userId, scopeId);
+  const map = dailyCardFor('csquiz_map', userId, scopeId, csMaps);
+  const weapon = dailyCardFor('csquiz_weapon', userId, scopeId, csWeapons);
+  const role = dailyCardFor('csquiz_role', userId, scopeId, csRoles);
+  const utility = dailyCardFor('csquiz_utility', userId, scopeId, csUtilities);
+  const tactic = dailyCardFor('csquiz_tactic', userId, scopeId, csTactics);
+  const clutch = dailyCardFor('csquiz_clutch', userId, scopeId, csClutches);
+  const score = dailyScoreForKind('csquiz', userId, scopeId);
+  const comment = score >= 80
+    ? `这题不难，${player.nick}签给你加点理解分，但别答完就开香槟。`
+    : score >= 45
+      ? `能答，关键是别只会喊枪软，要把回合目的说清楚。`
+      : `今天先补基本功，别急着当解说，先把选项看完。`;
+
+  if (kind === 'map') {
+    return finalizeCsQuiz({
+      kind,
+      title: '地图决策',
+      context: `${map.name} / ${utility.name}`,
+      question: `今天抽到 ${map.name}，开局默认最该先服务哪件事？`,
+      options: [
+        `用${utility.name}先拿关键区域信息，再决定提速还是控图`,
+        '不等道具直接干拉，赢了就是天才，输了怪队友',
+        '五个人各玩各的，等对面自己送一波大的',
+      ],
+      correctOptionIndex: 0,
+      answer: `选 A。${map.advice} ${utility.advice}`,
+      comment,
+      score,
+    }, userId, scopeId);
+  }
+
+  if (kind === 'weapon') {
+    return finalizeCsQuiz({
+      kind,
+      title: '枪械定位',
+      context: `${weapon.name} / ${role.name}`,
+      question: `今天主枪是 ${weapon.name}，搭配 ${role.name}，最怕犯哪种错？`,
+      options: [
+        '按定位打交换和补枪距离，先把回合打完整',
+        '枪好就单摸找镜头，队友在哪不重要',
+        '经济不够也硬起当大哥，反正节目效果拉满',
+      ],
+      correctOptionIndex: 0,
+      answer: `选 A。${weapon.advice} ${role.advice}`,
+      comment,
+      score,
+    }, userId, scopeId);
+  }
+
+  if (kind === 'utility') {
+    return finalizeCsQuiz({
+      kind,
+      title: '道具时机',
+      context: `${map.name} / ${utility.name}`,
+      question: `${map.name} 上要用 ${utility.name}，丢之前最该先问自己什么？`,
+      options: [
+        '这颗道具服务谁、服务哪个 timing、队友能不能接上',
+        '先扔了再说，反正包里有道具不用白不用',
+        '闪到队友也没事，回头说一句“我尽力了”',
+      ],
+      correctOptionIndex: 0,
+      answer: `选 A。${utility.advice} 道具不是摆设，目的和配合要先讲明白。`,
+      comment,
+      score,
+    }, userId, scopeId);
+  }
+
+  if (kind === 'tactic') {
+    return finalizeCsQuiz({
+      kind,
+      title: '战术选择',
+      context: `${map.name} / ${tactic.name}`,
+      question: `今天战术签是「${tactic.name}」，开局最该统一什么？`,
+      options: [
+        '默认、交换距离和第一颗关键道具，先把节奏说清楚',
+        '开局五人静音各玩各的，输了就说对面太准',
+        '每回合都提速一波，反正慢下来就不像节目效果',
+      ],
+      correctOptionIndex: 0,
+      answer: `选 A。${tactic.advice} 地图是 ${map.name}，别把战术打成散步。`,
+      comment,
+      score,
+    }, userId, scopeId);
+  }
+
+  return finalizeCsQuiz({
+    kind,
+    title: '残局判断',
+    context: `${clutch.name} / ${role.name}`,
+    question: `进入「${clutch.name}」局面，剩你处理关键残局，第一反应应该是什么？`,
+    options: [
+      '先确认时间、包点信息和可能枪位，再决定找人还是拖',
+      '脚步拉满直接找人拼，打赢了就是名场面',
+      '边拆边嘴硬，赌对面刚好不看包',
+    ],
+    correctOptionIndex: 0,
+    answer: `选 A。${clutch.advice} 残局别急着证明自己，信息先拿明白。`,
+    comment,
+    score,
+  }, userId, scopeId);
+}
+
+function buildCsQuizMessage(userId: number, scopeId: number, isPrivate: boolean): MessageSegment[] {
+  const quiz = dailyCsQuizFor(userId, scopeId);
+  const options = quiz.options.map((option, index) => `${String.fromCharCode(65 + index)}. ${option}`).join(' / ');
+  const text = [
+    `今日CS小考 | ${todayKey()}`,
+    `题型：${quiz.title}`,
+    `场景：${quiz.context}`,
+    `题感：${quiz.score}/100 ${quizScoreLine(quiz.score)}`,
+    `题目：${quiz.question}`,
+    `选项：${options}`,
+    '参考判断：先别偷看，答完用 /csquiz answer A/B/C 看解析。',
+    '答题：/csquiz answer A  或  /csquiz 答 B',
+    `机器短评：${quiz.comment}`,
+    '真话边界：这是本地每日小考，不是实时赛事事实；问赛程/赛果用 /cs brief。',
+  ].join('\n');
+  const card: DailyCard = {
+    key: `csquiz-${quiz.kind}`,
+    title: '今日CS小考',
+    name: quiz.title,
+    subtitle: quiz.context,
+    scoreLabel: '题感',
+    advice: '先选 A/B/C，再用 /csquiz answer 提交。',
+    avoid: '别把本地小考当实时赛事结论。',
+    line: quiz.comment,
+  };
+  const message: MessageSegment[] = [];
+  if (!isPrivate) message.push({ type: 'at', data: { qq: String(userId) } });
+  message.push({ type: 'text', data: { text: isPrivate ? text : ` ${text}` } });
+  message.push(localDailyCardImage(card, quiz.score));
+  return message;
+}
+
+function trainingIntensity(score: number): { label: string; warmup: number; aim: number; utility: number; review: number } {
+  if (score >= 85) return { label: '上强度', warmup: 10, aim: 18, utility: 14, review: 8 };
+  if (score >= 65) return { label: '正常强度', warmup: 8, aim: 15, utility: 12, review: 6 };
+  if (score >= 40) return { label: '稳住手感', warmup: 6, aim: 12, utility: 10, review: 5 };
+  return { label: '轻量校准', warmup: 5, aim: 10, utility: 8, review: 5 };
+}
+
+function weaponTrainingTask(weapon: DailyCard, score: number): string {
+  const kills = score >= 75 ? 120 : score >= 45 ? 90 : 60;
+  switch (weapon.key) {
+    case 'ak47':
+      return `AK急停和预瞄 ${kills} kill：前30枪只许单点/两连发，别一急就开始泼水。`;
+    case 'm4a1s':
+      return `M4A1-S控枪转移 ${kills} kill：每杀一个就换身位，练偷人，不练站桩。`;
+    case 'awp':
+      return `AWP架点反应 50枪：空枪立刻后撤换点，今天重点练“不送第二枪”。`;
+    case 'deagle':
+      return `沙鹰一发头 60次：只打停稳后的第一发，七发全空就别嘴硬，重来一组。`;
+    case 'mp9':
+      return `MP9近点横拉 ${kills} kill：只打短距离和绕后路线，别拿它和AK中远距离讲道理。`;
+    case 'mac10':
+      return `MAC-10第一身位 ${kills} kill：练吃闪后提速，死也要把信息和站位换出来。`;
+    case 'galil':
+      return `Galil压枪转移 ${kills} kill：穷哥们枪也要打干净，重点练前10发弹道。`;
+    default:
+      return `${weapon.name}基础枪法 ${kills} kill：急停、预瞄、补枪距离三件事别丢。`;
+  }
+}
+
+function mapUtilitySet(map: DailyCard): string[] {
+  const sets: Record<string, string[]> = {
+    mirage: ['A点进攻烟', '拱门闪', '跳台火'],
+    inferno: ['香蕉道控制火', 'CT烟', '棺材闪'],
+    nuke: ['外场一线烟', '铁板火', '黄房闪'],
+    ancient: ['中路烟', 'B坡火', '红房闪'],
+    anubis: ['水路烟', 'A点火', '中路闪'],
+    dust2: ['Xbox烟', '长门闪', 'B门烟'],
+    overpass: ['厕所烟', '工地火', '长管闪'],
+  };
+  return sets[map.key] || ['默认进攻烟', '清点火', '回防闪'];
+}
+
+function utilityTrainingTask(map: DailyCard, utility: DailyCard, minutes: number): string {
+  const [smoke, fire, flash] = mapUtilitySet(map);
+  switch (utility.key) {
+    case 'flash':
+      return `${minutes}分钟 ${map.name} 闪光：练 ${flash}，每次先报闪再peek，连续成功8次才算过。`;
+    case 'smoke':
+      return `${minutes}分钟 ${map.name} 烟：练 ${smoke}，落点歪一次就重丢，别硬说是新战术。`;
+    case 'molotov':
+      return `${minutes}分钟 ${map.name} 火：练 ${fire}，目标是逼位移和拖时间，不是烧空气。`;
+    case 'he':
+      return `${minutes}分钟 ${map.name} 雷：围绕 ${fire} 做反清压血，配枪线一起给，别开局随手丢心理安慰。`;
+    case 'decoy':
+      return `${minutes}分钟 ${map.name} 骗信息：用诱饵配合 ${smoke} 做假动静，但别把整套战术押在诱饵上。`;
+    case 'kit':
+      return `${minutes}分钟 ${map.name} 回防：从两个入口各跑5次，拆包前先清 ${smoke} 附近枪位，别到包前才找钳。`;
+    default:
+      return `${minutes}分钟 ${map.name} 道具：烟火闪各练一颗，要求能讲清楚目的和时机。`;
+  }
+}
+
+function roleTrainingTask(role: DailyCard, tactic: DailyCard, clutch: DailyCard): string {
+  switch (role.key) {
+    case 'entry':
+      return `实战目标：突破时只记两件事，吃闪出点、死前报人数枪位；战术按「${tactic.name}」执行，别一个人开故事。`;
+    case 'support':
+      return `实战目标：每回合至少做一次有效补闪或补烟；残局按「${clutch.name}」复盘，镜头少不等于价值低。`;
+    case 'anchor':
+      return `实战目标：守点先拖5秒再想杀人；被打进点后按「${clutch.name}」练回防纪律，别脚步一响就全交。`;
+    case 'lurker':
+      return `实战目标：侧翼到位前少露信息；配合「${tactic.name}」抓timing，别绕到最后队友全没了。`;
+    case 'igl':
+      return `实战目标：开局给一个默认计划，中期只改一个重点；输回合后用「${tactic.name}」复盘原因，不要只喊枪软。`;
+    case 'awper-role':
+      return `实战目标：每个架点只贪一枪，空枪立刻换位；残局按「${clutch.name}」处理高价值武器。`;
+    default:
+      return `实战目标：围绕「${tactic.name}」打清楚交换和信息，残局用「${clutch.name}」复盘。`;
+  }
+}
+
+function buildCsTrainingMessage(userId: number, scopeId: number, isPrivate: boolean, predictHint = '', historyHint = '', profileHint = ''): MessageSegment[] {
+  const player = dailyPlayerFor(userId, scopeId);
+  const map = dailyCardFor('cstrain_map', userId, scopeId, csMaps);
+  const weapon = dailyCardFor('cstrain_weapon', userId, scopeId, csWeapons);
+  const role = dailyCardFor('cstrain_role', userId, scopeId, csRoles);
+  const utility = dailyCardFor('cstrain_utility', userId, scopeId, csUtilities);
+  const tactic = dailyCardFor('cstrain_tactic', userId, scopeId, csTactics);
+  const clutch = dailyCardFor('cstrain_clutch', userId, scopeId, csClutches);
+  const score = dailyScoreForKind('cstrain', userId, scopeId);
+  const intensity = trainingIntensity(score);
+  const total = intensity.warmup + intensity.aim + intensity.utility + intensity.review;
+  const shortNote = score >= 80
+    ? '这套能上强度，但强度不是上头，练完要能说出自己改了哪一枪。'
+    : score >= 45
+      ? '这套正常打很够用，别练着练着开始娱乐模式。'
+      : '今天先校准基本功，少硬拉，多把动作做干净。';
+  const text = [
+    `今日CS训练 | ${todayKey()}`,
+    `参考选手：${player.nick} (${player.role})`,
+    `地图/武器/定位：${map.name} / ${weapon.name} / ${role.name}`,
+    `道具/战术/残局：${utility.name} / ${tactic.name} / ${clutch.name}`,
+    `训练强度：${score}/100 ${intensity.label}，约${total}分钟`,
+    '',
+    `1. 热身 ${intensity.warmup}分钟：急停、拉枪、预瞄线先校准，别一上来就找人对喷。`,
+    `2. 练枪 ${intensity.aim}分钟：${weaponTrainingTask(weapon, score)}`,
+    `3. 道具 ${utilityTrainingTask(map, utility, intensity.utility)}`,
+    `4. 实战 ${roleTrainingTask(role, tactic, clutch)}`,
+    `5. 复盘 ${intensity.review}分钟：截3个死亡回合，只看站位、补枪距离和道具时机。`,
+    predictHint ? `\n${predictHint}` : '',
+    historyHint ? `\n${historyHint}` : '',
+    profileHint ? `\n${profileHint}` : '',
+    `机器短评：${shortNote}`,
+    '真话边界：这是本地每日训练签，不是实时赛事事实；问赛程/赛果用 /cs brief。',
+  ].join('\n');
+  const card: DailyCard = {
+    key: `cstrain-${map.key}-${weapon.key}-${role.key}`,
+    title: '今日CS训练',
+    name: `${map.name} / ${weapon.name}`,
+    subtitle: `${role.name} / ${utility.name} / ${tactic.name}`,
+    scoreLabel: '训练强度',
+    advice: role.advice,
+    avoid: '别练完不复盘，也别把训练签当实时数据。',
+    line: shortNote,
+  };
+  const message: MessageSegment[] = [];
+  if (!isPrivate) message.push({ type: 'at', data: { qq: String(userId) } });
+  message.push({ type: 'text', data: { text: isPrivate ? text : ` ${text}` } });
+  message.push(localDailyCardImage(card, score));
+  return message;
+}
+
 export const funPlugin: Plugin = {
   name: 'fun',
   description: '趣味功能 - 掷骰子、抽签、决策辅助等',
@@ -1073,7 +2087,7 @@ export const funPlugin: Plugin = {
       return true;
     }
 
-    // ===== /scene 直播场景模板 =====
+    // ===== /scene 直播场景卡 =====
     if (ctx.command === 'scene' || ctx.command === '场景' || ctx.command === 'template' || fuzzy === 'scene') {
       const query = ctx.args.join(' ').trim();
       ctx.reply(buildSceneTemplate(query));
@@ -1170,6 +2184,61 @@ export const funPlugin: Plugin = {
 
     // ===== 每日CS队伍/地图/武器/定位/套餐 =====
     const scopeId = ctx.groupId || 0;
+    if (isCsTrainingCommand(ctx.command)) {
+      const sub = (ctx.args[0] || '').toLowerCase();
+      if (['analyze', 'analyse', 'diagnose', '诊断', '分析'].includes(sub)) {
+        const analysis = analyzeTrainingLogInput(ctx.args.slice(1));
+        if (!analysis) {
+          ctx.reply(trainingCommandUsage());
+          return true;
+        }
+        ctx.replyAt(formatCsTrainingAnalysis(analysis));
+        return true;
+      }
+      if (['log', 'add', 'done', 'record', '记录', '打卡'].includes(sub)) {
+        const parsed = parseTrainingLogInput(ctx.args.slice(1));
+        if (!parsed) {
+          ctx.reply(trainingCommandUsage());
+          return true;
+        }
+        const entry = addTrainingLog(ctx, parsed);
+        ctx.replyAt([
+          `训练记上了：${formatTrainingLogEntry(entry)}`,
+          '后面 /cstrain 会按你最近记录调建议，/cstrain stats 看趋势。',
+        ].join('\n'));
+        return true;
+      }
+      if (['stats', 'status', 'history', 'list', '记录', '统计'].includes(sub)) {
+        ctx.reply(formatCsTrainingStats(ctx.chatType, ctx.chatId, ctx.event.user_id));
+        return true;
+      }
+      if (['clear', 'reset', 'clean', '清空', '重置'].includes(sub)) {
+        const removed = clearTrainingLogs(ctx.chatType, ctx.chatId, ctx.event.user_id);
+        ctx.replyAt(`训练记录清掉了：${removed}条。`);
+        return true;
+      }
+      if (['help', 'usage', '用法', '?'].includes(sub)) {
+        ctx.reply(trainingCommandUsage());
+        return true;
+      }
+    }
+    if (isCsQuizRequest(ctx.command, raw) || fuzzy === 'csquiz') {
+      if (isCsQuizAnswerArgs(ctx.args)) {
+        const answerText = formatCsQuizAnswer(ctx.event.user_id, scopeId, ctx.args);
+        if (ctx.isPrivate) ctx.reply(answerText);
+        else ctx.replyAt(answerText);
+        return true;
+      }
+      ctx.reply(buildCsQuizMessage(ctx.event.user_id, scopeId, ctx.isPrivate));
+      return true;
+    }
+    if (isCsTrainingRequest(ctx.command, raw) || fuzzy === 'cstrain') {
+      const predictHint = getCsPredictTrainingHint(ctx.chatType, ctx.chatId, ctx.event.user_id);
+      const historyHint = buildCsTrainingHistoryHint(ctx.chatType, ctx.chatId, ctx.event.user_id);
+      const profileHint = buildUserProfileDailyCsHint(ctx.chatType, ctx.chatId, ctx.event.user_id);
+      ctx.reply(buildCsTrainingMessage(ctx.event.user_id, scopeId, ctx.isPrivate, predictHint, historyHint, profileHint));
+      return true;
+    }
     if (isDailyCardRequest(ctx.command, raw, 'loadout') || fuzzy === 'csloadout') {
       ctx.reply(await buildLoadoutMessage(ctx.event.user_id, scopeId, ctx.isPrivate));
       return true;
@@ -1237,11 +2306,38 @@ export const __test = {
   isCsPlayerDrawRequest,
   isCsPlayerStatusRequest,
   isDailyCardRequest,
+  isCsTrainingRequest,
+  isCsQuizRequest,
+  isCsQuizAnswerArgs,
+  parseCsQuizAnswerArgs,
+  formatCsQuizAnswer,
+  parseTrainingLogInput,
+  analyzeTrainingLogInput,
+  detectTrainingWeaknesses,
+  buildCsTrainingHistoryHint,
+  formatCsTrainingAnalysis,
+  formatCsTrainingStats,
+  loadTrainingStore,
   buildCsPlayerMessage,
   buildDailyCardMessage,
   buildLoadoutMessage,
+  buildCsTrainingMessage,
+  dailyCsQuizFor,
+  buildCsQuizMessage,
+  __setTrainingStorePathForTests: (filepath?: string) => {
+    trainingStorePathOverride = filepath || '';
+  },
   __setImageResolverForTests: (resolver?: (url: string) => Promise<string | null>) => {
     imageDataUrlResolver = resolver || getImageDataUrl;
+  },
+  __setImageSourceResolversForTests: (resolvers?: {
+    player?: (player: string) => Promise<string | null>;
+    team?: (page: string, teamName: string) => Promise<string | null>;
+    fandom?: (filename: string) => Promise<string | null>;
+  }) => {
+    playerImageResolver = resolvers?.player || resolvePlayerImage;
+    teamImageResolver = resolvers?.team || resolveTeamImage;
+    fandomImageResolver = resolvers?.fandom || resolveFandomFileImage;
   },
 };
 

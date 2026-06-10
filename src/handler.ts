@@ -277,7 +277,7 @@ export class MessageHandler {
       try {
         if (isPrivate && this.isGroupOnlyPlugin(plugin.name)) continue;
         handled = await this.runPlugin(plugin, ctx, config);
-        if (handled && (isAtBot || isReplyToBot) && !ctx.command && !['ai-chat', 'fun'].includes(plugin.name)) {
+        if (handled && (isAtBot || isReplyToBot) && !ctx.command && !this.canHandleNaturalDirectedMessage(plugin.name)) {
           handled = false;
           continue;
         }
@@ -294,6 +294,10 @@ export class MessageHandler {
 
   private isGroupOnlyPlugin(pluginName: string): boolean {
     return pluginName === 'stats' || pluginName === 'repeater';
+  }
+
+  private canHandleNaturalDirectedMessage(pluginName: string): boolean {
+    return ['ai-chat', 'fun', 'cs', 'cs-report', 'cs-watch', 'cs-predict'].includes(pluginName);
   }
 
   private isDirectAiCommand(command: string | null): boolean {

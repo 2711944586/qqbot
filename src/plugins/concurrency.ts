@@ -7,15 +7,23 @@ interface GateState {
   passiveQueueMax: number;
   rejectedPassive: number;
   highWaterQueued: number;
-  queue: Array<{ run: () => void; priority: boolean }>;
+  queue: Array<{ run: () => void; reject: (err: Error) => void; priority: boolean }>;
 }
 
+const DEFAULT_GATE_LIMITS: Record<GateName, number> = {
+  ai: 2,
+  search: 2,
+  vision: 1,
+  tts: 1,
+  stt: 1,
+};
+
 const gates: Record<GateName, GateState> = {
-  ai: { limit: 2, active: 0, queued: 0, passiveQueueMax: 20, rejectedPassive: 0, highWaterQueued: 0, queue: [] },
-  search: { limit: 2, active: 0, queued: 0, passiveQueueMax: 20, rejectedPassive: 0, highWaterQueued: 0, queue: [] },
-  vision: { limit: 1, active: 0, queued: 0, passiveQueueMax: 20, rejectedPassive: 0, highWaterQueued: 0, queue: [] },
-  tts: { limit: 1, active: 0, queued: 0, passiveQueueMax: 20, rejectedPassive: 0, highWaterQueued: 0, queue: [] },
-  stt: { limit: 1, active: 0, queued: 0, passiveQueueMax: 20, rejectedPassive: 0, highWaterQueued: 0, queue: [] },
+  ai: { limit: DEFAULT_GATE_LIMITS.ai, active: 0, queued: 0, passiveQueueMax: 20, rejectedPassive: 0, highWaterQueued: 0, queue: [] },
+  search: { limit: DEFAULT_GATE_LIMITS.search, active: 0, queued: 0, passiveQueueMax: 20, rejectedPassive: 0, highWaterQueued: 0, queue: [] },
+  vision: { limit: DEFAULT_GATE_LIMITS.vision, active: 0, queued: 0, passiveQueueMax: 20, rejectedPassive: 0, highWaterQueued: 0, queue: [] },
+  tts: { limit: DEFAULT_GATE_LIMITS.tts, active: 0, queued: 0, passiveQueueMax: 20, rejectedPassive: 0, highWaterQueued: 0, queue: [] },
+  stt: { limit: DEFAULT_GATE_LIMITS.stt, active: 0, queued: 0, passiveQueueMax: 20, rejectedPassive: 0, highWaterQueued: 0, queue: [] },
 };
 
 function normalizeLimit(value: number | undefined, fallback: number): number {
@@ -77,7 +85,7 @@ export function withGate<T>(name: GateName, task: () => Promise<T>, priority: bo
 
     gate.queued++;
     gate.highWaterQueued = Math.max(gate.highWaterQueued, gate.queued);
-    const entry = { run, priority };
+    const entry = { run, reject, priority };
     if (priority) {
       const firstPassiveIndex = gate.queue.findIndex((item) => !item.priority);
       if (firstPassiveIndex >= 0) gate.queue.splice(firstPassiveIndex, 0, entry);
@@ -96,4 +104,24 @@ export function getGateStats(): Record<GateName, { limit: number; active: number
     tts: { limit: gates.tts.limit, active: gates.tts.active, queued: gates.tts.queued, passiveQueueMax: gates.tts.passiveQueueMax, rejectedPassive: gates.tts.rejectedPassive, highWaterQueued: gates.tts.highWaterQueued },
     stt: { limit: gates.stt.limit, active: gates.stt.active, queued: gates.stt.queued, passiveQueueMax: gates.stt.passiveQueueMax, rejectedPassive: gates.stt.rejectedPassive, highWaterQueued: gates.stt.highWaterQueued },
   };
+}
+
+export function resetGates(options: { resetCounters?: boolean; resetLimits?: boolean } = {}): void {
+  for (const [name, gate] of Object.entries(gates) as Array<[GateName, GateState]>) {
+    const queued = gate.queue;
+    gate.active = 0;
+    gate.queued = 0;
+    gate.queue = [];
+    for (const item of queued) {
+      item.reject(new Error(`${name} gate reset`));
+    }
+    if (options.resetCounters) {
+      gate.rejectedPassive = 0;
+      gate.highWaterQueued = 0;
+    }
+    if (options.resetLimits) {
+      gate.limit = DEFAULT_GATE_LIMITS[name];
+      gate.passiveQueueMax = 20;
+    }
+  }
 }

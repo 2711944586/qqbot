@@ -15,6 +15,7 @@ const CACHE_DIR = path.resolve(__dirname, '..', '..', 'voice_cache');
 const PROJECT_ROOT = path.resolve(__dirname, '..', '..');
 let cacheHits = 0;
 let cacheMisses = 0;
+let inFlightHits = 0;
 let lastVoiceError = '';
 let lastVoiceMode = '';
 let localTtsRuns = 0;
@@ -22,6 +23,7 @@ let apiTtsRuns = 0;
 let lastCleanupAt = 0;
 let lastCleanupDeleted = 0;
 let cleanupDeletedTotal = 0;
+const voiceInFlight: Map<string, Promise<string | null>> = new Map();
 
 class TtsRequestError extends Error {
   statusCode?: number;
@@ -435,33 +437,14 @@ function postTtsRequest(config: AIConfig, url: URL, bodyObject: any, label: stri
   });
 }
 
-function generateLocalVoice(config: AIConfig, text: string): Promise<string | null> {
+function runLocalVoiceGeneration(
+  config: AIConfig,
+  text: string,
+  cacheBase: string,
+  sample: ReturnType<typeof getVoiceSample>,
+): Promise<string | null> {
   return new Promise((resolve) => {
     const command = (config.tts_local_command || '').trim();
-    if (!command) {
-      setVoiceError('local tts command missing');
-      resolve(null);
-      return;
-    }
-
-    const maxChars = Math.max(10, config.tts_max_chars || 120);
-    if (text.length < 2 || text.length > maxChars) {
-      setVoiceError(`text length out of range: ${text.length}/${maxChars}`);
-      resolve(null);
-      return;
-    }
-
-    const sample = getVoiceSample(config);
-    const sampleKey = sample.ready ? `${sample.filepath}:${sample.size}:${sample.mime}` : 'no-sample';
-    const cacheBase = getLocalVoiceCacheBase(text, config, sampleKey);
-    const cachedPath = findCachedVoice(cacheBase, config);
-    if (cachedPath) {
-      cacheHits++;
-      lastVoiceError = '';
-      resolve(cachedPath);
-      return;
-    }
-    cacheMisses++;
 
     let tempDir = '';
     let settled = false;
@@ -549,38 +532,53 @@ function generateLocalVoice(config: AIConfig, text: string): Promise<string | nu
   });
 }
 
-/** 调用远端TTS生成语音，返回本地WAV/MP3文件路径 */
-async function generateApiVoice(config: AIConfig, text: string): Promise<string | null> {
+async function generateLocalVoice(config: AIConfig, text: string): Promise<string | null> {
+  const command = (config.tts_local_command || '').trim();
+  if (!command) {
+    setVoiceError('local tts command missing');
+    return null;
+  }
+
   const maxChars = Math.max(10, config.tts_max_chars || 120);
   if (text.length < 2 || text.length > maxChars) {
     setVoiceError(`text length out of range: ${text.length}/${maxChars}`);
     return null;
   }
 
-  let url: URL;
-  try {
-    url = new URL(config.api_url);
-  } catch {
-    setVoiceError('invalid api_url');
-    return null;
-  }
-
-  // 如果有授权声音样本，用voiceclone；否则用普通tts
   const sample = getVoiceSample(config);
-  const useClone = sample.ready && !!sample.dataUrl;
-  const model = useClone
-    ? (config.tts_clone_model || 'mimo-v2.5-tts-voiceclone')
-    : (config.tts_model || 'mimo-v2.5-tts');
-  const sampleKey = useClone ? `${sample.filepath}:${sample.size}:${sample.mime}` : 'no-sample';
-  const cacheBase = getVoiceCacheBase(text, config, useClone, sampleKey);
-
+  const sampleKey = sample.ready ? `${sample.filepath}:${sample.size}:${sample.mime}` : 'no-sample';
+  const cacheBase = getLocalVoiceCacheBase(text, config, sampleKey);
   const cachedPath = findCachedVoice(cacheBase, config);
   if (cachedPath) {
     cacheHits++;
     lastVoiceError = '';
     return cachedPath;
   }
+
+  const inFlight = voiceInFlight.get(cacheBase);
+  if (inFlight) {
+    cacheHits++;
+    inFlightHits++;
+    return inFlight;
+  }
+
   cacheMisses++;
+  const request = runLocalVoiceGeneration(config, text, cacheBase, sample)
+    .finally(() => voiceInFlight.delete(cacheBase));
+  voiceInFlight.set(cacheBase, request);
+  return request;
+}
+
+/** 调用远端TTS生成语音，返回本地WAV/MP3文件路径 */
+async function runApiVoiceGeneration(
+  config: AIConfig,
+  text: string,
+  url: URL,
+  model: string,
+  sample: ReturnType<typeof getVoiceSample>,
+  useClone: boolean,
+  cacheBase: string,
+): Promise<string | null> {
   apiTtsRuns++;
 
   let lastError: Error | null = null;
@@ -613,6 +611,51 @@ async function generateApiVoice(config: AIConfig, text: string): Promise<string 
     console.error('[TTS] API生成失败:', lastError.message);
   }
   return null;
+}
+
+async function generateApiVoice(config: AIConfig, text: string): Promise<string | null> {
+  const maxChars = Math.max(10, config.tts_max_chars || 120);
+  if (text.length < 2 || text.length > maxChars) {
+    setVoiceError(`text length out of range: ${text.length}/${maxChars}`);
+    return null;
+  }
+
+  let url: URL;
+  try {
+    url = new URL(config.api_url);
+  } catch {
+    setVoiceError('invalid api_url');
+    return null;
+  }
+
+  // 如果有授权声音样本，用voiceclone；否则用普通tts
+  const sample = getVoiceSample(config);
+  const useClone = sample.ready && !!sample.dataUrl;
+  const model = useClone
+    ? (config.tts_clone_model || 'mimo-v2.5-tts-voiceclone')
+    : (config.tts_model || 'mimo-v2.5-tts');
+  const sampleKey = useClone ? `${sample.filepath}:${sample.size}:${sample.mime}` : 'no-sample';
+  const cacheBase = getVoiceCacheBase(text, config, useClone, sampleKey);
+
+  const cachedPath = findCachedVoice(cacheBase, config);
+  if (cachedPath) {
+    cacheHits++;
+    lastVoiceError = '';
+    return cachedPath;
+  }
+
+  const inFlight = voiceInFlight.get(cacheBase);
+  if (inFlight) {
+    cacheHits++;
+    inFlightHits++;
+    return inFlight;
+  }
+
+  cacheMisses++;
+  const request = runApiVoiceGeneration(config, text, url, model, sample, useClone, cacheBase)
+    .finally(() => voiceInFlight.delete(cacheBase));
+  voiceInFlight.set(cacheBase, request);
+  return request;
 }
 
 /** 调用TTS生成语音，返回本地音频文件路径 */
@@ -708,11 +751,169 @@ function listVoiceFiles(dir: string): string[] {
   return result;
 }
 
+function inspectCachedVoicePath(cacheBase: string, config: AIConfig): {
+  filepath: string;
+  ext: string;
+  sizeKB: number;
+  ageSeconds: number;
+  ttlSeconds: number;
+  expired: boolean;
+} | null {
+  for (const ext of ['wav', 'mp3', 'ogg', 'm4a']) {
+    const filepath = `${cacheBase}.${ext}`;
+    try {
+      if (!fs.existsSync(filepath)) continue;
+      const stat = fs.statSync(filepath);
+      const ageMs = Math.max(0, Date.now() - stat.mtimeMs);
+      const ttlMs = maxCacheAgeMs(config) - ageMs;
+      return {
+        filepath,
+        ext,
+        sizeKB: Math.round(stat.size / 1024),
+        ageSeconds: Math.round(ageMs / 1000),
+        ttlSeconds: Math.max(0, Math.round(ttlMs / 1000)),
+        expired: ttlMs <= 0 || stat.size <= 200,
+      };
+    } catch { /* */ }
+  }
+  return null;
+}
+
+export interface VoiceCacheInspectPart {
+  index: number;
+  text: string;
+  chars: number;
+  provider: 'local' | 'api' | 'none';
+  mode: string;
+  cacheKey: string;
+  status: 'hit' | 'miss' | 'in-flight' | 'expired' | 'invalid' | 'disabled';
+  reason: string;
+  clone: boolean;
+  model: string;
+  filepath: string;
+  ext: string;
+  sizeKB: number;
+  ageSeconds: number;
+  ttlSeconds: number;
+}
+
+export interface VoiceCacheInspectResult {
+  provider: string;
+  localReady: boolean;
+  cloneEnabled: boolean;
+  cloneReady: boolean;
+  sampleReason: string;
+  sendMode: string;
+  maxChars: number;
+  parts: VoiceCacheInspectPart[];
+}
+
+function voiceCachePlanForText(config: AIConfig, text: string): Omit<VoiceCacheInspectPart, 'index' | 'text' | 'chars' | 'status' | 'reason' | 'filepath' | 'ext' | 'sizeKB' | 'ageSeconds' | 'ttlSeconds'> & { cacheBase: string } {
+  const provider = config.tts_provider || 'api';
+  const localCommand = (config.tts_local_command || '').trim();
+  const localReady = !!localCommand && (provider === 'local' || provider === 'auto');
+  const sample = getVoiceSample(config);
+  const sampleKey = sample.ready ? `${sample.filepath}:${sample.size}:${sample.mime}` : 'no-sample';
+
+  if (provider === 'local' || (provider === 'auto' && localReady)) {
+    const cacheBase = getLocalVoiceCacheBase(text, config, sampleKey);
+    return {
+      provider: 'local',
+      mode: provider === 'auto' ? 'auto-local' : 'local',
+      cacheBase,
+      cacheKey: path.basename(cacheBase),
+      clone: sample.ready,
+      model: 'local',
+    };
+  }
+
+  const useClone = sample.ready && !!sample.dataUrl;
+  const apiSampleKey = useClone ? `${sample.filepath}:${sample.size}:${sample.mime}` : 'no-sample';
+  const cacheBase = getVoiceCacheBase(text, config, useClone, apiSampleKey);
+  return {
+    provider: 'api',
+    mode: useClone ? (provider === 'auto' ? 'auto-api-clone' : 'api-clone') : (provider === 'auto' ? 'auto-api' : 'api'),
+    cacheBase,
+    cacheKey: path.basename(cacheBase),
+    clone: useClone,
+    model: useClone ? (config.tts_clone_model || 'mimo-v2.5-tts-voiceclone') : (config.tts_model || 'mimo-v2.5-tts'),
+  };
+}
+
+export function inspectVoiceCache(config: AIConfig, texts: string[]): VoiceCacheInspectResult {
+  const sample = getVoiceSample(config);
+  const provider = config.tts_provider || 'api';
+  const localCommand = (config.tts_local_command || '').trim();
+  const localReady = !!localCommand && (provider === 'local' || provider === 'auto');
+  const maxChars = Math.max(10, config.tts_max_chars || 120);
+  const apiReady = !!(config.api_url && config.api_key);
+  const parts: VoiceCacheInspectPart[] = texts.map((text, index) => {
+    const raw = (text || '').trim();
+    const plan = voiceCachePlanForText(config, raw);
+    const cached = inspectCachedVoicePath(plan.cacheBase, config);
+    let status: VoiceCacheInspectPart['status'] = 'miss';
+    let reason = '未命中，首次生成会写入缓存';
+    if (!raw || raw.length < 2 || raw.length > maxChars) {
+      status = 'invalid';
+      reason = `文本长度不在 2-${maxChars} 字范围内`;
+    } else if (!config.enable_tts) {
+      status = 'disabled';
+      reason = 'TTS未开启';
+    } else if (plan.provider === 'local' && !localReady) {
+      status = 'disabled';
+      reason = '本地TTS未配置';
+    } else if (plan.provider === 'api' && !apiReady) {
+      status = 'disabled';
+      reason = provider === 'auto' ? 'auto没有可用API后端' : 'API后端配置不完整';
+    } else if (voiceInFlight.has(plan.cacheBase)) {
+      status = 'in-flight';
+      reason = '同 key 正在生成，后续请求会等待复用';
+    } else if (cached?.expired) {
+      status = 'expired';
+      reason = '缓存已过期或音频太小，生成时会按 miss 处理';
+    } else if (cached) {
+      status = 'hit';
+      reason = '命中缓存，生成语音时会直接复用音频文件';
+    }
+
+    return {
+      index: index + 1,
+      text: raw,
+      chars: raw.length,
+      provider: plan.provider,
+      mode: plan.mode,
+      cacheKey: plan.cacheKey,
+      status,
+      reason,
+      clone: plan.clone,
+      model: plan.model,
+      filepath: cached?.filepath || '',
+      ext: cached?.ext || '',
+      sizeKB: cached?.sizeKB || 0,
+      ageSeconds: cached?.ageSeconds || 0,
+      ttlSeconds: cached?.ttlSeconds || 0,
+    };
+  });
+
+  return {
+    provider,
+    localReady,
+    cloneEnabled: config.tts_clone_enabled !== false,
+    cloneReady: sample.ready,
+    sampleReason: sample.reason || '',
+    sendMode: config.tts_send_mode || 'base64',
+    maxChars,
+    parts,
+  };
+}
+
 export function getVoiceStats(config?: AIConfig): {
   cacheFiles: number;
   sizeMB: number;
   hits: number;
   misses: number;
+  inFlight: number;
+  inFlightHits: number;
   provider: string;
   localReady: boolean;
   localCommand: string;
@@ -744,6 +945,8 @@ export function getVoiceStats(config?: AIConfig): {
   const baseStats = {
     hits: cacheHits,
     misses: cacheMisses,
+    inFlight: voiceInFlight.size,
+    inFlightHits,
     provider,
     localReady,
     localCommand,

@@ -100,6 +100,22 @@ function ensureWritableDir(rel, label) {
   }
 }
 
+function checkRuntimeStoreParents() {
+  const stores = [
+    ['data/cs-realtime-cache.json', 'CS实时缓存'],
+    ['data/cs-predict.json', 'CS竞猜'],
+    ['data/cs-report.json', 'CS日报订阅'],
+    ['data/cs-watch.json', 'CS关注订阅'],
+    ['data/cs-training.json', '每日训练日志'],
+    ['data/user-profiles.json', '用户画像'],
+  ];
+  const parentDirs = Array.from(new Set(stores.map(([rel]) => path.dirname(rel))));
+  for (const dir of parentDirs) {
+    ensureWritableDir(dir, '运行数据目录');
+  }
+  ok.push(`运行数据文件父目录: ${stores.map(([rel, label]) => `${label}=${rel}`).join(' / ')}`);
+}
+
 function listNewestMtime(dirRel, pattern) {
   const dir = path.join(root, dirRel);
   let newest = 0;
@@ -249,17 +265,21 @@ function main() {
   if (!exists('knowledge/sources.json')) risk.push('knowledge/sources.json 缺失，/kb refresh 来源会退回内置兜底');
   else ok.push('knowledge/sources.json 存在');
 
+  checkRuntimeStoreParents();
   ensureWritableDir('logs', '日志目录');
   ensureWritableDir('context_store', '上下文目录');
+  ensureWritableDir('context_store/embeddings', 'RAG索引目录');
   ensureWritableDir('search_cache', '搜索缓存目录');
   ensureWritableDir('image_cache', '图片缓存目录');
   ensureWritableDir('voice_cache', '语音缓存目录');
+  ensureWritableDir('voice_cache/local', '本地TTS输出目录');
   ensureWritableDir('stt_cache', '听写缓存目录');
   ensureWritableDir('knowledge', '知识库目录');
+  ensureWritableDir('knowledge/inbox', '素材收件箱目录');
 
   console.log('doctor report');
   console.log(`OK: ${ok.length}`);
-  ok.slice(0, 18).forEach((item) => console.log(`+ ${item}`));
+  ok.slice(0, 28).forEach((item) => console.log(`+ ${item}`));
   console.log(`硬伤: ${hard.length}`);
   (hard.length ? hard : ['暂无硬伤']).forEach((item) => console.log(`! ${item}`));
   console.log(`风险: ${risk.length}`);

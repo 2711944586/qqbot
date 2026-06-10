@@ -65,8 +65,36 @@ export interface AIConfig {
   passive_random_allow_numeric?: boolean;
   /** 戳一戳回应概率，1为每次都回应 */
   poke_reply_probability?: number;
+  /** 普通群聊关键词自动贴纸开关 */
+  sticker_auto_reply_enabled?: boolean;
+  /** 普通群聊关键词自动贴纸概率，0-1 */
+  sticker_auto_reply_probability?: number;
+  /** 自动贴纸每个群的最短间隔秒 */
+  sticker_auto_group_cooldown_seconds?: number;
+  /** 自动贴纸同一关键词/规则的最短间隔秒 */
+  sticker_auto_keyword_cooldown_seconds?: number;
+  /** 礼物感谢是否允许低频追加语音 */
+  gift_voice_enabled?: boolean;
+  /** 礼物感谢语音触发概率，需先满足连送/大额门槛 */
+  gift_voice_probability?: number;
+  /** 礼物感谢语音同群冷却秒数 */
+  gift_voice_cooldown_seconds?: number;
+  /** 连续多少次礼物事件后允许礼物语音 */
+  gift_voice_min_combo_events?: number;
+  /** 短窗口累计/单次礼物数量达到多少后允许礼物语音 */
+  gift_voice_min_total_count?: number;
   /** 冷却时间(秒)，防止刷屏 */
   cooldown_seconds: number;
+  /** 是否启用真人化回复停顿 */
+  human_reply_delay_enabled?: boolean;
+  /** 普通主动接话最短停顿毫秒 */
+  human_reply_delay_min_ms?: number;
+  /** 普通主动接话最长停顿毫秒 */
+  human_reply_delay_max_ms?: number;
+  /** @/回复/命令等强触发最短停顿毫秒 */
+  human_reply_delay_forced_min_ms?: number;
+  /** @/回复/命令等强触发最长停顿毫秒 */
+  human_reply_delay_forced_max_ms?: number;
   /** 上下文过期时间(分钟) */
   context_expire_minutes: number;
   /** 是否启用联网搜索增强 */
@@ -87,6 +115,8 @@ export interface AIConfig {
   search_cache_max_entries?: number;
   /** AI文本回复短期缓存秒数，0为关闭 */
   ai_reply_cache_seconds?: number;
+  /** AI文本回复短期缓存最大条目数 */
+  ai_reply_cache_max_entries?: number;
   /** 是否启用Markdown知识库 */
   enable_knowledge?: boolean;
   /** 单次注入知识库最大字符数 */

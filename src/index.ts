@@ -46,6 +46,12 @@ import { pingPlugin } from './plugins/ping';
 import { statusPlugin } from './plugins/status';
 import { timePlugin } from './plugins/time';
 import { funPlugin } from './plugins/fun';
+import { csPlugin } from './plugins/cs';
+import { csPredictPlugin, shutdownCsPredictTasks, startCsPredictTasks } from './plugins/cs-predict';
+import { csReportPlugin, shutdownCsReportTasks, startCsReportTasks } from './plugins/cs-report';
+import { csWatchPlugin, shutdownCsWatchTasks, startCsWatchTasks } from './plugins/cs-watch';
+import { flushHltvCache } from './plugins/hltv-api';
+import { dailyPulsePlugin, shutdownDailyPulseTasks, startDailyPulseTasks } from './plugins/daily-pulse';
 import { stickersPlugin } from './plugins/stickers';
 import { diagPlugin } from './plugins/diag';
 import { statsPlugin } from './plugins/stats';
@@ -54,6 +60,7 @@ import { repeaterPlugin } from './plugins/repeater';
 import { aiChatPlugin, shutdownAiChat, startAiChatBackgroundTasks } from './plugins/ai-chat';
 import { registerWelcomeListener } from './plugins/welcome';
 import { registerPokeListener } from './plugins/poke';
+import { registerGiftThanksListener } from './plugins/gift-thanks';
 import { registerPrivateForward } from './plugins/private-forward';
 import { registerRecallListener, recordMessage } from './plugins/recall';
 
@@ -90,6 +97,10 @@ function main(): void {
   startAiChatBackgroundTasks(config.ai);
 
   const bot = new Bot(config);
+  startCsReportTasks(bot);
+  startCsWatchTasks(bot);
+  startCsPredictTasks(bot);
+  startDailyPulseTasks(bot);
   const handler = new MessageHandler(bot);
 
   // 注册插件（顺序：管理 > 统计 > 复读 > 工具 > 趣味 > AI兜底）
@@ -101,6 +112,11 @@ function main(): void {
   handler.use(statusPlugin);
   handler.use(diagPlugin);
   handler.use(timePlugin);
+  handler.use(csReportPlugin);
+  handler.use(csPlugin);
+  handler.use(csWatchPlugin);
+  handler.use(csPredictPlugin);
+  handler.use(dailyPulsePlugin);
   handler.use(funPlugin);
   handler.use(stickersPlugin);
   handler.use(aiChatPlugin);    // AI 放最后
@@ -108,6 +124,7 @@ function main(): void {
   // 注册非消息事件监听器
   registerWelcomeListener(bot);
   registerPokeListener(bot);
+  registerGiftThanksListener(bot);
   registerPrivateForward(bot);
   registerRecallListener(bot, true);  // 撤回监控，不需要可改为false
 
@@ -146,7 +163,12 @@ function main(): void {
     shuttingDown = true;
     console.log('\n[Bot] 正在关闭...');
     bot.close();
+    shutdownCsReportTasks();
+    shutdownCsWatchTasks();
+    shutdownCsPredictTasks();
+    shutdownDailyPulseTasks();
     shutdownAiChat();
+    try { flushHltvCache(); } catch { /* best-effort */ }
     const timer = setTimeout(() => process.exit(exitCode), 500);
     if (exitCode === 0) timer.unref();
   };

@@ -17,6 +17,11 @@ import {
   flushAllEmbeddings,
   configureEmbeddingStore,
   getSessionIndexSnapshot,
+  MemorySearchResult,
+  trimSessionIndex,
+  dropSessionIndexByQuery,
+  inspectSessionIndexByUser,
+  dropSessionIndexByUser,
 } from './embedding-store';
 
 /**
@@ -35,6 +40,41 @@ export interface SessionContext {
   /** 纯文字消息（不含图片DataURL，节省内存） */
   messages: ChatMessage[];
   lastActiveTime: number;
+}
+
+function normalizeMemoryDropText(input: string): string {
+  return (input || '')
+    .toLowerCase()
+    .replace(/^\[mid=\d+\s+uid=\d+\]\s*/, '')
+    .replace(/[^\u4e00-\u9fa5a-z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function memoryDropTerms(query: string): string[] {
+  const normalized = normalizeMemoryDropText(query);
+  if (!normalized) return [];
+  const terms = normalized
+    .split(/\s+/)
+    .map((term) => term.trim())
+    .filter((term) => term.length >= 2);
+  if (terms.length > 0) return terms.slice(0, 8);
+  return normalized.length >= 2 ? [normalized] : [];
+}
+
+function matchesMemoryDropQuery(text: string, query: string): boolean {
+  const cleanText = normalizeMemoryDropText(text);
+  const cleanQuery = normalizeMemoryDropText(query);
+  if (!cleanText || !cleanQuery || cleanQuery.length < 2) return false;
+  if (cleanText.includes(cleanQuery)) return true;
+  const terms = memoryDropTerms(cleanQuery);
+  return terms.length > 0 && terms.every((term) => cleanText.includes(term));
+}
+
+function memoryMessageUserId(message: ChatMessage): number | null {
+  if (message.role !== 'user' || typeof message.content !== 'string') return null;
+  const match = message.content.match(/^\[mid=\d+\s+uid=(\d+)\]/);
+  return match ? Number(match[1]) : null;
 }
 
 export class ContextManager {
@@ -173,7 +213,7 @@ export class ContextManager {
     query: string,
     topK: number = this.memoryTopK,
     minSimilarity: number = this.memoryMinSimilarity,
-  ): Array<{ role: 'user' | 'assistant'; text: string; ts: number; similarity: number }> {
+  ): MemorySearchResult[] {
     if (!this.memoryEnabled) return [];
     try {
       return searchSimilar(sessionId, query, topK, minSimilarity).map((r) => ({
@@ -181,6 +221,9 @@ export class ContextManager {
         text: r.text,
         ts: r.ts,
         similarity: r.similarity,
+        score: r.score,
+        recencyBoost: r.recencyBoost,
+        ageSeconds: r.ageSeconds,
       }));
     } catch {
       return [];
@@ -256,6 +299,197 @@ export class ContextManager {
     this.sessions.delete(sessionId);
     deleteSession(sessionId);
     clearSessionIndex(sessionId);
+  }
+
+  dropSessionMemoryByQuery(sessionId: string, query: string): {
+    contextBefore: number;
+    contextAfter: number;
+    contextRemoved: number;
+    summaryBeforeChars: number;
+    summaryAfterChars: number;
+    summaryDropped: boolean;
+    indexBefore: number;
+    indexAfter: number;
+    indexRemoved: number;
+    samples: Array<{ role: string; text: string; ts?: number }>;
+  } {
+    const cleanQuery = normalizeMemoryDropText(query);
+    const session = this.getSession(sessionId);
+    const contextBefore = session.messages.length;
+    const summaryBeforeChars = session.summary.length;
+    const contextSamples: Array<{ role: string; text: string; ts?: number }> = [];
+    if (cleanQuery.length < 2) {
+      const index = dropSessionIndexByQuery(sessionId, cleanQuery);
+      return {
+        contextBefore,
+        contextAfter: contextBefore,
+        contextRemoved: 0,
+        summaryBeforeChars,
+        summaryAfterChars: summaryBeforeChars,
+        summaryDropped: false,
+        indexBefore: index.before,
+        indexAfter: index.after,
+        indexRemoved: index.removed,
+        samples: [],
+      };
+    }
+
+    const kept = session.messages.filter((message) => {
+      const text = typeof message.content === 'string' ? message.content : '';
+      const matched = matchesMemoryDropQuery(text, cleanQuery);
+      if (matched && contextSamples.length < 5) {
+        contextSamples.push({ role: message.role, text });
+      }
+      return !matched;
+    });
+    if (kept.length !== session.messages.length) {
+      session.messages = kept;
+    }
+    const summaryDropped = !!session.summary && matchesMemoryDropQuery(session.summary, cleanQuery);
+    if (summaryDropped) session.summary = '';
+    if (kept.length !== contextBefore || summaryDropped) {
+      session.lastActiveTime = Date.now();
+      markDirty(sessionId);
+      flushNow();
+    }
+
+    const index = dropSessionIndexByQuery(sessionId, cleanQuery, Math.max(0, 5 - contextSamples.length));
+    return {
+      contextBefore,
+      contextAfter: session.messages.length,
+      contextRemoved: contextBefore - session.messages.length,
+      summaryBeforeChars,
+      summaryAfterChars: session.summary.length,
+      summaryDropped,
+      indexBefore: index.before,
+      indexAfter: index.after,
+      indexRemoved: index.removed,
+      samples: [
+        ...contextSamples,
+        ...index.samples.map((sample) => ({ role: sample.role, text: sample.text, ts: sample.ts })),
+      ].slice(0, 5),
+    };
+  }
+
+  inspectSessionMemoryByUser(sessionId: string, userId: number): {
+    contextTotal: number;
+    contextMatched: number;
+    summaryChars: number;
+    indexTotal: number;
+    indexMatched: number;
+    samples: Array<{ role: string; text: string; ts?: number }>;
+  } {
+    const session = this.getSession(sessionId);
+    const contextSamples: Array<{ role: string; text: string; ts?: number }> = [];
+    let contextMatched = 0;
+    for (const message of session.messages) {
+      if (memoryMessageUserId(message) !== userId) continue;
+      contextMatched++;
+      if (contextSamples.length < 5) {
+        contextSamples.push({
+          role: message.role,
+          text: typeof message.content === 'string' ? message.content : '',
+        });
+      }
+    }
+    const index = inspectSessionIndexByUser(sessionId, userId, Math.max(0, 5 - contextSamples.length));
+    return {
+      contextTotal: session.messages.length,
+      contextMatched,
+      summaryChars: session.summary.length,
+      indexTotal: index.total,
+      indexMatched: index.matched,
+      samples: [
+        ...contextSamples,
+        ...index.samples.map((sample) => ({ role: sample.role, text: sample.text, ts: sample.ts })),
+      ].slice(0, 5),
+    };
+  }
+
+  dropSessionMemoryByUser(sessionId: string, userId: number): {
+    contextBefore: number;
+    contextAfter: number;
+    contextRemoved: number;
+    summaryBeforeChars: number;
+    summaryAfterChars: number;
+    summaryDropped: boolean;
+    indexBefore: number;
+    indexAfter: number;
+    indexRemoved: number;
+    samples: Array<{ role: string; text: string; ts?: number }>;
+  } {
+    const session = this.getSession(sessionId);
+    const contextBefore = session.messages.length;
+    const summaryBeforeChars = session.summary.length;
+    const contextSamples: Array<{ role: string; text: string; ts?: number }> = [];
+    const kept = session.messages.filter((message) => {
+      const matched = memoryMessageUserId(message) === userId;
+      if (matched && contextSamples.length < 5) {
+        contextSamples.push({
+          role: message.role,
+          text: typeof message.content === 'string' ? message.content : '',
+        });
+      }
+      return !matched;
+    });
+    if (kept.length !== session.messages.length) {
+      session.messages = kept;
+    }
+
+    const index = dropSessionIndexByUser(sessionId, userId, Math.max(0, 5 - contextSamples.length));
+    const hasHit = contextBefore !== session.messages.length || index.removed > 0;
+    const summaryDropped = hasHit && !!session.summary;
+    if (summaryDropped) session.summary = '';
+    if (hasHit || summaryDropped) {
+      session.lastActiveTime = Date.now();
+      markDirty(sessionId);
+      flushNow();
+    }
+
+    return {
+      contextBefore,
+      contextAfter: session.messages.length,
+      contextRemoved: contextBefore - session.messages.length,
+      summaryBeforeChars,
+      summaryAfterChars: session.summary.length,
+      summaryDropped,
+      indexBefore: index.before,
+      indexAfter: index.after,
+      indexRemoved: index.removed,
+      samples: [
+        ...contextSamples,
+        ...index.samples.map((sample) => ({ role: sample.role, text: sample.text, ts: sample.ts })),
+      ].slice(0, 5),
+    };
+  }
+
+  trimSession(sessionId: string, keepMessages: number): {
+    contextBefore: number;
+    contextAfter: number;
+    summaryBeforeChars: number;
+    summaryAfterChars: number;
+    indexBefore: number;
+    indexAfter: number;
+  } {
+    const keep = Math.max(0, Math.min(5000, Math.floor(keepMessages)));
+    const session = this.getSession(sessionId);
+    const contextBefore = session.messages.length;
+    const summaryBeforeChars = session.summary.length;
+    if (session.messages.length > keep) {
+      session.messages = keep > 0 ? session.messages.slice(-keep) : [];
+    }
+    session.summary = '';
+    session.lastActiveTime = Date.now();
+    markDirty(sessionId);
+    const index = trimSessionIndex(sessionId, keep);
+    return {
+      contextBefore,
+      contextAfter: session.messages.length,
+      summaryBeforeChars,
+      summaryAfterChars: session.summary.length,
+      indexBefore: index.before,
+      indexAfter: index.after,
+    };
   }
 
   /** 批量将脏会话写盘 */

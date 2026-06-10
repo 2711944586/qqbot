@@ -51,6 +51,61 @@ export function naturalLengthTrim(text: string, maxLen: number): string {
   return cutoff.trim();
 }
 
+export function hasUnsupportedRumorClaim(text: string, hasRealtimeData: boolean): boolean {
+  void hasRealtimeData;
+  if (!text) return false;
+  const alreadyConservative = /(?:我得查|得查最新|印象里|不一定对|不太确定|具体我得|你查最新|以最新为准|按最新为准|不能保证|别让我硬编|没有实时|没查到准信|没可靠来源|可靠来源|传闻不能当准信|不能拿传闻|别拿传闻)/.test(text);
+  if (alreadyConservative) return false;
+
+  const hasRumorLanguage = /(?:听说|据说|传闻|爆料|小道消息|内部消息|消息源说|朋友说|我朋友说|群里(?:都)?说|有人说|弹幕说|贴吧说|论坛说|路边社|圈内说|有哥们说|有兄弟说)/i.test(text);
+  if (!hasRumorLanguage) return false;
+
+  const hasCurrentQualifier = /(?:现在|目前|当前|今天|今日|最新|刚刚|昨天|前天|上周|本周|这个月|最近|要|准备|将要)/.test(text);
+  const hasCsEntity = /\b(?:navi|vitality|spirit|faze|mouz|g2|falcons|astralis|liquid|furia|heroic|mongolz|tyloo|lynn|cloud9|zywoo|donk|niko|m0nesy|s1mple|ropz|sh1ro|device|karrigan|aleksib|jL|b1t)\b/i.test(text);
+  const hasCsRealtimeNoun = /(?:阵容|排名|第[一二三四五六七八九十\d]+|top\s*\d|比分|赛果|战绩|转会|换人|签约|租借|加入|离队|下放|替补|首发|bench|benched|rating|ADR|KAST|地图胜率|冠军|淘汰|战胜|赢了|输了)/i.test(text);
+  const hasExplicitCsContext = /(?:CS2?|csgo|比赛|赛事|队伍|战队|选手|职业哥|HLTV|hltv)/i.test(text);
+  return hasCsEntity || hasCsRealtimeNoun || (hasCurrentQualifier && hasExplicitCsContext);
+}
+
+const ORIGINAL_QUOTE_SPEAKER = '(?:玩机器|MachineWJQ|6657|机器|主播|现实主播|本人|本尊)';
+const ORIGINAL_QUOTE_MARKER = '(?:原话|逐字(?:原话|台词|转写|复述|字幕)?|真实(?:语录|台词|原文)|核验(?:过的)?(?:短句|语录|原话)|直播(?:原文|原话|台词|字幕)|切片(?:原文|原话|台词|字幕)|经典(?:语录|台词)?|名场面(?:台词|语录|原文)?|完整(?:台词|字幕|转写|原文|原话)|本人(?:语录|说过|讲过)|名言|一字不差|一比一(?:还原|复刻)?|原样(?:复刻|还原|复述|搬运)?|照着(?:说|念|读))';
+
+export function hasUnsupportedOriginalQuoteClaim(text: string): boolean {
+  if (!text) return false;
+  const safeBoundaries = [
+    new RegExp(`(?:不是|不算|不能当|不要当|别当|不应当|不能说成|不要说成|没有|没|未|未经|不保证|不能保证|无法保证|只(?:能|是|当|做|作为)|仅(?:能|是|当|做|作为)).{0,24}${ORIGINAL_QUOTE_MARKER}`, 'i'),
+    new RegExp(`(?:拟态|模板|风格参考|口吻参考|语气参考|摘要|短摘|场景卡|授权笔记|禁用边界).{0,24}${ORIGINAL_QUOTE_MARKER}`, 'i'),
+    new RegExp(`${ORIGINAL_QUOTE_MARKER}.{0,24}(?:未核验|没核验|未经核验|不保证|不能保证|不一定|待核验|拟态|模板|摘要|短摘|场景卡|别当|不是|不算)`, 'i'),
+  ];
+  if (safeBoundaries.some((pattern) => pattern.test(text))) return false;
+
+  const patterns = [
+    new RegExp(`${ORIGINAL_QUOTE_SPEAKER}.{0,18}${ORIGINAL_QUOTE_MARKER}`, 'i'),
+    new RegExp(`${ORIGINAL_QUOTE_MARKER}.{0,18}${ORIGINAL_QUOTE_SPEAKER}`, 'i'),
+    new RegExp(`(?:这是|这句|这段|下面|以下|给你来句|来句|给我|来段|来一段|整段|整一下|念一段|复述一下|还原一下|收录|整理).{0,16}${ORIGINAL_QUOTE_MARKER}`, 'i'),
+    /(?:我(?:给你)?|给你|给我|直接)?(?:逐字|原样|完整|一字不差|一比一)?(?:复刻|还原|复述|搬运|转写).{0,18}(?:原话|直播原文|切片原文|台词|字幕|名场面|原文)/i,
+  ];
+  return patterns.some((pattern) => pattern.test(text));
+}
+
+export function enforceOriginalQuoteBoundary(text: string): string {
+  if (!text || !hasUnsupportedOriginalQuoteClaim(text)) return text;
+
+  const cleaned = text
+    .replace(new RegExp(`^(?=.{0,80}${ORIGINAL_QUOTE_MARKER}).{0,96}[：:]\\s*`, 'i'), '')
+    .replace(new RegExp(`(?:这是|这句|这段|下面(?:这句|这段)?|以下(?:这句|这段)?|给你来句|来句|给我|来段|来一段|整段|整一下|念一段|复述一下|还原一下)?\\s*${ORIGINAL_QUOTE_SPEAKER}?(?:的)?(?:真实|核验(?:过的)?|逐字|经典|名场面|完整)?${ORIGINAL_QUOTE_MARKER}[：:，,。、“”"'\\s]*`, 'gi'), '')
+    .replace(new RegExp(`${ORIGINAL_QUOTE_SPEAKER}(?:在直播(?:里|中)?|以前|之前|曾经|确实)?(?:说过|讲过|念过|喊过)[：:，,。、“”"'\\s]*`, 'gi'), '')
+    .replace(/(?:我(?:给你)?|给你|给我|直接)?(?:逐字|原样|完整|一字不差|一比一)?(?:复刻|还原|复述|搬运|转写)(?:一下|下)?.{0,10}(?:原话|直播原文|切片原文|台词|字幕|名场面|原文)[：:，,。、“”"'\s]*/gi, '')
+    .replace(/(?:一字不差|一比一(?:还原|复刻)?|原样(?:复刻|还原|复述|搬运)?)(?:那种|地|的)?[：:，,。、“”"'\s]*/gi, '')
+    .replace(/^[；;，,。:：、\s]+/, '')
+    .trim();
+
+  if (!cleaned || cleaned === text.trim()) {
+    return '这类我只能按场景学口吻，不能当本人原话';
+  }
+  return `这类我只能按场景学口吻，不能当本人原话；${cleaned}`;
+}
+
 /**
  * 弱化具体未经证实的声明 - 当 AI 回复里出现"现在/目前/今年" + 具体人/数字/日期，
  * 但没有实时数据来源时，把绝对断言改为不确定。
@@ -60,8 +115,46 @@ export function naturalLengthTrim(text: string, maxLen: number): string {
  *   "donk 现在在 Spirit"   + 无实时数据 → "donk 印象里在 Spirit 但这种事你查最新的"
  */
 export function softenUnverifiedClaims(text: string, hasRealtimeData: boolean): string {
-  if (hasRealtimeData) return text;
   if (!text) return text;
+
+  if (hasUnsupportedRumorClaim(text, hasRealtimeData)) {
+    return hasRealtimeData
+      ? '这块别拿传闻当准信；有可靠来源就按来源说，没覆盖的别拍死'
+      : '这块我没可靠来源，不敢拿传闻当准信；阵容转会、排名比分这种你以最新来源为准';
+  }
+  if (hasRealtimeData) return text;
+
+  const normalized = text.replace(/\s+/g, '');
+  const alreadyConservative = /(?:我得查|得查最新|印象里|不一定对|不太确定|具体我得|你查最新|以最新为准|按最新为准|不能保证|别让我硬编|没有实时|没查到准信)/.test(text);
+  const hasCurrentQualifier = /(?:现在|目前|当前|今天|今日|最新|刚刚|昨天|前天|上周|本周|这个月|最近)/.test(text);
+  const hasCsEntity = /\b(?:navi|vitality|spirit|faze|mouz|g2|falcons|astralis|liquid|furia|heroic|mongolz|tyloo|lynn|cloud9|zywoo|donk|niko|m0nesy|s1mple|ropz|sh1ro|device|karrigan|aleksib|jL|b1t)\b/i.test(text);
+  const hasCsRealtimeNoun = /(?:阵容|排名|第[一二三四五六七八九十\d]+|top\s*\d|比分|赛果|战绩|转会|换人|签约|租借|加入|离队|下放|替补|首发|bench|benched|rating|ADR|KAST|地图胜率|冠军|淘汰|战胜|赢了|输了)/i.test(text);
+  const hasFreshLookupClaim = /我(?:刚刚?|刚才|才|已经)?(?:查|搜)(?:了|到)?(?:一下|一眼|了下|下)?/i.test(text);
+  const hasExplicitRealtimeSourceClaim =
+    /我(?:刚刚?|刚才|才|已经)?(?:查|搜|看|翻)(?:了|到)?(?:一下|一眼|了下|下)?\s*(?:HLTV|hltv|实时(?:数据|资料)?|最新(?:数据|资料|排名|消息)?|资料|数据|榜单|网页|官网|赛程|排名)/i.test(text)
+    || /(?:HLTV|hltv|实时(?:数据|资料|榜单)?|最新(?:数据|资料|排名|消息)?)(?:显示|说|写着|给到|查到|来看|上看)/i.test(text);
+  const hasGenericSourceClaim = /(?:资料|数据|搜索结果|网页|官网|榜单)(?:显示|说|写着|给到|查到|来看|上看)/i.test(text);
+  const hasUnsupportedSourceClaim =
+    hasExplicitRealtimeSourceClaim
+    || ((hasFreshLookupClaim || hasGenericSourceClaim) && (hasCurrentQualifier || hasCsEntity || hasCsRealtimeNoun));
+  if (hasUnsupportedSourceClaim) {
+    const stripped = text
+      .replace(/我(?:刚刚?|刚才|才|已经)?(?:查|搜)(?:了|到)?(?:一下|一眼|了下|下)?(?:\s*(?:HLTV|hltv|实时(?:数据|资料)?|最新(?:数据|资料|排名|消息)?|资料|数据|榜单|网页|官网|赛程|排名))?[，,。:：、\s]*/gi, '')
+      .replace(/我(?:刚刚?|刚才|才|已经)?(?:看|翻)(?:了|到)?(?:一下|一眼|了下|下)?\s*(?:HLTV|hltv|实时(?:数据|资料)?|最新(?:数据|资料|排名|消息)?|资料|数据|榜单|网页|官网|赛程|排名)[，,。:：、\s]*/gi, '')
+      .replace(/(?:HLTV|hltv|实时(?:数据|资料|榜单)?|最新(?:数据|资料|排名|消息)?|资料|数据|搜索结果|网页|官网|榜单)(?:显示|说|写着|给到|查到|来看|上看)[，,。:：、\s]*/gi, '')
+      .replace(/(?:根据|结合|参考|按|从)(?:HLTV|hltv|实时(?:数据|资料)?|最新(?:数据|资料|排名|消息)?|资料|数据|搜索结果|网页|官网|榜单)[^，。！？!?:：]{0,24}[，,。:：、\s]*/gi, '')
+      .replace(/^[，,。:：、\s]+/, '')
+      .trim();
+    if (hasCurrentQualifier || hasCsEntity || hasCsRealtimeNoun) {
+      return '这块我没实时来源，不敢装有来源；排名比分阵容这种你以最新为准';
+    }
+    return stripped
+      ? stripped.replace(/[。.!！]?\s*$/, '') + '。这块我没实时来源，不敢装有来源'
+      : '这块我没实时来源，不敢装有来源';
+  }
+  if (hasCurrentQualifier && (hasCsEntity || hasCsRealtimeNoun) && !alreadyConservative) {
+    return text.replace(/[。.!！]?\s*$/, '') + '。这块没实时来源我不敢拍死 你以最新为准';
+  }
 
   // 检测高风险断言模式
   const claimPatterns = [
@@ -71,6 +164,12 @@ export function softenUnverifiedClaims(text: string, hasRealtimeData: boolean): 
     /现在\s*top\s*\d+\s*(?:是|队伍是)\s*[\w\u4e00-\u9fa5]+/gi,
     // "现在/目前 第X 是 Y"
     /(?:现在|目前)\s*(?:第[一二三四五]|排第\d|排名第\d)/g,
+    // "X 现在第一/排名第一/top1"
+    /[\w\u4e00-\u9fa5]{2,16}\s*(?:现在|目前|当前)\s*(?:第一|第[一二三四五]|top\s*\d|排名第\d)/gi,
+    /[\w\u4e00-\u9fa5]{2,16}\s*(?:现在|目前|当前|最新).{0,8}(?:排名|排行|阵容|转会|战绩)/gi,
+    /[\w\u4e00-\u9fa5]{2,16}\s*(?:排名|排行)\s*(?:第一|第[一二三四五]|top\s*\d)/gi,
+    // "X 打 Y 比分 13-7 / X 2:0 Y"
+    /[\w\u4e00-\u9fa5]{2,16}\s*(?:打|赢|输|战胜|淘汰)\s*[\w\u4e00-\u9fa5]{2,16}.{0,12}(?:\d{1,2}\s*[:：-]\s*\d{1,2}|\d\s*比\s*\d)/gi,
     // "上周/昨天/这周 X 队赢了 Y"
     /(?:上周|昨天|今天|这周|本周|前天)\s*[\w\u4e00-\u9fa5]{2,10}\s*(?:赢了|战胜|拿下|淘汰)/g,
     // "X 现在/目前 阵容/状态"
@@ -87,9 +186,71 @@ export function softenUnverifiedClaims(text: string, hasRealtimeData: boolean): 
   }
   if (!hasStrongClaim) return text;
   // 如果文本已经含"我得查/印象里/不确定/可能"等不确定词，就不再加
-  if (/(?:我得查|得查最新|印象里|不一定对|不太确定|具体我得|你查最新)/.test(text)) return text;
+  if (alreadyConservative) return text;
   // 否则在文末追加一句不确定的补充
-  return text.replace(/[。.!！]?\s*$/, '') + '。这种事变得快 你以最新为准';
+  return normalized.length > 0
+    ? text.replace(/[。.!！]?\s*$/, '') + '。这种事变得快 你以最新为准'
+    : text;
+}
+
+export function hasRealityBoundaryClaim(text: string): boolean {
+  if (!text) return false;
+  if (/(?:不代表|不能代表|不是|并非|不是真正|不是现实|不是本人|风格\s*bot|群\s*bot|授权这事别乱说|没有授权|别乱说授权)/i.test(text)) {
+    return false;
+  }
+  return (
+    /我(?:是|就是|真是|确实是|当然是)(?:现实中的|真正的|真的)?(?:玩机器|MachineWJQ|6657|主播本人|现实主播|本尊)/i.test(text)
+    || /(?:玩机器|MachineWJQ|6657|主播本人|现实主播|本尊).{0,8}(?:是我|就是我|本人)/i.test(text)
+    || /(?:我|这个号|本号|本账号|账号)(?:代表|代(?:表)?的是|就是|属于)(?:现实)?(?:玩机器|MachineWJQ|6657|主播本人|现实主播|本尊)/i.test(text)
+    || /(?:玩机器|MachineWJQ|6657|主播|主播本人|本尊)?(?:官方账号|官方号|本人账号|本尊号|主播本人账号|现实主播账号|玩机器账号)/i.test(text)
+    || /(?:官方授权|本人授权|玩机器授权|主播授权)(?:过我|了我|给我|我)?|(?:授权我|授权过我|玩机器让我|本人让我)/i.test(text)
+    || /(?:我有|已经拿到|拿了)(?:官方|本人|主播|玩机器).{0,8}授权/i.test(text)
+  );
+}
+
+export function enforceRealityBoundary(text: string): string {
+  if (!text) return text;
+
+  let cleaned = text
+    .replace(/我是(?:现实中的|真正的|真的)?(?:玩机器|MachineWJQ|6657|主播本人|本尊)[，,。!！]?\s*/gi, '我是按玩机器直播语气做的群 bot，')
+    .replace(/我(?:就是|真是)(?:玩机器|MachineWJQ|6657|主播本人|本尊)[，,。!！]?\s*/gi, '我是按玩机器直播语气做的群 bot，')
+    .replace(/(?:这是|此号是|这个号是|本号是)?(?:现实)?(?:玩机器|MachineWJQ|6657|主播|主播本人|本尊)?(?:官方账号|官方号|本人账号|本尊号|主播本人账号|现实主播账号|玩机器账号)[，,。!！]?\s*/gi, '这个号只是群 bot，')
+    .replace(/(?:我|这个号|本号)(?:代表|就是)(?:现实)?(?:玩机器|MachineWJQ|6657|主播本人|本尊)[，,。!！]?\s*/gi, '这个号不代表现实本人，')
+    .replace(/(?:(?:官方授权|本人授权|玩机器授权|主播授权)(?:过我|了我|给我|我)?|授权我|授权过我|玩机器让我|本人让我|我有(?:官方|本人|主播|玩机器).{0,8}授权)[，,。!！]?\s*/gi, '授权这事别乱说，')
+    .replace(/(?:我不是bot|我不是机器人|不是AI|不是机器人)[，,。!！]?\s*/gi, '我是群 bot，');
+
+  const dangerous = hasRealityBoundaryClaim(cleaned) || /(?:代表本人|代表现实本人)/i.test(cleaned);
+  if (dangerous && !/不代表现实本人|风格bot|群 bot|群bot|不是本人/.test(cleaned)) {
+    cleaned = `我只是风格bot 不代表现实本人，${cleaned}`;
+  }
+  return cleaned;
+}
+
+function isEvidenceMetadataLine(line: string): boolean {
+  const cleaned = line.trim();
+  if (!cleaned) return false;
+  if (/^(?:缓存|cache)\s*[:：]/i.test(cleaned) && /(?:fresh|stale|miss|age=|ttl=|expired=|source=|fetch=|hit=)/i.test(cleaned)) {
+    return true;
+  }
+  if (/^(?:来源|source)\s*[:：]/i.test(cleaned) && /(?:CS API|HLTV|Liquipedia|webSearch|拉取|链接|快照|source=|ttl=|age=)/i.test(cleaned)) {
+    return true;
+  }
+  if (/^\[\/?(?:实时事实参考|HLTV实时数据|联网补充)\]$/i.test(cleaned)) {
+    return true;
+  }
+  return false;
+}
+
+export function stripEvidenceMetadata(text: string): string {
+  if (!text) return text;
+  return text
+    .split(/\r?\n/)
+    .filter((line) => !isEvidenceMetadataLine(line))
+    .join('\n')
+    .replace(/\[\/?(?:实时事实参考|HLTV实时数据|联网补充)\]/gi, '')
+    .replace(/\s*缓存\s*[:：]\s*[a-z0-9:_-]+\s+(?:fresh|stale|miss)\b[^\n。！？!?]*/gi, '')
+    .replace(/\s*(?:age|ttl|expired|fetch|hit|source)=\S+/gi, '')
+    .trim();
 }
 
 /** 完整后处理 — AI 输出 → 清理后的最终文本 */
@@ -110,7 +271,7 @@ export function postProcessReply(text: string): string {
   for (let i = 0; i < 3; i++) {
     text = text.replace(/^(?:结论|原因|建议|分析|总结|答案|短评|评价|判断|我的判断|先说结论)\s*[：:]\s*/i, '');
     text = text.replace(
-      /^(?:根据|结合|参考)(?:上面|前面|知识库|素材|提示|资料|临场素材包|临场笔记|语态素材|话题素材)[^，。！？!?:：]{0,48}[，。:：]\s*/i,
+      /^(?:根据|结合|参考)(?:上面|前面|知识库|素材|提示|资料|临场素材包|临场笔记|语态素材|话题素材|实时事实参考|实时参考)[^，。！？!?:：]{0,48}[，。:：]\s*/i,
       '',
     );
     text = text.replace(/^(?:我会|我将|下面|接下来)[^，。！？!?:：]{0,48}(?:回复|回答|接话|模仿)[：:，,。]\s*/i, '');
@@ -120,8 +281,8 @@ export function postProcessReply(text: string): string {
     text = text.replace(/^(?:对此|总的来说|总而言之|首先|其次|再者|此外|另外|不过|然而|因此|所以)[，,]?\s*/i, '');
     text = text.replace(/^我个人(?:觉得|认为|以为)[，,]?\s*/i, '');
   }
-  text = text.replace(/(?:根据|结合|参考)(?:知识库|素材|临场素材包|临场笔记|语态素材|话题素材)[，, ]*/g, '');
-  text = text.replace(/(?:知识库|临场素材包|临场笔记|语态素材|话题素材)(?:里)?(?:显示|提到|说|给到)[，, ]*/g, '');
+  text = text.replace(/(?:根据|结合|参考)(?:知识库|素材|临场素材包|临场笔记|语态素材|话题素材|实时事实参考|实时参考)[，, ]*/g, '');
+  text = text.replace(/(?:知识库|临场素材包|临场笔记|语态素材|话题素材|实时事实参考|实时参考)(?:里)?(?:显示|提到|说|给到)[，, ]*/g, '');
   text = text.replace(/```[\s\S]*?```/g, (m) => m.replace(/```\w*\n?/g, '').replace(/```/g, '').trim());
   text = text.replace(/\*\*(.*?)\*\*/g, '$1');
   text = text.replace(/\*(.*?)\*/g, '$1');
@@ -131,6 +292,7 @@ export function postProcessReply(text: string): string {
   text = text.replace(/^(玩机器|机器|MachineWJQ)[：:]\s*/i, '');
   text = text.replace(/^["「『](.+)["」』]$/s, '$1');
   text = text.replace(/^[（(]\s*(.+?)\s*[）)]$/s, '$1');
+  text = stripEvidenceMetadata(text);
   text = deFormulaicOpening(text);
   text = text.replace(/\n{3,}/g, '\n\n');
   text = text.replace(/^ +/gm, '');
@@ -157,6 +319,8 @@ export function postProcessReply(text: string): string {
   // 把常见 emoji 转成 QQ 经典表情标签 (😂→[face:178] 等)
   // 让回复在 QQ 端显示原生黄脸表情，更有 QQ 风
   text = emojiToFaceMarkers(text);
+  text = enforceOriginalQuoteBoundary(text);
+  text = enforceRealityBoundary(text);
 
   return sanitizeOutgoingText(text).trim();
 }

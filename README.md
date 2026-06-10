@@ -18,7 +18,7 @@
 - 知识库自动刷新：`/kb refresh`、`/kb refresh --aggressive`、`/kb batches`、`/kb rollback`。
 - 联网搜索：DuckDuckGo Instant、DuckDuckGo HTML、Bing RSS 兜底，带 single-flight、正/负缓存和磁盘缓存。
 - 上下文记忆：每群持久化到 `context_store/`，旧消息异步压缩，不阻塞回复。
-- RAG 记忆：每群/私聊会话会把历史消息写入轻量 n-gram 索引，回复时只注入相似历史；`/mem search <关键词>` 和 `/trace last` 可排查召回内容。
+- RAG 记忆：每群/私聊会话会把历史消息写入轻量 n-gram 索引，回复时只注入相似历史；排序按 `相似度 + 近期加权`，避免长期群聊里很旧的相似句压过最近话题；遇到“现在/最新/排名/阵容/比分/转会”等 CS 实时问法，会跳过疑似旧 CS 实时事实记忆，只保留稳定战术/道具等非实时片段；`/mem check <消息>`、`/mem search <关键词>`、管理员 `/mem drop <关键词>` 和 `/trace last` 可排查/清理召回内容。
 - 图片识别缓存：图片下载后缓存到 `image_cache/`，减少重复识图成本。
 - NapCat 只给图片 `file` 不给 `url` 时，会自动调用 OneBot `get_image`；返回 URL、本地路径或 base64 都能继续识图。
 - 识图自动兼容多种 payload：`image_url` 对象、`image_url` 字符串、`input_image`、`image` 四种格式自动重试。
@@ -26,9 +26,10 @@
 - NapCat 只给语音 `file` 不给 `url` 时，会自动调用 OneBot `get_record`，按 `stt_record_format` 转成 mp3/wav/amr/m4a 后再听写。
 - TTS 语音缓存：语音输出缓存到 `voice_cache/`，支持 API、本地授权语音引擎、自动兜底三种模式；有授权样本时可尝试供应商 voiceclone。
 - Docker NapCat 默认用 `base64://` 发送 TTS 语音，避免容器读不到宿主机 `voice_cache/` 文件。
-- 表情会走 QQ face/本地贴纸链路：AI 的常见 emoji 会转成 QQ 经典表情并限制数量，避免一眼 AI 味刷屏。
+- 真人感短停顿：文本/被动语音在真正发送前会做毫秒级短暂停顿，`/trace`、`/status`、`/maint status` 可观察次数、平均值和最近一次。
+- 表情会走 QQ face/本地贴纸链路：AI 的常见 emoji 会转成 QQ 经典表情；群里说“白给/开香槟/保枪/老板大气”等会低频自动接贴纸，并带冷却避免刷屏。
 - `/status`、`/diag` 和 `/maint` 提供队列、缓存、知识库、并发、内存、配置漂移和清理维护能力。
-- `/csbrief` 提供今日 CS 短报：当前/即将比赛、最近赛果、排名快照，全部走实时数据链路。
+- `/csbrief` 提供今日 CS 短报；`/csreport on 09:30` 可给当前群/私聊开启每日 CS 日报推送，当前/即将比赛、最近赛果、排名快照和热门新闻都走实时数据链路。
 
 ## 项目结构
 
@@ -165,6 +166,9 @@ pm2 restart wanjier --update-env
 - `WANJIER_MAX_TOKENS` 最大输出
 - `WANJIER_TEMPERATURE` AI温度
 - `WANJIER_TTS_PROBABILITY` 语音概率
+- `WANJIER_HUMAN_REPLY_DELAY_ENABLED` 真人感短停顿开关
+- `WANJIER_HUMAN_REPLY_DELAY_MIN_MS` / `MAX_MS` 普通主动接话停顿区间
+- `WANJIER_HUMAN_REPLY_DELAY_FORCED_MIN_MS` / `FORCED_MAX_MS` @/回复/命令停顿区间
 - `WANJIER_ENABLE_TTS` / `WANJIER_ENABLE_VISION` 开关功能
 
 ---
@@ -286,11 +290,13 @@ pm2 restart wanjier --update-env
 5. 知识库里标为拟态模板的内容不能当真实原话；实时比分、阵容、转会、排名要联网确认。
 ```
 
-这次真人化升级建议同步修改 VPS 的 `config.json`。代码层已经会强制注入临场笔记、去重最近开头、清掉“结论/根据知识库/作为AI”这类公式化前缀；但如果 VPS 仍用旧 prompt，模型还是更容易写成规则说明。最稳做法是把 `config.example.json` 里的 `ai.presets.wanjier.system_prompt` 复制到 VPS 的 `config.json` 对应位置。
+这次真人化升级建议同步修改 VPS 的 `config.json`。代码层已经会强制注入临场笔记、按同类口头禅族群去重最近开头、清掉“结论/根据知识库/作为AI”这类公式化前缀；但如果 VPS 仍用旧 prompt，模型还是更容易写成规则说明。最稳做法是把 `config.example.json` 里的 `ai.presets.wanjier.system_prompt` 复制到 VPS 的 `config.json` 对应位置。
 
 知识库一定会被调用：`enable_knowledge=true` 且 `knowledge_force_style=true` 时，每次 AI 回复都会先检索 `knowledge/wanjier.md`，再以 `[临场笔记]` 注入直播语态、回复节奏、反应强度和当前话题素材；遇到 CS2、选手、队伍、语录、礼物、切片等关键词时，再额外注入相关片段。模型被要求吸收这些笔记，但不能在群里说“根据知识库/根据素材”。用 `/kb stats` 看 `注入命中`，用 `/status` 看知识库命中计数。
 
-怎么确认“不是只靠 prompt 在演”：先发一条明确 CS/选手/队伍话题，再跑 `/trace last`。里面会显示 `知识分区`、`知识xxx字`、`开头` 和最终发送类型；`/status` 会显示最近知识分区、注入命中次数和开头去重状态。如果强触发时 `知识分区: 无命中`，先跑 `/kb stats`，再检查 `knowledge/wanjier.md` 是否存在、是否被 VPS 本地改坏。
+怎么确认“不是只靠 prompt 在演”：先发一条明确 CS/选手/队伍话题，再跑 `/trace last`。里面会显示 `知识分区`、`知识xxx字`、`开头`、`真人停顿` 和最终发送类型；`/status` 会显示最近知识分区、注入命中次数、开头去重和真人停顿统计。如果强触发时 `知识分区: 无命中`，先跑 `/kb stats`，再检查 `knowledge/wanjier.md` 是否存在、是否被 VPS 本地改坏。
+
+真人感短停顿默认开启：普通主动接话会在真正发送前等 `250-1400ms`，@/回复/命令走更短的 `120-650ms`；图片、语音输入、明确要语音和已经排队较久的回复会跳过，避免把慢链路继续拖慢。想临时关闭可在 `.env` 写 `WANJIER_HUMAN_REPLY_DELAY_ENABLED=false`，想更自然可把普通区间调到 `350-1800ms`；线上用 `/trace last`、`/trace recent`、`/status` 或 `/maint status` 看是否生效。
 
 ## 从零部署总流程
 
@@ -567,8 +573,12 @@ nano config.json
 /diag
 /status
 /maint status
+/trace last
+/media daily
+今天识图语音跑了吗
 /voice status
 /kb stats
+/kb sources
 /quote
 ```
 
@@ -577,9 +587,12 @@ nano config.json
 - `/whoami` 的 `当前bot号` 等于 NapCat 登录号。
 - `/diag` 没有 AI 接口、知识库、配置硬伤。
 - `/status` 里队列没有长期堆积。
-- `/maint status` 里 `config_version` 不偏旧，缓存和闸门数字能正常显示。
-- `/voice status` 显示 `STT: on`、`TTS: on`；如果放了样本，克隆应为 `ready`。
+- `/maint status` 里 `config_version` 不偏旧，缓存、闸门和真人停顿数字能正常显示。
+- `/trace last` 有最近回复时会显示 `真人停顿`、缓存判定和最终发送类型。
+- `/media daily` 和“今天识图语音跑了吗”会显示今日实跑、三件套、缺口和优先补项；`check/warm/cache hit` 不算实跑。
+- `/voice status` 显示 `STT: on`、`TTS: on`；如果放了样本，克隆应为 `ready`；常用短句可用管理员 `/voice warm <文本>` 先打进缓存。
 - `/kb stats` 能看到知识库块数和字数。
+- `/kb sources` 能看到来源 fresh/due/never、域名 trusted/risky 和自动写库前置状态。
 
 如果 `/ping` 不回，不要继续测 AI。`/ping` 是本地命令，不需要 API，不需要知识库，不需要联网。`/ping` 不回只可能是消息没有进 bot、bot 没连上 NapCat、群白名单拦截、进程没启动或 QQ 没登录。
 
@@ -704,7 +717,19 @@ AI 核心字段：
 | `passive_random_allow_numeric` | `false` | 普通随机接话是否允许纯数字消息 |
 | `related_reply_probability` | `0.65` | CS/知识话题普通消息触发概率；@/回复/命令仍必回 |
 | `poke_reply_probability` | `1` | 戳一戳回应概率 |
+| `sticker_auto_reply_enabled` | `true` | 普通群聊关键词自动贴纸开关 |
+| `sticker_auto_reply_probability` | `0.18` | 命中“白给/开香槟/保枪/老板大气”等关键词后的自动贴纸概率 |
+| `sticker_auto_group_cooldown_seconds` | `45` | 同群自动贴纸最短间隔，防止刷屏 |
+| `sticker_auto_keyword_cooldown_seconds` | `180` | 同群同关键词自动贴纸冷却 |
+| `gift_voice_enabled` | `true` | 礼物感谢满足连送/大额门槛后，允许低频追加 TTS 语音 |
+| `gift_voice_probability` | `0.28` | 礼物语音触发概率；文字感谢一定会先发 |
+| `gift_voice_cooldown_seconds` | `180` | 同群礼物语音冷却，避免连送时刷语音 |
+| `gift_voice_min_combo_events` | `2` | 短窗口连续礼物达到多少次后允许语音 |
+| `gift_voice_min_total_count` | `8` | 单次或短窗口累计礼物数量达到多少后允许语音 |
 | `cooldown_seconds` | `0-5` | 普通主动接话冷却，@/回复/命令不受限 |
+| `human_reply_delay_enabled` | `true` | 真人感发送前短停顿；图片、语音输入、明确要语音和排队较久的回复会自动跳过 |
+| `human_reply_delay_min_ms` / `human_reply_delay_max_ms` | `250` / `1400` | 普通主动接话短停顿区间 |
+| `human_reply_delay_forced_min_ms` / `human_reply_delay_forced_max_ms` | `120` / `650` | @/回复/命令强触发短停顿区间 |
 | `max_context_messages` | `50` | 2G1C 推荐每群上下文保存条数 |
 | `context_send_messages` | `30` | 每次发给模型的最近消息条数 |
 | `context_expire_minutes` | `120` | 会话过期时间 |
@@ -719,7 +744,8 @@ AI 核心字段：
 | `search_negative_cache_seconds` | `60` | 空结果缓存时间 |
 | `search_cache_max_entries` | `1000` | 搜索缓存最大条数，70GB 存储可适当提高 |
 | `search_on_style_query` | `true` | 玩机器/CS2 相关问题也可触发搜索 |
-| `ai_reply_cache_seconds` | `45` | 普通主动接话 AI 回复缓存；强触发不缓存，降低复读感 |
+| `ai_reply_cache_seconds` | `45` | 普通主动接话 AI 回复缓存；按风格场景分级，实时/多模态/身份/礼物/纠偏等高上下文场景旁路；缓存 key 会归一化轻微 @ 称呼和标点差异；稳定 CS 战术/残局/道具问题不强制联网，方便短 TTL 命中 |
+| `ai_reply_cache_max_entries` | `300` | AI 回复缓存最大条数，LRU 淘汰；小 VPS 可调低降低内存占用 |
 
 知识库：
 
@@ -1078,6 +1104,7 @@ apt install -y ffmpeg
 
 ```text
 /voice status
+/voice sttcache <语音URL>
 /voice stt <语音URL>
 @bot 然后发一条语音
 ```
@@ -1088,7 +1115,8 @@ apt install -y ffmpeg
 - `听写模型`：当前用于听写的模型。
 - `听写缓存`：缓存命中、下载失败、空转写统计。
 - `听写最近错误`：供应商格式不兼容、下载失败、超时等都会显示在这里。
-- `/voice stt <语音URL>` 会单独测试下载、转码、API、解析整条听写链路；也可以把语音和 `/voice stt` 发在同一条消息里。
+- `/voice sttcache <语音URL>` 只读检查听写缓存 key 和 hit/miss/in-flight/expired，不下载语音、不转码、不调用模型；也可以把语音和 `/voice sttcache` 发在同一条消息里。
+- `/voice stt <语音URL>` 会单独测试下载、转码、本地/API 后端和解析整条听写链路，并显示缓存前/后、后端动作、payload 和转写结果；也可以把语音和 `/voice stt` 发在同一条消息里。缓存 hit 只代表已有转写文本可复用，后端 local/API 都没增加时说明本次没有重新听音频。
 
 ### 6. 测试语音输出链路
 
@@ -1157,15 +1185,28 @@ apt install -y ffmpeg
 | `直接用语音念 / 发语音 / 念出来 / 读出来 / voice / tts / say` | 模糊触发语音；带明确内容时直接照读 |
 | `用语音回答 / 用语音分析 / 用语音说说怎么看` | 先走 AI 生成回答，再转语音 |
 | `/voice status` | 查看 TTS、克隆样本和缓存状态 |
+| `/voice check <内容>` | 不生成音频，只预检直读文本的 TTS 可用性、分段、截断、刷屏风险和现实本人/授权语音话术边界 |
+| `/voice cache <内容>` | 不生成音频，只预检 TTS 分段缓存 key、hit/miss/in-flight/expired 状态、后端模式和克隆边界 |
+| `/voice sttcache <语音URL>` | 不下载语音、不转码、不调用模型，只读预检 STT 听写缓存 key、hit/miss/in-flight/expired 状态；也可同一条消息带语音 |
+| `/voice warm <内容>` | 管理员真实预热 TTS 缓存，不调用 AI、不发送 record；用于常用短句提前变 hit |
 | `/voice last` | 查看最近一次语音直读/AI转语音的 trace |
+| `/voice recent [条数]` | 查看最近多条真实语音发送 trace，排查直读/AI转语音、分段、TTS后端、兜底和失败原因 |
 | `/voice test [内容]` | 生成测试语音 |
-| `/voice stt <语音URL>` | 测试语音听写链路，也可同一条消息带语音 |
+| `/voice stt <语音URL>` | 真实测试语音听写链路，也可同一条消息带语音；回报缓存前/后、后端 local/API 动作、payload、转写结果和“缓存 hit 不等于重新听过音频”的边界 |
+| `/voice clone [URL或附件]` | 安装/查看克隆样本；只适合使用你有权使用的授权样本，生成语音不能说成现实主播本人语音，也不能拿去冒充本人 |
 | `/voice clean` | 清理过期语音缓存 |
 | `/tts <内容>` | 生成语音 |
 | `/say <内容>` | 生成语音 |
+| `/style status`、`/style check <文本> [--realtime] [--voice]`、`/style check <文本> || <证据/缓存行>` | 查看风格质量统计；预检模板味、原话误称、假来源、身份冒充、传闻背书、未经证实的实时断言和真实 TTS 分段风险；输出风险等级、证据动作、修复动作、行动建议和 `/cs verify` / `/cs warm` 补证命令，带证据时按 fresh/stale/miss 和排名/阵容/赛果/选手数据等事实类型判断能否报成当前事实 |
+| `/media status`、`/media daily`、`/media recent [条数]`、`/media check <图片URL/语音URL或附图附语音>`、`/media warm <图片URL/语音URL或附图附语音>` | 多模态观测：聚合识图、听写、TTS、礼物感谢缓存和最近真实 trace；`daily` 是不下载/不听写/不调模型的每日链路牌，会显示今日识图/听写/发语音三件套、可用链路完成度、优先补哪条、真实成功数和缺口，并说明只有 `/vision test`、`/voice stt`、`/voice test` 成功才算实跑；`check` 只读预检实际传图数量、图片缓存 hit/miss、STT 听写缓存 hit/miss/in-flight/expired、听写上限、截断风险和回复边界；`warm` 会真实预热图片缓存，语音只做 STT 缓存预检 |
 | `/vision status` | 查看识图模型、图片缓存和最近错误 |
-| `/vision test <图片URL>` | 下载图片并实际调用视觉模型测试 |
-| `/trace last` | 查看最近一次 AI/语音回复从触发到发送的排障 trace |
+| `/vision last` | 查看最近一次回复里的真实识图传图数、截断、图片来源类型和图片缓存前后证据 |
+| `/vision recent [条数]` | 查看最近多条真实图片回复 trace，排查传图数、截断、来源类型、缓存前后状态和失败原因 |
+| `/vision check <图片URL或附图>` | 不下载图片、不调用模型，只预检图片源、截断、payload、图片缓存 hit/miss/in-flight/本地可读、缓存压力和配置风险 |
+| `/vision warm <图片URL或附图>` | 真实下载远程图片写入 `image_cache/`，不调用视觉模型、不生成 AI 回复；适合常用图片先预热成 hit |
+| `/vision test <图片URL>` | 下载图片并实际调用视觉模型测试，回报缓存前/后状态、模型、payload、可见描述判定和“缓存 hit 不等于已识图”的边界 |
+| `/trace last` | 查看最近一次 AI/语音回复从触发到发送的排障 trace，含证据账本、风格场景、实时证据新鲜度、缓存策略/判定链、真实识图传图数和图片缓存证据 |
+| `/trace recent [条数]` | 查看最近多条 AI/语音回复链路摘要，排查触发、发送、缓存 hit/miss/bypass/single-flight/丢弃原因、知识、实时证据、识图和语音 |
 | `/reset` 或 `/clear` | 清除当前群上下文 |
 | `/presets` | 查看预设 |
 | `/preset <名称>` | 切换预设 |
@@ -1174,19 +1215,25 @@ apt install -y ffmpeg
 
 | 命令 | 权限 | 说明 |
 |---|---|---|
-| `/quote [关键词]` | 所有人 | 查本地语录/口癖/拟态短句 |
-| `/scene [场景词]` | 所有人 | 抽直播场景模板，如白给、礼物、残局、切片语感 |
+| `/quote [关键词]`、`/quote check [关键词]` | 所有人 | 查本地口癖/短句锚点；`check` 只读预检短句池命中、样例、分区和“不是逐字原话”边界；明确索要原话/逐字时会自动加边界 |
+| `/scene [场景词]` | 所有人 | 抽直播场景卡，输出触发、反应、判断、短句和禁用边界 |
 | `/player <名字>` | 所有人 | 查选手倾向，遇到“最新/阵容/转会/排名”会联网融合 |
 | `/team <队伍>` | 所有人 | 查队伍倾向，遇到实时词会联网融合 |
-| `/gift <礼物名>` | 所有人 | 生成礼物感谢拟态模板 |
+| `/gift <礼物名> [数量]`、`/gift check <礼物> [数量]`、`/gift cache <礼物> [数量]`、`/gift warm <礼物> [数量]`、`/gift status`、`/gift trace`、`/gift recent [条数]` | `warm` 管理员，其余所有人 | 生成礼物感谢拟态模板；预检语音门槛/概率/冷却/TTS 状态和对应语音缓存 hit/miss；管理员可预热同一句谢礼 TTS 缓存但不发送 record、不写礼物 trace；查看运行状态、最近一次和最近多条真实礼物处理，真实礼物语音会记录发送前后 TTS 缓存 key/hit/miss，语音被门槛/冷却/概率跳过时也会记录当时缓存状态 |
 | `/kb search <关键词>` | 所有人 | 检索本地知识库 |
+| `/kb route <消息>` | 所有人 | 预检这条消息会注入哪些风格包/话题包、预算、CS/事实、礼物、语录、场景、人物/队伍、语音、运维等多路召回、知识分区、时效风险、命中诊断和补素材行动建议，不调用模型 |
+| `/kb trust <链接或域名>` | 所有人 | 只读预检来源评级：trusted/known/unknown/risky，以及能否写 public_fact 或只能当摘要线索 |
+| `/kb sources [条数\|all]` | 所有人 | 只读体检知识来源：刷新状态、域名可信度、自动写库前置和真实性边界 |
+| `/kb stale [条数\|all]` | 所有人 | 只读体检主库时效事实边界，列出疑似旧排名、阵容、转会、赛果、版本/地图池等缺少证据链接、抓取时间或 fresh/stale 边界的知识块，并给出 `/cs verify`、`/cs evidence`、管理员 `/cs warm plan` 补证路线 |
 | `/kb stats` | 所有人 | 查看知识库统计 |
-| `/kb preview <关键词>` | 管理员 | 联网生成候选，不写主库 |
+| `/kb preview <关键词>` | 管理员 | 联网生成候选，不写主库，候选会预检来源和长引用风险 |
+| `/kb import-url <链接>` | 管理员 | 抓标题、来源和短摘要生成候选，不自动写库 |
 | `/kb refresh [--aggressive] [关键词]` | 管理员 | 批量刷新公开来源 |
-| `/kb audit` | 管理员 | 审计知识库问题 |
+| `/kb audit` | 管理员 | 审计知识库问题，会标出来源评级缺失、实时事实缺少时效提示和未核验原话/长引用风险 |
 | `/kb auto on/off/run` | 管理员 | 控制自动刷新 |
 | `/kb batches` | 管理员 | 查看自动写入批次 |
 | `/kb rollback <batchId>` | 管理员 | 回滚某个自动批次 |
+| `/kb inbox [条数\|all]` | 管理员 | 只读体检 `knowledge/inbox/` 本地素材，跳过 README，按长转写、未核验原话、时效事实缺来源、礼物拟态和场景结构给出 ingest/split/drop 建议 |
 | `/kb ingest [full]` | 管理员 | 从 `knowledge/inbox/` 生成候选 |
 | `/kb list` | 管理员 | 查看待确认候选 |
 | `/kb show <ID>` | 管理员 | 查看候选详情 |
@@ -1197,23 +1244,40 @@ apt install -y ffmpeg
 
 | 命令 | 说明 |
 |---|---|
-| `/help` | 帮助 |
+| `/help`、`/help cs`、`/help daily`、`/help media`、`/help memory`、`/help knowledge`、`/help admin` | 总帮助和主题帮助；功能太多时优先用主题帮助快速找到 CS 证据、每日 CS、语音识图、缓存记忆、知识库和管理命令 |
 | `/ping` | 在线检测 |
 | `/whoami` | 查看当前 bot self_id、配置 bot_qq、群号、消息 ID |
-| `/status` | 运行状态 |
-| `/diag` | 快速严格自检，不消耗 AI token |
+| `/status` | 运行状态，含队列、缓存、风格场景分布、质量风险和多模态真实链路摘要 |
+| `/diag` | 快速严格自检，不消耗 AI token；会探测 `data`、日志、上下文/RAG、搜索/图片/语音/STT 缓存、`voice_cache/local`、知识库和 `knowledge/inbox` 写盘状态 |
+| `/data` | 只读实时数据健康度，含 CS 核心事实覆盖 fresh/stale/miss、排名/赛程/阵容/选手/版本分类型覆盖、当前事实判定和补证路线 |
 | `/diag live` | 管理员真实联网/写盘/LLM API 探针自检 |
-| `/maint status` | 管理员维护面板：配置版本、队列、缓存、知识库、闸门、内存 |
+| `/maint plan` | 管理员只读总维护计划，按 P0/P1/P2 串起登录态、配置、写盘、CS fresh/stale、知识库、多模态和缓存行动 |
+| `/maint status` | 管理员维护面板：配置版本、队列、缓存、知识库、闸门、内存和多模态真实性边界 |
 | `/maint login` | 管理员立即检查 OneBot 连接和 QQ 登录态 |
 | `/maint config` | 管理员查看关键运行配置和配置漂移 |
-| `/maint clean` | 管理员清理搜索、图片、TTS、STT 缓存并跑知识库审计 |
+| `/maint storage` | 管理员只读体检运行目录、RAG索引目录、关键 JSON 持久化文件和磁盘空间；missing 只代表未生成，不能当事实结论 |
+| `/maint warm plan` | 管理员只读列出最近 trace 里的图片、语音源、TTS 短句和礼物谢礼预热候选，给出缓存状态和下一步命令 |
+| `/maint warm apply [all|media|vision|voice|gift] [条数]` | 管理员按最近候选真实预热安全缓存：图片下载写缓存，TTS/礼物生成音频缓存；不会自动听写语音源 |
+| `/maint warm cs [all|matches|results|ranking|watch|predict|team <队伍>|player <选手>|match <id>]` | 管理员从维护入口真实预热 CS 实时缓存，默认 `all`；回报 fresh/stale/miss 覆盖、复核入口和事实边界 |
+| `/maint warm media|vision|voice|gift ...` | 管理员从维护入口预热多模态热缓存：`media/vision` 只热图片或只读看 STT，`voice/gift` 真实生成 TTS 缓存但不发送语音、不写礼物 trace |
+| `/maint clean` | 管理员清理搜索、CS实时、图片、TTS、STT 缓存并跑知识库审计 |
 | `/maint gc` | 管理员手动触发 Node GC，需要 PM2 `--expose-gc` |
 | `/mem` | 查看当前会话上下文、RAG 索引、检索命中和内存占用 |
+| `/mem health` | 只读缓存/内存体检：内存压力、上下文会话、AI 回复、搜索、CS 实时、图片、TTS/STT、RAG、用户画像缓存、知识库命中率、AI 缓存策略 Top、容量建议和清理动作 |
+| `/mem plan` | 只读生成 P0/P1/P2 缓存和内存维护计划，按当前会话、RAG、AI 回复缓存、搜索、CS、图片、TTS/STT、知识库风险给出下一步命令和边界；CS stale 较多时会建议先 `/cs cache prune` 再补 fresh 证据 |
+| `/mem cache status`、`/mem cache <消息>`、管理员 `/mem cache prune` | 只读查看 AI 回复缓存池整体状态、容量、TTL 分布、命中率、in-flight 和策略 Top；也可预检某条普通主动接话是否会进入回复缓存、归一化 key、当前 key 状态、风格场景、知识签名、搜索/实时旁路原因；支持 `A || B` 对比自然变体是否同 key，真实命中/丢弃原因再用 `/trace recent` 复核；`prune` 只清 expired 回复缓存、保留 fresh 热缓存 |
+| `/mem check <消息>` | 只读预检这条消息会召回哪些当前会话 RAG 记忆、相似度、近期加权 score、age、注入预算、旧 CS 实时事实过滤样本、过滤风险和行动建议 |
+| `/mem user <QQ号>`、`/mem user drop <QQ号>` | `drop` 管理员 | 只读预检某个用户在当前会话里的上下文/RAG 痕迹；管理员可按用户定点删除刷屏、错事实或跑偏话题记忆，并清掉可能混入旧用户内容的压缩摘要 |
 | `/mem recent [条数]` | 查看最近上下文和最近 RAG 索引，定位模型到底看到什么 |
 | `/mem search <关键词>` | 检索当前会话相似历史 |
-| `/mem clear` | 管理员清空当前会话上下文和 RAG 索引 |
+| `/mem drop <关键词>` | 管理员按关键词删除当前会话上下文和 RAG 索引里的噪声记忆，适合清错事实、旧梗刷屏和跑偏话题 |
+| `/mem trim [条数]` | 管理员裁剪当前会话记忆，清掉旧摘要，只保留最近 N 条上下文和 RAG 索引 |
+| `/mem clear` | 管理员清空当前会话上下文和 RAG 索引，并回报清理前后数量 |
+| `/profile`、`/profile set team Vitality/NAVI`、`/profile set player donk`、`/profile set map Inferno`、`/profile set tone 别太凶`、`/profile clear` | 当前群/私聊内的用户自填长期偏好画像；AI 回复会把它作为个性化语气/举例参考，`/trace last` 显示画像注入；画像不能当实时阵容、排名、比分或身份事实 |
 | `/time` | 当前时间 |
 | `/stats` | 群统计 |
+| `/stickers`、`/stickers status` | 查看 QQ 表情/本地贴纸和自动贴纸命中、节流状态 |
+| `/face <名字或id>`、`/sticker <名字>` | 直接发送 QQ 经典表情或本地贴纸 |
 | `/reload` | 管理员重载配置，并重新应用并发闸门、缓存和知识库后台参数 |
 | `/addgroup [群号]` | 管理员加入群白名单 |
 | `/rmgroup <群号>` | 管理员移出群白名单 |
@@ -1224,7 +1288,7 @@ apt install -y ffmpeg
 
 ## 自动校验
 
-仓库内置 GitHub Actions：每次推送 `main` 或提交 PR，会自动执行 `npm ci`、`npm run build`、`npm run smoke`。`smoke` 会覆盖配置解析、知识库、搜索 single-flight、队列并发、每日 CS、语音直读不走 AI、语音不带引用、`/trace last`、`/voice last` 等关键行为。
+仓库内置 GitHub Actions：每次推送 `main` 或提交 PR，会自动执行 `npm ci`、`npm run build`、`npm run smoke`。`smoke` 会覆盖配置解析、知识库、搜索 single-flight、队列并发、每日 CS、语音直读不走 AI、语音不带引用、`/trace last`、`/trace recent`、`/voice last`、`/voice recent` 等关键行为。
 
 本地提交前建议固定跑：
 
@@ -1242,6 +1306,44 @@ npm run smoke
 - 私聊消息会记录日志并转发给管理员，真正回复由主插件链生成，避免一条私聊被回两次。
 - emoji 不按内容硬过滤；AI 回复里的常见 emoji 会转成 QQ face 段，并限制一条消息里的表情数量。
 
+实时 CS 和日报订阅：
+
+| 命令 | 说明 |
+|---|---|
+| `/cs brief`、`/csbrief` | 立即查看 CS 短报：当前/即将比赛、最近赛果、排名快照 |
+| `/cs today check`、`/cs brief check` | 只读预检今日短报核心缓存：展示赛程/赛果/排名的 fresh/stale/miss、预计实时请求数、旧缓存边界和精确预热命令，不请求外站 |
+| `/cs status` | 查看 CS 实时缓存、磁盘缓存、飞行请求、失败数、事实类型覆盖和最近 HLTV 候选页核验缓存；HLTV link-check 只代表页面链路状态，不等于比分/阵容/地图池事实证据 |
+| `/cs cache prune`、`/cs prune stale` | 管理员只清理已过期的 CS 事实缓存，保留 fresh 当前快照、飞行请求和 HLTV 候选页核验缓存；prune 不会产生 fresh 证据，之后仍用 `/cs verify` / `/cs warm plan` 补证 |
+| `/cs match <matchid>` | 用 `/cs results` 里的 `matchid` 拉 CS API 单场详情、HLTV 比赛页候选核验入口、地图比分、地图池线索、竞猜地图边界、详情/统计链接、每图 MVP/Rating 和选手 Rating/ADR 亮点 |
+| `/cs sources`、`/hltv sources` | 只读查看 CS API、HLTV matches/results/ranking、Liquipedia matches/VRS 链接和“HLTV 页面链接不等于官方实时 API”的边界 |
+| `/cs evidence all`、`/cs evidence ranking`、`/cs evidence match 2390002`、`/cs evidence 2390002`、`/cs evidence team Vitality` | 查看 CS 数据证据卡：总览/单项来源链接、缓存新鲜度、旧缓存边界；单场证据会显示 HLTV 候选页和最近一次 `/cs hltvcheck` 短 TTL 核验缓存，纯数字会直达单场详情证据 |
+| `/cs hltvcheck 2390002`、`/hltv hltvcheck 2390002` | 只读活链路核验 HLTV 比赛页候选，显示 HTTP 状态、最终 URL、可访问/未证明/未找到/被拦判定；短 TTL 结果会显示在 `/cs status`，但不写 CS 事实缓存，不把网页能打开当比分或阵容证据 |
+| `/cs verify ranking`、`/cs verify match 2390002`、`/cs verify 2390002`、`/cs verify player donk`、`/cs verify all` | 只读预检某类 CS 当前事实能不能回复成“现在/最新”：fresh 可作当前快照，stale 只能说旧线索，miss 不能反推没有比赛/赛果/变动；`all` 会给赛程/赛果/排名核心覆盖总判定、排名/阵容/选手/版本分类型覆盖、缺口列表和补证路线；纯数字会检查 `match:<id>` |
+| `/cs intent <自然语言问题>` | 只读预检这句问法会不会被 CS 实时插件接管、预计命令、缓存键、fresh/stale/miss、证据卡和精确预热命令 |
+| `/cs warm`、`/cs warm plan`、`/cs warm matches/results/ranking`、`/cs warm match 2390002`、`/cs warm plan 2390002`、`/cs warm all`、`/cs warm watch`、`/cs warm predict`、`/cs warm team Vitality`、`/cs warm player donk` | 管理员预热 CS 实时缓存；`plan` 只读预估 fresh/stale/miss、预计请求数、计划覆盖的事实类型、旧缓存边界、精确执行命令和 `/cs verify` / `/cs evidence` 复核入口，真正预热会提前拉取赛程/赛果/排名、单场详情、关注目标和竞猜相关队伍画像，并在预热后回报 fresh/stale/miss、预热后事实类型覆盖与能否当当前快照 |
+| `/csreport`、`/csreport focus` | `/csreport` 立即查看完整 CS 每日报：比赛、赛果、排名、热门新闻/转会；会按当前会话 `/watch` 关注目标生成“本群优先看”，再附加关注快照、`/predict` 竞猜摘要和统一数据证据摘要；没有盘口时会列实时可开盘候选，并带 matches fresh/stale/miss 赛程来源边界；`focus` 压成一屏“先看什么 / 盯谁变化 / 竞猜入口 / 证据边界”；基础日报底稿有短 TTL 缓存和 single-flight，完整日报、focus 和同轮推送会共享底稿；定时推送前会自动预热核心实时缓存 |
+| `/csreport on 09:30` | 当前群/私聊每天 09:30 推送 CS 日报 |
+| `/csreport time 09:45` | 修改当前会话日报时间 |
+| `/csreport status` | 查看当前会话日报订阅和最近推送 |
+| `/csreport check`、`/csreport due` | `check` 只读预检日报订阅、关注/竞猜预热目标、竞猜核心 matches/results 缓存、缓存 fresh/stale/miss、计划事实类型覆盖、旧数据边界和精确 `/cs warm plan ...` / `/cs warm ...` 建议；`due` 由管理员执行一次真实定时检查/预热/推送 |
+| `/csreport off` | 关闭当前会话日报 |
+| `订阅CS日报 09:30` | `/csreport on 09:30` 的自然语言触发 |
+| `/watch team Vitality`、`/watch player donk`、`/watch match NAVI` | 订阅队伍/选手/赛程赛果变化提醒；`team` 识别阵容新增/移出和地图样本胜率变化，`player` 识别 Rating/ADR/KAST/KD 变化，`match` 会在关注队伍即将开赛时发一次去重开赛提醒；日报会自动带上当前会话关注目标摘要 |
+| `/watch list`、`/watch plan`、`/watch now`、`/watch remove <id>` | 管理 CS 变化订阅；`plan` 只读预检当前会话订阅、核心/队伍/选手预热目标、fresh/stale/miss、计划事实类型覆盖、预计请求数和旧数据边界，不拉外站、不写订阅、不发提醒 |
+| `/predict matches` | 读取实时赛程链路，列出可开盘的比赛候选，并显示竞猜赛程事实类型覆盖、matches 缓存 fresh/stale/miss、`/cs verify matches` / `/cs evidence matches` / `/cs warm plan matches` 边界；没解析到候选时也会标明不能反推今天没有比赛或没有赛程 |
+| `/predict open NAVI vs Vitality bo3 event IEM Cologne close=30m` | 管理员开一个 CS 竞猜盘口，可附加赛事维度 |
+| `/predict open NAVI vs Vitality bo3 mappool Inferno/Mirage close=30m` | 管理员开盘时附加地图池/veto 线索；单图 `map Inferno` 会进入地图统计，多图只作为盘口线索，并会在开盘、列表、日报竞猜摘要和 `/cstrain` 里显示地图池边界 |
+| `/predict matchmap 2390002` | 读取 CS API 单场详情里的 `match.maps`，生成竞猜单图/地图池预检、竞猜事实类型覆盖、开盘参数和 `/cs verify` / `/cs evidence` / `/cs hltvcheck` 补证入口；不写盘口、不写积分，也不把地图池线索说成 HLTV 官方 veto |
+| `/predict veto Inferno Mirage Nuke`、`/predict mapcheck map Inferno` | 只读预检地图池/veto 文本会被结构化解析成单图/多图、统计归属、推荐开盘/下注参数和数据来源边界；不联网、不写盘口/积分，不把人工输入当 HLTV 官方 pick-ban |
+| `/predict openmatch 1 close=30m` | 管理员用实时赛程候选一键开盘，会自动继承实时赛程解析到的赛事名和明确地图/地图池线索，并在开盘结果或找不到候选时保留赛程来源 fresh/stale/miss 边界 |
+| `/predict notify on 90m` | 管理员开启当前会话赛前开盘候选自动提醒；没开盘且实时赛程有候选时推送，并带竞猜赛程事实类型覆盖和 matches fresh/stale/miss 边界；`/predict notify check` 没候选时也会保留解析失败边界 |
+| `/predict A 2-1 map Inferno`、`/predict <id> B 2-1` | 参与胜负和比分预测，可附加地图维度；比分按自己选择的队伍在前 |
+| `/predict list`、`/predict board week/month/season/all`、`/predict map Inferno`、`/predict event IEM Cologne`、`/predict settle <id> A 2-1` | 查看盘口/总榜/周榜/月榜/赛季榜/地图榜/赛事榜，管理员手动结算 |
+| `/predict season start 夏季赛`、`/predict season board`、`/predict season archive`、`/predict season list` | 管理员开启/归档命名赛季；`/predict board season` 会优先显示当前命名赛季，没有命名赛季时仍显示近 90 天滚动榜 |
+| `/predict autosettle` | 管理员读取近期赛果，自动匹配并结算当前会话未结算盘口；结算会记录赛果标签和来源证据，`/predict list`、日报竞猜摘要和后台提醒都会展示；人工/后台自动结算都会带 results fresh/stale/miss 边界，没解析到比分或没匹配到盘口时也会标明不能反推没有赛果 |
+
+自然问法：看到 `/cs results` 里的 `matchid` 后，可以直接说 `2390002这场谁C了`、`matchid=2390002 这场详情`；普通群聊会走 `/cs match <matchid>`，并在回复末尾自动附“事实预检”，标出目标缓存是 fresh/stale/miss、能不能当当前快照、该跑哪个 `/cs verify` / `/cs evidence` / `/cs warm plan`。`/ai ...` 也会把单场详情注入实时事实参考后再让模型回答；如果 AI 路径只有旧快照、部分缺口或没有当前快照，最终发送前会追加自然“事实边界”，并给出精确 `/cs verify ...` 和管理员 `/cs warm plan ...` 补证命令。单场详情里的 `HLTV比赛页候选` 和 `HLTV搜索入口` 只供人工交叉核验，不等于 bot 读取了 HLTV 官方实时 API；真实 HLTV 比赛页可能需要 slug，候选页打不开时用搜索入口或 `/cs sources` 里的 HLTV matches 总页核对。要确认候选页当前能不能打开，可以跑 `/cs hltvcheck <matchid>`，它只检查网页链路和 HTTP 状态，不写 CS 事实缓存，也不能替代 `/cs evidence` / `/cs verify` 的 fresh/stale/miss。旧的 `match:<id>` 缓存命中时也会在返回前补这些核验入口，不需要为了补链接重刷外站。
+
 趣味：
 
 | 命令 | 说明 |
@@ -1249,6 +1351,7 @@ npm run smoke
 | `/roll [N|NdM]` | 掷骰子，支持 `2d6` |
 | `/luck` | 今日运势 |
 | `/jrrp` | 今日人品 |
+| `/daily now`、`/daily me`、`/daily personal`、`/daily proof`、`/daily score`、`/daily center`、`/daily desk`、`/daily squad`、`/daily group`、`/daily vibe`、`/daily relay`、`/daily ice`、`/daily topic`、`/daily script`、`/daily kit`、`/daily gap`、`/daily line`、`/daily plan`、`/daily guard`、`/daily streak`、`/daily media`、`/daily voice`、`/daily nudge`、`/daily missing`、`/daily week`、`/daily recap`、`/daily challenge`、`/daily done`、`/daily wrap`、`/daily challenge board`、`/daily checkin`、`/daily board`、`/daily on 09:00`、`/daily status`、`/daily off` | 每日低频今日状态/自然问候；订阅后每天按当前群/私聊固定时间推送，不调用 AI token；`now`/定时推送会直接带识图语音今日实跑摘要，`me` 查看自己的打卡、挑战完成、榜单名次、识图语音今日实跑和下一步，`personal` 按当前会话自填用户画像给每日偏好卡，包含今日打法、聊天口吻、看图引子、语音短句和画像真话边界，`proof` 是今日证据账本，会区分挑战、打卡、识图、听写、发语音哪些有真实记录、哪些只是建议或缓存，`score` 把挑战、打卡、识图、听写、发语音合成今日闭环分和一分钟补法，`center`/`desk` 是一屏今日指挥台，汇总个人缺项、群队形、识图语音脚本、破冰动作和收尾入口，`squad`/`group` 查看当前群/会话每日队形，汇总今日挑战、打卡、双收、扛旗用户和你的缺项，`vibe` 给每日聊天节奏，列出开场、接图、接语音、贴纸分寸、收住规则和真话边界，`relay` 给识图语音每日接力，分看图位、听写位、发声位和验收位，让群里按真实 trace 跑完三件套，`ice`/`topic` 给今日破冰话题，包含群聊选择题、看图接力、语音接力和个人缺项提示，`script`/`kit` 给识图语音每日脚本包，列出看图、听写、发声、验收和群里回执，`gap` 按今日真实 trace 告诉你识图/听写/发语音三件套还缺哪条和优先补什么，`line` 给每日语音台词，包含主句、短回声、群里接话、预检、管理员预热、真测和听写反查，`plan` 给今日行动安排，串起挑战、打卡、识图语音三件套和晚间收尾，`guard`/`streak` 是保连续短催卡，会告诉你现在先补挑战、打卡还是识图语音，`media`/`voice` 给识图语音今日陪跑卡，包含看图问法、听写真测、语音短句、预检和真测命令，`nudge`/`missing` 按今天缺项短催一下、回答“我今天还差啥”，但不写记录，`week` 汇总最近 7 天双收/挑战/打卡日历并附今天识图语音实跑摘要，`recap` 手动生成晚间复盘卡并带当前用户挑战/打卡收尾状态和识图语音真实链路收尾，`challenge` 给当前用户一张当天稳定的今日挑战卡，`done` 记录挑战完成、连续完成天数和累计次数并提示识图语音下一步，`wrap` 一次记录挑战完成和每日打卡并引导跑 `/daily media` 小闭环，`challenge board` 查看当前会话挑战完成榜，`checkin` 记录当前群/私聊的每日打卡、连续天数和累计次数并提示识图语音下一步，`board` 查看当前会话打卡榜；多模态每日链路牌看 `/media daily` |
 | `/csplayer` | 每日 CS 选手，按 QQ、群、日期固定抽取，带选手图和短评 |
 | `/csplayer status` | 查看每日 CS 卡池、真实图策略、图片缓存、限流和最近图片错误 |
 | `/csimage test all` | 实测每日 CS 全分支真实图源，能区分外部真实图和本地签位卡兜底 |
@@ -1261,8 +1364,17 @@ npm run smoke
 | `/cstactic` | 每日 CS 战术 |
 | `/csclutch` | 每日 CS 残局 |
 | `/csloadout` | 每日 CS 套餐，组合队伍、地图、武器、定位 |
+| `/csquiz`、`/csquiz answer A` | 每日 CS 小考/挑战，按本地每日卡池生成题目和每日稳定洗牌选项；`answer`/`答` 可提交 A/B/C 判分、看解析和真话边界 |
+| `/cstrain` | 每日 CS 训练计划，按当天地图、武器、定位、道具、战术生成练枪/道具/复盘任务；有竞猜积分、训练历史和日志短板时会附加个人建议 |
+| `/cstrain analyze Mirage 死亡8次 补枪距离太远 没闪` | 只读分析一段对局/训练文字日志，识别死亡、补枪、道具、急停预瞄等短板，并给出写入 `/cstrain log` 的建议命令 |
+| `/cstrain log 30 Mirage AK 急停` | 记录一次训练；也支持 `/cstrain log 道具 20 Inferno 烟闪`，日志文字会参与短板统计 |
+| `/cstrain stats`、`/cstrain clear` | 查看近 14 天训练分布，或清空当前会话自己的训练记录 |
 | `/choose A,B,C` | 随机选择 |
 | `/rand [min] [max]` | 随机数 |
+
+识图/语音/多模态诊断也支持自然触发：`识图状态`、`语音状态`、`多模态状态`。
+多模态每日牌也支持自然触发：`识图语音每日牌`、`今日三件套`、`识图语音三件套`、`多模态日报`、`今日多模态状态`。
+每日提醒也支持自然触发：`今日状态`、`我的每日`、`今日偏好`、`我的画像`、`今日证据账本`、`今天跑没跑`、`今日闭环分`、`今日完成度`、`今日指挥台`、`今日看板`、`今日队形`、`群每日`、`今日聊天节奏`、`今日语气`、`今日接力`、`群接力`、`识图语音接力`、`今日话题`、`群破冰`、`识图语音脚本包`、`识图语音缺啥`、`今日三件套缺啥`、`今日语音台词`、`今日语音句`、`今日安排`、`保连续`、`别断签`、`识图语音陪跑`、`催我一下`、`我今天还差啥`、`本周每日`、`今日复盘`、`今日挑战`、`挑战完成`、`今日收工`、`挑战榜`、`今日打卡`、`打卡榜`、`晚安机器`。
 
 每日 CS 系列说明：
 
@@ -1271,6 +1383,8 @@ npm run smoke
 - 队伍、地图、武器、定位、道具、战术、残局会优先解析 Liquipedia / Counter-Strike Wiki / Wikimedia 真实图源；全部失败才发本地签位卡，并在 `/csimage test ...` 里明确标出。
 - 图片发送前会先下载进本地图片缓存，再以 `base64://` 发给 QQ；图片失败时仍返回文字和错误提示，不会让命令像“没反应”。
 - 输出包含 @、标题、语境、指数、今天打法、别急点、机器短评，排版尽量短而清楚。
+- `/csquiz` 输出本地每日小考，包含题型、场景、题目、选项、参考判断和真话边界；它用于训练判断和整活，不冒充实时赛事事实。
+- `/cstrain` 输出本地每日训练建议，包含强度、练枪、地图道具、定位目标和复盘项；若当前会话有 `/predict` 结算积分，会附加胜率/精准率、地图样本和赛事样本驱动的个人判断训练提示；若你用 `/cstrain log` 记录过训练，会按近 14 天练枪/道具/复盘/实战分布和文字日志里的死亡、补枪、道具、急停预瞄等短板调整建议；若你设置过 `/profile` 队伍/选手/地图偏好，会把它作为训练侧重点和举例参考，但不当作实时阵容/排名/状态事实；`/cstrain analyze <文字日志>` 只读分析你发的文本，不读取 demo/截图，也不冒充实时赛事事实。
 - 队伍字段写的是“队伍语境”，不是永久阵容。用户问“最新在哪队/最近状态”时应走 `/player 最新 <名字>` 或直接 @ 提问触发联网。
 - 输出走本地逻辑，不调用 AI；真实图解析有短超时和缓存，不影响 @ 必回队列。
 - 图片状态用 `/csplayer status` 看：卡池数量、真实图策略、缓存容量、命中/失败次数、in-flight 下载数、Liquipedia 限流和最近错误都会显示。
@@ -1289,6 +1403,8 @@ npm run smoke
 | 每日战术 | `/cstactic`、`/csstrat`、`/今日战术`、`/抽战术` | `今天打什么战术`、`今日怎么打`、`战术签` |
 | 每日残局 | `/csclutch`、`/今日残局`、`/每日残局`、`/抽残局` | `今天残局怎么打`、`来个残局签` |
 | 每日套餐 | `/csloadout`、`/cspack`、`/csdaily`、`/今日cs`、`/每日cs`、`/今日套餐` | `今日cs`、`今天cs`、`今天怎么打`、`今天打啥`、`来个CS套餐` |
+| 每日小考 | `/csquiz`、`/cschallenge`、`/cs小考`、`/cs问答`、`/cs挑战` | `来个CS小考`、`今天考我CS`、`今日CS题`、`CS挑战` |
+| 每日训练 | `/cstrain`、`/cstrain analyze`、`/cstrain log`、`/cstrain stats`、`/cspractice`、`/cs训练`、`/练枪任务` | `今天怎么练枪`、`来个CS训练`、`给我安排CS训练`、`今天练什么道具` |
 
 触发设计：
 
@@ -1330,6 +1446,7 @@ knowledge/quarantine/
 /kb search NiKo
 /kb search 礼物感谢
 /quote 公式解说
+/quote 玩机器原话逐字来一句
 /player m0NESY
 /team G2
 ```
@@ -1339,9 +1456,10 @@ knowledge/quarantine/
 ```text
 /kb preview 玩机器 6657 公式解说
 /kb preview HLTV Top 20 players 2025 ZywOo donk ropz
+/kb import-url https://www.hltv.org/
 ```
 
-`preview` 只生成候选，不写主库。
+`preview` 和 `import-url` 只生成候选，不写主库。URL 导入只保留标题、来源和短摘要，适合把 HLTV、Liquipedia、官方公告等公开链接变成待审核事实入口；公开事实/带时效词的公开摘要会自动补“快照时间”和“时效边界”，提醒后续回答最新排名、阵容、赛果、版本或地图池前必须走 `/cs verify`、`/cs evidence` 和 fresh 实时证据。
 
 ### 批量刷新
 
@@ -1359,6 +1477,12 @@ knowledge/quarantine/
 - 长句、疑似原话、礼物感谢完整话术不写隔离目录，只能以摘要、短摘、拟态模板或待核验语料写入主库。
 - 后台自动刷新会读取 `sources.json` 的 `intervalMinutes`，只跑到期来源；手动 `/kb refresh` 不受间隔限制。
 - 来源上次自动刷新时间记录在 `knowledge/source-state.json`，这是运行产物，默认不提交。
+- 每个候选都会标出来源评级：`trusted` 代表 HLTV、Liquipedia、Valve、CS API 等可信域名，`known` 代表 B站、YouTube、微博等已知平台，`unknown` 和 `risky` 默认挡住自动写入，必须人工看完 `/kb show` 再决定。
+- 公开事实和带时效词的公开摘要候选会自动携带快照时间、时效边界和 `/cs verify` / `/cs evidence` 复核要求；自动写入主库后也保留这些边界，避免旧排名/阵容/赛果被包装成实时结论。
+- `/kb preview`、`/kb import-url`、`/kb show` 和 `/kb list` 会带“自动质量闸”和“行动建议”，直接提示该 commit、补来源、摘要化还是 drop。
+- 候选质量闸和 `/kb audit` 会扫描“这是玩机器原话/逐字/经典语录/本人说过/名场面台词/一字不差/完整字幕”等未核验声称；没有已核验证据时会要求改成拟态模板、短摘要或场景锚点。
+- 候选质量闸也会拦多行引号、时间轴、主播/弹幕对话式长引用；即使没写“原话”，也会提示先压成“场景/短摘要/可用话术/禁用边界”。
+- `/kb stale` 会只读扫描主库里带“最新/当前/排名/阵容/转会/比分/赛程/版本/地图池”等时效词的事实块，提示缺少证据链接、抓取时间或 fresh/stale/旧快照边界的风险，并按排名、赛果/赛程、阵容/转会、版本/地图池给出 `/cs verify`、`/cs evidence`、管理员 `/cs warm plan` 补证路线；`/kb route` 和真实回复 trace 会把实际命中的风险分区标出来，输出后处理也会在缺少对应 fresh 证据时把排名/阵容/赛果/版本断言降级，修完前这些块只能当历史线索，不能当实时结论。
 
 ### 查看和回滚自动写入
 
@@ -1396,6 +1520,7 @@ knowledge/inbox/
 生成候选：
 
 ```text
+/kb inbox
 /kb ingest
 /kb ingest full
 /kb list
@@ -1403,16 +1528,21 @@ knowledge/inbox/
 /kb commit <候选ID>
 ```
 
-`/kb ingest full` 适合较长素材，但仍建议整理成“场景、摘要、可用话术”，不要把整段直播转写无脑塞入主库。
+先跑 `/kb inbox` 做只读素材体检；看到 `split-first` 就先拆成“场景、摘要、可用话术、禁用边界”，看到 `needs_source` 就补来源或降级为本地授权摘要。`/kb ingest full` 适合较长素材，但仍建议整理成“场景、摘要、可用话术”，不要把整段直播转写无脑塞入主库。
 
 ## 知识库准确性边界
 
 - 公开网页没有可靠原文时，不写成“经典原话”。
+- `/quote` 输出的是口癖/短句锚点，不是本人原话库；要补真实素材先走 `/kb inbox` 和 `/kb ingest`。
 - 礼物感谢默认是拟态模板，不是核验原话。
 - B站标题和搜索摘要只能当切片索引，不当完整证据。
 - HLTV、Liquipedia、Valve、官方公告优先级高于二手摘要。
+- 自动写库会检查证据链接域名：公开事实必须来自 `trusted` 来源，公开摘要至少要 `known` 来源；本地、内网或未知域名只进候选，不会悄悄进主库。
+- 导入前可以先跑 `/kb trust <链接或域名>`，它只按域名预检 trusted/known/unknown/risky，不联网、不写候选；`known` 平台适合摘要索引，`unknown/risky` 不能包装成核验事实。
 - 队伍阵容、转会、排名、赛果、版本更新必须联网确认。
-- 不复制长视频转写、完整切片台词或平台内容大段文本。
+- 实时事实参考会把缓存 fresh/stale/miss 和来源线索直接注入模型；如果只剩 stale/旧缓存，只能说成线索或旧快照，不能包装成“刚查最新/实时结论”；miss 也不能说成“没有比赛/没有赛果”。AI 最终回复若遇到旧快照或无当前快照，会额外追加自然事实边界和对应 `/cs verify` / `/cs warm plan` 补证入口；如果证据账本显示 fresh 与 stale/miss/旧 RAG 过滤混在一起，发出前还会压掉“全部最新/可以报死/我刚查了HLTV”这类过度来源口吻。事实覆盖会按类型拆开判断：排名 fresh 只支撑排名，不能顺手支撑阵容/转会、赛果/赛程或选手近期数据。`/trace last` 的 `证据账本` 会把当前事实、实时证据、知识、RAG、画像、识图/听写和事实修正压成一行，方便确认这条回复靠什么说。
+- 模型输出如果用“听说/朋友说/群里都说/爆料说”给 CS 转会、阵容、排名、比分背书，会被后处理改成可靠来源边界；即使旁边有 fresh 缓存，也不能把群聊/朋友/爆料当来源，要按证据文本明确覆盖的事实说。
+- 不复制长视频转写、完整切片台词或平台内容大段文本；多行长引用要先拆成场景判断和短摘要。
 - 普通问是不是 bot/机器人时按第一人称嘴硬接住，不助手式自曝；追问现实主播本人、授权、代表本人、本尊关系时才说明边界。
 
 ## 人格和活人感
@@ -1488,6 +1618,7 @@ knowledge/inbox/
     "api_timeout_ms": 120000,
     "search_cache_max_entries": 1000,
     "ai_reply_cache_seconds": 45,
+    "ai_reply_cache_max_entries": 300,
     "vision_max_images": 2,
     "image_cache_max_mb": 512,
     "image_cache_max_file_mb": 2,
@@ -1579,7 +1710,7 @@ npm run data:test
 npm run smoke
 ```
 
-`doctor` 是本机/VPS 预检，不需要 QQ 在线，也不需要连接 NapCat。它会检查 `config.json`、`config.example.json`、`dist/index.js`、知识库、缓存目录写入权限、API Key 是否仍是占位值、`src` 是否比 `dist` 新、2G1C 并发配置是否过高。默认只有“硬伤”会返回非 0；如果想让风险项也阻断部署，可以跑 `node scripts/doctor.js --strict`。
+`doctor` 是本机/VPS 预检，不需要 QQ 在线，也不需要连接 NapCat。它会检查 `config.json`、`config.example.json`、`dist/index.js`、知识库、缓存目录写入权限、`data/` 运行数据父目录、`context_store/embeddings` RAG 索引目录、`voice_cache/local` 本地 TTS 输出目录、`knowledge/inbox` 素材收件箱、API Key 是否仍是占位值、`src` 是否比 `dist` 新、2G1C 并发配置是否过高。默认只有“硬伤”会返回非 0；如果想让风险项也阻断部署，可以跑 `node scripts/doctor.js --strict`。
 
 `api:test` 会读取 `.env` 和 `config.json`，真实请求一次 OpenAI 兼容 Chat Completions 接口。只有它显示 `[api:test] OK`，群里的 `/ai` 和 @ 对话才算真的通了；如果失败，它会直接提示是 key、模型名、API 地址还是 VPS 网络问题。
 
@@ -1603,7 +1734,7 @@ npm run smoke
 - 5 个以上活跃群同时 @ 时的供应商 API 限速表现。
 - STT 供应商是否兼容 `input_audio` 或 `audio_url` 请求格式；不兼容时强触发仍会文本兜底。
 - TTS 供应商返回格式变化后的语音可播放性。
-- 公开搜索结果质量；实时比赛/转会仍以 `/diag live` 和来源链接为准。
+- 公开搜索结果质量；实时比赛/转会仍先看 `/data` 的 CS 事实覆盖，再以 `/diag live` 和来源链接为准。
 
 上线后手动检查：
 
@@ -1615,6 +1746,7 @@ npm run smoke
 /voice status
 /voice test
 /kb stats
+/kb sources
 /kb audit
 /kb refresh --aggressive 玩机器Machine 萌娘百科 6657
 /kb batches
@@ -1632,18 +1764,33 @@ npm run stt:test -- <语音URL或本地文件>
 
 ```text
 /reload
+/maint plan
 /maint status
 /maint login
 /maint config
+/maint storage
+/maint warm plan
+/maint warm apply voice 3
+/maint warm cs
+/maint warm media <图片URL/语音URL>
+/maint warm voice <常用短句>
+/maint warm gift <礼物> [数量]
 /maint clean
 /maint gc
 ```
 
 - `/reload` 会重新读取 `config.json`，并立即重新应用 AI/搜索/识图/STT/TTS 全局并发、搜索缓存容量、图片缓存上限、知识库自动刷新配置。改普通配置后不用重启，除非你换了环境变量、Node 参数或 PM2 配置。
+- `/maint plan` 是只读总维护 runbook，按 P0/P1/P2 把登录态、配置版本、API Key、写盘、CS fresh/stale、知识库、内存队列、多模态和缓存容量串成下一步命令。
 - `/maint status` 是轻量维护面板，适合看队列是否堵住、知识库是否命中、缓存是否膨胀、配置版本是否偏旧。
 - `/maint login` 会立即调用 OneBot `get_login_info` 检查 QQ 是否真的在线，并显示 WebSocket 断开次数、早断次数、心跳重连次数和最近错误。经常掉登录时优先跑这个。
 - `/maint config` 专门看关键配置漂移，升级后第一时间跑它。
-- `/maint clean` 会清理搜索、图片、TTS、STT 缓存，修剪知识库自动日志，并跑一次知识库审计。
+- `/maint storage` 会只读检查运行目录、RAG 索引目录、关键 JSON 持久化文件和磁盘空间；它只写临时探针并删除，不清缓存、不联网、不调用模型。`missing` 文件只代表还没生成或刚清理，不能反推没有比赛、订阅、训练或画像。
+- `/maint warm plan` 只读扫描最近真实 trace，列出可预热的图片 URL、语音源、TTS 短句和礼物谢礼，附缓存 hit/miss/disabled 状态和下一步命令；它不下载、不听写、不生成 TTS。
+- `/maint warm apply [all|media|vision|voice|gift] [条数]` 会按候选真实预热安全缓存：`vision/media` 下载图片进缓存，`voice/gift` 生成或复用 TTS 缓存；它不会自动下载并听写语音源，STT 仍要逐条 `/voice stt <语音URL>`。
+- `/maint warm cs` 会从维护入口真实执行 CS 实时缓存预热，默认等价于预热 `all`，也可指定 `matches/results/ranking/watch/predict/team/player/match`；预热后仍要看 `/cs verify`、`/cs evidence` 的 fresh/stale/miss，不能把 stale/miss 当实时事实。
+- `/maint warm media|vision` 复用多模态预热：图片会真实下载进 `image_cache/`，语音只读检查 STT 缓存，不听写、不调用模型；命中只代表缓存可复用，不代表已经看图或听到语音。
+- `/maint warm voice|gift` 会真实生成或复用 TTS 缓存，但不调用 AI、不发送 `record`，礼物预热也不写礼物 trace/节流；克隆/授权样本不能说成现实主播本人语音。
+- `/maint clean` 会清理搜索、CS实时、图片、TTS、STT 缓存，修剪知识库自动日志，并跑一次知识库审计。只想移除 CS 过期事实快照时优先用 `/cs cache prune`，它会保留 fresh 当前快照和 HLTV link-check。
 - `/maint gc` 只做手动内存回收；PM2 的 `ecosystem.config.js` 已经带 `--expose-gc`，如果你不是用这个文件启动，需要把该参数补上。
 
 私聊手动检查：
@@ -2014,7 +2161,7 @@ pm2 logs wanjier --lines 80 --nostream
 3. 看 `/diag` 是否提示 AI 接口未配置。
 4. 确认 `api_key` 不是示例里的占位值；占位 key 会被诊断为未配置。
 5. 看 `/status` 队列是否长期堆积。
-6. 跑 `/trace last`，看最近一次强触发是否进入队列、是否调用 AI、是否最终发送文本/语音兜底。
+6. 跑 `/trace last` 或 `/trace recent`，看最近一次/最近多次强触发是否进入队列、是否调用 AI、是否最终发送文本/语音兜底。
 7. 如果设置了 `enabled_groups`，确认群号在白名单；直接 @ 或回复 bot 理论上仍会放行，普通消息才受白名单影响。
 
 ### 回复错人
@@ -2039,10 +2186,12 @@ pm2 logs wanjier --lines 80 --nostream
 3. 图片 URL 必须能由服务器访问；如果 NapCat 事件只有 `file`，bot 会自动调用 `get_image`，并兼容 URL、本地路径和 base64 返回。
 4. 单图超过 `image_cache_max_file_mb` 会被图片缓存层拒绝；2G1C 示例默认 2MB，1G 降级档建议 1MB。
 5. 群里跑 `/vision status` 看缓存命中、失败次数和最近错误。
-6. 跑 `/vision test <图片URL>`；它会先下载图片，再真实调用视觉模型。下载 OK 但模型失败，说明是模型/API 兼容问题；下载失败，说明是外链、代理或文件大小问题。
-7. 也可以把图片和 `/vision test` 发在同一条消息里；这能直接测试 NapCat `get_image` 兜底链路。
-8. 强触发里如果图片没吃到，跑 `/trace last` 看 `识图错误`。现在下载失败、缓存失败、模型调用失败都会进 trace，不再静默吞掉。
-9. 同一张图多人同时触发时会走图片 single-flight，同 URL 只下载一次；`/status` 里的图片缓存 `飞行` 数可以看到当前并发下载。
+6. 先跑 `/vision check <图片URL>` 或把图片和 `/vision check` 发同一条消息；它不下载图片、不调用模型，只看图片源、截断、payload、图片缓存 hit/miss/in-flight/本地可读、缓存压力和配置风险。
+7. 常用远程图片可跑 `/vision warm <图片URL>` 先下载进 `image_cache/`，它不调用视觉模型；再跑 `/vision check` 应该能看到 hit。
+8. 再跑 `/vision test <图片URL>`；它会显示缓存前/后、下载结果、模型、payload 和可见描述判定。下载 OK 但模型失败，说明是模型/API 兼容问题；下载失败，说明是外链、代理或文件大小问题；缓存 hit 只代表文件可复用，只有下载 OK 且调用 OK 才代表本次模型拿到了图片输入。
+9. 也可以把图片和 `/vision warm` 或 `/vision test` 发在同一条消息里；前者只预热图片缓存，后者直接测试 NapCat `get_image` 兜底链路和模型调用。
+10. 强触发里如果图片没吃到，跑 `/vision last`、`/vision recent` 或 `/trace last` 看 `识图错误`、实际输入图片数、传给模型的图片数、`vision_max_images` 截断、URL/本地/base64 来源类型和图片缓存前后状态；`/vision status` 也会带最近一次识图摘要和最近记录数量。现在下载失败、缓存失败、模型调用失败都会进 trace，不再静默吞掉；缓存 hit/inline/local-readable 只说明图片源可用或可复用，是否真正进模型以“识图: 已传图”为准。
+11. 同一张图多人同时触发时会走图片 single-flight，同 URL 只下载一次；`/status` 里的图片缓存 `飞行` 数可以看到当前并发下载。
 
 ### 语音不可用
 
@@ -2051,12 +2200,14 @@ pm2 logs wanjier --lines 80 --nostream
 3. 没有 `voice_sample.mp3` 时会走普通 TTS。
 4. 强触发默认优先文字引用，普通主动接话才可能随机语音。
 5. 跑 `/voice status` 看 `最近错误`、`听写最近错误`、样本状态和缓存命中。
-6. 跑 `/voice last`，确认最近一次是 `direct-verbatim` 直读、`ai-voice` AI 转语音，还是 TTS 失败后文字兜底。
-7. 跑 `/voice stt <语音URL>` 单独测听写；跑 `/voice test` 单独测 TTS。一个成功一个失败时，按失败那条链路排查。
-8. 也可以把 QQ 语音和 `/voice stt` 发在同一条消息里；这能直接测试 NapCat `get_record`、转码、STT payload 和缓存。
-9. Docker NapCat 优先保持 `tts_send_mode=base64`。只有确认容器能读宿主机 `voice_cache/` 时，才改成 `file`。
-10. `/diag live` 会汇总 TTS/STT provider readiness、payload 模式、缓存容量和最近错误；管理员线上排障优先跑它。
-11. 明确语音直读成功时只发纯 `record`，不会拼 `reply`。如果你看到文字兜底，说明 TTS 没生成或 QQ 发送失败，直接看 `/voice last` 的 `fallback` 原因。
+6. 跑 `/voice check <文本>` 先看是否会拆成多条 record、是否可能截断、provider/send 模式是否安全，以及有没有把生成音频说成现实主播本人语音；它不生成音频。
+7. 跑 `/voice last` 或 `/voice recent`，确认最近一次/最近多次是 `direct-verbatim` 直读、`ai-voice` AI 转语音，还是 TTS 失败后文字兜底。
+8. 跑 `/voice sttcache <语音URL>` 先只读看听写缓存 key、hit/miss/in-flight/expired；确认要真测再跑 `/voice stt <语音URL>`。
+9. 跑 `/voice stt <语音URL>` 单独测听写；它会展示缓存前/后、后端 local/API 动作、payload 和转写结果。跑 `/voice test` 单独测 TTS。一个成功一个失败时，按失败那条链路排查。
+10. 也可以把 QQ 语音和 `/voice sttcache` 或 `/voice stt` 发在同一条消息里；前者只读查缓存，后者真实测试 NapCat `get_record`、转码、STT payload 和缓存。
+11. Docker NapCat 优先保持 `tts_send_mode=base64`。只有确认容器能读宿主机 `voice_cache/` 时，才改成 `file`。
+12. `/diag live` 会汇总 TTS/STT provider readiness、payload 模式、缓存容量和最近错误；管理员线上排障优先跑它。
+13. 明确语音直读成功时只发纯 `record`，不会拼 `reply`。如果你看到文字兜底，说明 TTS 没生成或 QQ 发送失败，直接看 `/voice last` 或 `/voice recent` 的 `fallback` 原因。
 
 ### 每日 CS 不触发或不出图
 
@@ -2072,7 +2223,7 @@ pm2 logs wanjier --lines 80 --nostream
 1. 跑 `/kb audit`。
 2. 用 `/kb batches` 查看最近自动写入。
 3. 用 `/kb rollback <batchId>` 回滚错误批次。
-4. 把真实素材放入 `knowledge/inbox/`，走 `/kb ingest`。
+4. 把真实素材放入 `knowledge/inbox/`，先跑 `/kb inbox` 体检，再走 `/kb ingest`。
 5. 不要把无来源长句写成“真实语录”。
 
 ## 更新流程
@@ -2108,6 +2259,12 @@ npm run config:sync -- --apply
     "trigger_probability": 0.08,
     "related_reply_probability": 0.65,
     "ai_reply_cache_seconds": 45,
+    "ai_reply_cache_max_entries": 300,
+    "human_reply_delay_enabled": true,
+    "human_reply_delay_min_ms": 250,
+    "human_reply_delay_max_ms": 1400,
+    "human_reply_delay_forced_min_ms": 120,
+    "human_reply_delay_forced_max_ms": 650,
     "enable_knowledge": true,
     "knowledge_force_style": true,
     "knowledge_max_chars": 2600,
@@ -2156,6 +2313,7 @@ pm2 logs wanjier --lines 80 --nostream
 ```text
 /reload
 /maint config
+/maint plan
 /maint status
 ```
 
@@ -2177,8 +2335,19 @@ pm2 logs wanjier --lines 80 --nostream
 ```text
 /ping
 /whoami
+/maint plan
 /maint status
+/maint storage
+/maint warm plan
+/maint warm apply voice 3
+/maint warm cs
+/maint warm media <图片URL>
+/maint warm voice 兄弟们好
+/maint warm gift 烟花 12
 /mem recent
+/trace recent 3
+/media daily
+今天识图语音跑了吗
 /scene 白给
 /csplayer
 今天抽个CS选手
@@ -2191,7 +2360,8 @@ pm2 logs wanjier --lines 80 --nostream
 - `/csplayer` 和“今天抽个CS选手”都返回选手图、昵称、队伍语境、定位和签位分。
 - `@bot 今天抽个CS选手` 由本地抽签功能响应，不消耗 AI。
 - 戳一戳会返回短口癖，不应该出现括号标签或说明文字。
-- 普通 @ 问题仍走 AI，并引用当前消息。
+- 普通 @ 问题仍走 AI，并引用当前消息；`/trace last` 能看到 `真人停顿`，`/status` 能看到平均停顿。
+- `/media daily` 能看今日识图、听写、TTS 三件套是否真实跑过。
 
 如果知识库自动刷新写入过多：
 
