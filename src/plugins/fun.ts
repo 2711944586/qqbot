@@ -123,6 +123,8 @@ interface BestdoriCardImage {
   characterKey?: string;
   characterName?: string;
   url?: string;
+  urls?: string[];
+  images?: string[];
   title?: string;
 }
 
@@ -2272,14 +2274,22 @@ function loadBestdoriCardImages(): BestdoriCardImage[] {
     if (bestdoriCardCache && bestdoriCardCache.mtimeMs === stat.mtimeMs) return bestdoriCardCache.cards;
     const parsed = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
     const rawCards = Array.isArray(parsed) ? parsed : Array.isArray(parsed?.cards) ? parsed.cards : [];
-    const cards = rawCards
-      .filter((item: Partial<BestdoriCardImage>) => item && typeof item.url === 'string' && /^https?:\/\//i.test(item.url))
-      .map((item: BestdoriCardImage) => ({
+    const cards = rawCards.flatMap((item: BestdoriCardImage) => {
+      if (!item || typeof item !== 'object') return [];
+      const urls = [
+        typeof item.url === 'string' ? item.url : '',
+        ...(Array.isArray(item.urls) ? item.urls : []),
+        ...(Array.isArray(item.images) ? item.images : []),
+      ]
+        .map((url) => String(url || '').trim())
+        .filter((url) => /^https?:\/\//i.test(url));
+      return [...new Set(urls)].map((url, index) => ({
         characterKey: String(item.characterKey || '').trim(),
         characterName: String(item.characterName || '').trim(),
-        title: String(item.title || '').trim(),
-        url: String(item.url || '').trim(),
+        title: index === 0 ? String(item.title || '').trim() : `${String(item.title || '').trim() || 'card'} #${index + 1}`,
+        url,
       }));
+    });
     bestdoriCardCache = { mtimeMs: stat.mtimeMs, cards };
     return cards;
   } catch (err) {
@@ -3350,6 +3360,10 @@ export const funPlugin: Plugin = {
         `地图/武器/皮肤/定位/道具/战术/残局: ${csMaps.length}/${csWeapons.length}/${csSkins.length}/${csRoles.length}/${csUtilities.length}/${csTactics.length}/${csClutches.length}`,
         `发刀池: 刀型${csKnives.length}类 / 刀皮${knifeSkins.length}种`,
         `木柜子池: MyGO!!!!!/Ave Mujica 共${dailyCharacters.length}人`,
+        `Bestdori本地卡面: ${loadBestdoriCardImages().length}张`,
+        `原神角色池: ${dailyGenshinCharacters.length}人`,
+        `冷知识/书摘/古诗词: ${dailyFacts.length}/${dailyBookExcerpts.length}/${dailyPoems.length}`,
+        `紫禁之巅武器池: ${duelWeapons.length}种`,
         `真实图策略: Liquipedia/Steam饰品图/Fandom/Wikimedia/BanG Dream Wiki优先，外链全失败才发本地签位卡`,
         `队伍示例: ${csTeams.slice(0, 3).map((item) => `${item.name}(${dailyCardImagePlan(item).replace(/^图源：/, '')})`).join(' | ')}`,
         (() => {

@@ -18,10 +18,24 @@ Supported shape:
       "characterName": "Takamatsu Tomori",
       "title": "Card title",
       "url": "https://example.com/card-image.png"
+    },
+    {
+      "characterKey": "tomori",
+      "characterName": "Takamatsu Tomori",
+      "title": "Batch card set",
+      "urls": [
+        "https://example.com/card-image-1.png",
+        "https://example.com/card-image-2.png"
+      ],
+      "images": [
+        "https://example.com/card-image-3.png"
+      ]
     }
   ]
 }
 ```
+
+`url`, `urls`, and `images` can be mixed. The bot expands them into one image pool and removes duplicate URLs.
 
 The bot matches `characterKey` first. Known keys:
 

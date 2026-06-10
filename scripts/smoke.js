@@ -5193,7 +5193,13 @@ async function testFunCsPlayer() {
   fs.writeFileSync(bestdoriManifestPath, JSON.stringify({
     cards: [
       { characterKey: 'tomori', characterName: 'Takamatsu Tomori', title: 'smoke tomori card 1', url: 'https://example.com/bestdori-tomori-1.png' },
-      { characterKey: 'tomori', characterName: 'Takamatsu Tomori', title: 'smoke tomori card 2', url: 'https://example.com/bestdori-tomori-2.png' },
+      {
+        characterKey: 'tomori',
+        characterName: 'Takamatsu Tomori',
+        title: 'smoke tomori batch',
+        urls: ['https://example.com/bestdori-tomori-2.png', 'https://example.com/bestdori-tomori-3.png'],
+        images: ['https://example.com/bestdori-tomori-4.png'],
+      },
     ],
   }), 'utf-8');
   funTest.__setBestdoriCardManifestPathForTests(bestdoriManifestPath);
@@ -5242,6 +5248,7 @@ async function testFunCsPlayer() {
       6657,
     );
     assert.ok(bestdoriCandidates.some((item) => item.source === 'bestdori-card'), 'daily mokoko should prefer local authorized Bestdori card manifest when present');
+    assert.ok(bestdoriCandidates.filter((item) => item.source === 'bestdori-card').length >= 4, 'daily mokoko should expand url/urls/images from Bestdori manifest');
     const skinWeapons = new Set(funTest.csSkins.map((item) => item.weapon));
     assert.deepStrictEqual(
       funTest.csWeapons.filter((item) => !skinWeapons.has(item.name)).map((item) => item.name),
@@ -5382,6 +5389,9 @@ async function testFunCsPlayer() {
     handler.handleEvent(makePlainEvent(613, 73, '/csplayer status'));
     await waitFor(() => sent.length === 2, 'csplayer status command');
     assert.ok(firstText(sent[1].message).includes('每日CS选手状态'), 'csplayer status should render status header');
+    assert.ok(firstText(sent[1].message).includes('Bestdori本地卡面: 4张'), 'csplayer status should expose local Bestdori manifest size');
+    assert.ok(firstText(sent[1].message).includes('原神角色池:'), 'csplayer status should expose genshin pool size');
+    assert.ok(firstText(sent[1].message).includes('冷知识/书摘/古诗词:'), 'csplayer status should expose expanded text pools');
 
   handler.handleEvent(makePlainEvent(602, 62, '今天抽个CS选手'));
   await waitFor(() => sent.length === 3, 'fuzzy csplayer command');
