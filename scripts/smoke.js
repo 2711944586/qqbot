@@ -5199,6 +5199,10 @@ async function testFunCsPlayer() {
   });
 
   try {
+    const dailyTemplateLeakPattern = /图源|覆盖|今日按|本地签位|兜底|Steam饰品图|Counter-Strike Wiki|BanG Dream Wiki|CSGO-API|API/i;
+    const assertCleanDailyText = (value, label) => {
+      assert.ok(!dailyTemplateLeakPattern.test(String(value || '')), `${label} should not leak source/debug template notes`);
+    };
     const player = funTest.dailyPlayerFor(61, 6657);
     assert.ok(funTest.csPlayers.every((item) => item.image), 'all daily CS players should have image URLs');
     assert.ok(funTest.csPlayers.every((item) => item.imageSource), 'all daily CS players should have image source labels');
@@ -5207,7 +5211,15 @@ async function testFunCsPlayer() {
     assert.ok(funTest.csWeapons.length >= 35, 'daily CS weapon pool should cover the full gun pool');
     assert.ok(funTest.csClutches.length >= 12, 'daily CS clutch pool should include richer scenarios');
     assert.strictEqual(funTest.csKnives.length, 20, 'daily knife pool should cover all CS2/CSGO knife families');
-    assert.ok(funTest.knifeSkins.length >= 15, 'daily knife skin pool should include the major finishes');
+    assert.ok(funTest.knifeSkins.length >= 26, 'daily knife skin pool should include vanilla and the major finishes');
+    const compatibleKnifeSkinKeys = new Set();
+    for (const knife of funTest.csKnives) {
+      const pool = funTest.knifeSkinPoolFor(knife);
+      assert.ok(pool.length > 0, `knife ${knife.name} should have compatible skins`);
+      assert.ok(pool.every((skin) => funTest.knifeSkinAvailableFor(knife, skin)), `knife ${knife.name} skin pool should only contain compatible skins`);
+      pool.forEach((skin) => compatibleKnifeSkinKeys.add(skin.key));
+    }
+    assert.strictEqual(compatibleKnifeSkinKeys.size, funTest.knifeSkins.length, 'every daily knife skin should be available for at least one knife family');
     assert.ok(funTest.csSkins.length >= 55, 'daily CS skin pool should cover the full weapon pool');
     assert.strictEqual(funTest.dailyCharacters.length, 10, 'mokoko pool should cover MyGO and Ave Mujica members');
     const skinWeapons = new Set(funTest.csSkins.map((item) => item.weapon));
@@ -5219,6 +5231,7 @@ async function testFunCsPlayer() {
     const directMessage = await funTest.buildCsPlayerMessage(61, player, funTest.dailyPlayerScore(61, 6657));
     assert.ok(directMessage.some((seg) => seg.type === 'at'), 'daily player direct builder should at the user');
     assert.ok(directMessage.some((seg) => seg.type === 'text' && seg.data.text.includes(player.nick)), 'daily player text should include nick');
+    assertCleanDailyText(firstText(directMessage), 'daily player template');
     const imageSeg = directMessage.find((seg) => seg.type === 'image');
     assert.ok(imageSeg, 'daily player should include an image segment');
     assert.ok(imageSeg.data.file.startsWith('base64://'), 'daily player image should be sent as base64');
@@ -5246,13 +5259,20 @@ async function testFunCsPlayer() {
     const weaponForSkin = funTest.csWeapons.find((item) => item.name === 'AK-47');
     const matchingSkin = funTest.dailySkinForWeapon(weaponForSkin, 61, 6657);
     assert.strictEqual(matchingSkin.weapon, 'AK-47', 'daily weapon skin should match the selected weapon when possible');
-    const knifeMessage = await funTest.buildKnifeMessage(61, funTest.dailyKnifeFor(61, 6657), funTest.dailyKnifeSkinFor(61, 6657), funTest.dailyScoreForKind('csknife', 61, 6657), false);
+    const skinMessage = await funTest.buildSkinMessage(61, matchingSkin, funTest.dailyScoreForKind('csskin', 61, 6657), false);
+    assertCleanDailyText(firstText(skinMessage), 'daily skin template');
+    const knife = funTest.dailyKnifeFor(61, 6657);
+    const knifeSkin = funTest.dailyKnifeSkinFor(61, 6657, knife);
+    assert.ok(funTest.knifeSkinAvailableFor(knife, knifeSkin), 'daily knife skin should exist for the selected knife');
+    const knifeMessage = await funTest.buildKnifeMessage(61, knife, knifeSkin, funTest.dailyScoreForKind('csknife', 61, 6657), false);
     assert.ok(firstText(knifeMessage).includes('今日发刀'), 'daily knife builder should include title');
     assert.ok(firstText(knifeMessage).includes('皮肤：'), 'daily knife builder should include skin name');
+    assertCleanDailyText(firstText(knifeMessage), 'daily knife template');
     assert.ok(knifeMessage.some((seg) => seg.type === 'image'), 'daily knife builder should include image');
     const mokokoMessage = await funTest.buildMokokoMessage(61, funTest.dailyCharacterFor(61, 6657), funTest.dailyScoreForKind('mokoko', 61, 6657), false);
     assert.ok(firstText(mokokoMessage).includes('每日木柜子'), 'daily mokoko builder should include title');
     assert.ok(firstText(mokokoMessage).includes('MyGO!!!!!') || firstText(mokokoMessage).includes('Ave Mujica'), 'daily mokoko builder should include band');
+    assertCleanDailyText(firstText(mokokoMessage), 'daily mokoko template');
     assert.ok(mokokoMessage.some((seg) => seg.type === 'image'), 'daily mokoko builder should include image');
     const parsedTraining = funTest.parseTrainingLogInput(['35', 'Mirage', 'AK', '急停']);
     assert.strictEqual(parsedTraining.area, 'aim', 'training log parser should infer aim practice');

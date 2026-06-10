@@ -105,6 +105,11 @@ function compactWord(value: string): string {
   return normalizeSkinName(value).replace(/[^a-z0-9]+/g, '');
 }
 
+function isVanillaPattern(value: string): boolean {
+  const compact = compactWord(value);
+  return compact === 'vanilla' || compact === 'stock' || compact === 'default';
+}
+
 function patternOnly(weaponName: string, skinName: string): string {
   const normalizedSkin = normalizeSkinName(skinName);
   const normalizedWeapon = normalizeSkinName(weaponName);
@@ -124,6 +129,22 @@ export async function resolveCsgoSkinImage(weaponName: string, skinName: string)
   if (skins.length === 0) return null;
 
   const pattern = patternOnly(weapon, skin);
+
+  if (isVanillaPattern(pattern)) {
+    const vanilla = skins.find((item) => (
+      item.image
+      && compactWord(item.weapon?.name || '') === compactWord(weapon)
+      && !item.pattern?.name
+    )) || skins.find((item) => (
+      item.image
+      && compactComparable(item.name || '') === compactComparable(weapon)
+    ));
+
+    return typeof vanilla?.image === 'string' && /^https?:\/\//i.test(vanilla.image)
+      ? vanilla.image
+      : null;
+  }
+
   const fullNames = new Set([
     compactComparable(skin.includes('|') ? skin : `${weapon} | ${pattern}`),
     compactComparable(`${weapon} | ${pattern}`),

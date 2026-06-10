@@ -116,8 +116,8 @@ function main(): void {
   handler.use(csPlugin);
   handler.use(csWatchPlugin);
   handler.use(csPredictPlugin);
-  handler.use(dailyPulsePlugin);
   handler.use(funPlugin);
+  handler.use(dailyPulsePlugin);
   handler.use(stickersPlugin);
   handler.use(aiChatPlugin);    // AI 放最后
 

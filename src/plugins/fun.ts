@@ -489,24 +489,49 @@ const csKnives: KnifeCard[] = [
 ];
 
 const knifeSkins: KnifeSkin[] = [
+  { key: 'vanilla', name: 'Vanilla', rarity: 'Covert', advice: '原版签吃的是刀型本身，今天别花，赢回合最有排面。', avoid: '别原版刀很干净，操作很凌乱。', line: 'Vanilla签，朴素但硬。', fileSuffixes: ['Vanilla', 'Stock', 'stock'] },
   { key: 'doppler', name: 'Doppler', rarity: 'Covert', advice: '多普勒签很亮，亮归亮，别把自己亮给对面。', avoid: '别检视比补枪还积极。', line: 'Doppler一出，群里先沉默三秒。', fileSuffixes: ['Doppler', 'doppler_phase2', 'doppler_phase3', 'doppler_phase4'] },
   { key: 'gamma-doppler', name: 'Gamma Doppler', rarity: 'Covert', advice: '绿宝石气质拉满，但回合别绿。', avoid: '别为了看颜色忘了看包点。', line: 'Gamma Doppler签，今天有点贵气。', fileSuffixes: ['Gamma_Doppler', 'gamma_doppler'] },
   { key: 'fade', name: 'Fade', rarity: 'Covert', advice: '渐变签很顺眼，打法也要顺。', avoid: '别渐变很丝滑，急停很抽象。', line: 'Fade签，老审美不会错。', fileSuffixes: ['Fade'] },
   { key: 'marble-fade', name: 'Marble Fade', rarity: 'Covert', advice: '大理石渐变可以花，回合别花。', avoid: '别花刀配花活，最后花式白给。', line: 'Marble Fade签，颜色先赢了。', fileSuffixes: ['Marble_Fade'] },
   { key: 'tiger-tooth', name: 'Tiger Tooth', rarity: 'Covert', advice: '虎牙签就是锋利，今天正面可以硬一点。', avoid: '别虎牙变乳牙。', line: 'Tiger Tooth签，咬住别松。', fileSuffixes: ['Tiger_Tooth'] },
   { key: 'case-hardened', name: 'Case Hardened', rarity: 'Covert', advice: '淬火签看脸，回合可不能全看脸。', avoid: '别蓝顶没出，红温先出。', line: 'Case Hardened签，赌狗气质来了。', fileSuffixes: ['Case_Hardened', 'case_hardened'] },
+  { key: 'blue-steel', name: 'Blue Steel', rarity: 'Covert', advice: '蓝钢签低调耐看，今天靠纪律和补枪吃饭。', avoid: '别冷色刀配热头打法。', line: 'Blue Steel签，稳里带一点冷。', fileSuffixes: ['Blue_Steel', 'blue_steel'] },
   { key: 'crimson-web', name: 'Crimson Web', rarity: 'Covert', advice: '红网签压迫感强，但别自己陷进去。', avoid: '别卡在自己编的网里。', line: 'Crimson Web签，红得有道理。', fileSuffixes: ['Crimson_Web', 'Crimson_web'] },
   { key: 'slaughter', name: 'Slaughter', rarity: 'Covert', advice: '屠夫签要狠，但狠之前先确认队友位置。', avoid: '别屠的是队伍经济。', line: 'Slaughter签，今天别手软也别上头。', fileSuffixes: ['Slaughter'] },
   { key: 'lore', name: 'Lore', rarity: 'Covert', advice: '传说签有味，今天拿信息要有耐心。', avoid: '别传说没打出来，笑话先出来。', line: 'Lore签，老金色排面。', fileSuffixes: ['Lore'] },
   { key: 'autotronic', name: 'Autotronic', rarity: 'Covert', advice: '自动化签很硬，打法别像没上电。', avoid: '别机械感有了，判断没了。', line: 'Autotronic签，红银硬货。', fileSuffixes: ['Autotronic', 'autotronic'] },
   { key: 'black-laminate', name: 'Black Laminate', rarity: 'Covert', advice: '黑层压低调，今天就靠纪律说话。', avoid: '别低调到队友找不到你。', line: 'Black Laminate签，冷静派。', fileSuffixes: ['Black_Laminate', 'black_laminate'] },
+  { key: 'boreal-forest', name: 'Boreal Forest', rarity: 'Covert', advice: '北方森林签主打隐蔽，别先把脚步送出去。', avoid: '别迷彩没藏住，意图先暴露。', line: 'Boreal Forest签，朴素但能活。', fileSuffixes: ['Boreal_Forest', 'boreal_forest'] },
   { key: 'damascus', name: 'Damascus Steel', rarity: 'Covert', advice: '大马士革签要稳，细节纹路别打散。', avoid: '别刀纹很细，枪法很粗。', line: 'Damascus Steel签，老工艺感。', fileSuffixes: ['Damascus_Steel'] },
+  { key: 'forest-ddpat', name: 'Forest DDPAT', rarity: 'Covert', advice: '森林数码签很实用，今天多拿信息少赌命。', avoid: '别伪装得很好，回合目标也跟着消失。', line: 'Forest DDPAT签，低调务实派。', fileSuffixes: ['Forest_DDPAT', 'forest_ddpat'] },
+  { key: 'night', name: 'Night', rarity: 'Covert', advice: '夜色签很沉，今天别急着亮自己位置。', avoid: '别黑刀配黑屏操作。', line: 'Night签，暗得有气质。', fileSuffixes: ['Night'] },
+  { key: 'night-stripe', name: 'Night Stripe', rarity: 'Covert', advice: '夜色条纹签冷静一点，先打信息再打人。', avoid: '别条纹很稳，人先乱了。', line: 'Night Stripe签，干净低调。', fileSuffixes: ['Night_Stripe', 'night_stripe'] },
+  { key: 'scorched', name: 'Scorched', rarity: 'Covert', advice: '焦炭签很硬核，今天别怕脏活，但别白给。', avoid: '别刀像打过仗，人像刚睡醒。', line: 'Scorched签，糙但有味。', fileSuffixes: ['Scorched'] },
+  { key: 'stained', name: 'Stained', rarity: 'Covert', advice: '表面淬色签耐看，今天每个peek都要有理由。', avoid: '别刀面有痕，思路也有坑。', line: 'Stained签，老派稳定。', fileSuffixes: ['Stained'] },
   { key: 'ultraviolet', name: 'Ultraviolet', rarity: 'Covert', advice: '紫外线签低调酷，今天少嘴硬多补枪。', avoid: '别紫得发黑，回合也发黑。', line: 'Ultraviolet签，冷色但别冷场。', fileSuffixes: ['Ultraviolet'] },
   { key: 'freehand', name: 'Freehand', rarity: 'Covert', advice: '自由手签可以飘，但打法别飘。', avoid: '别自由到没有队形。', line: 'Freehand签，花纹随意，人别随意。', fileSuffixes: ['Freehand'] },
   { key: 'rust-coat', name: 'Rust Coat', rarity: 'Covert', advice: '锈蚀签很接地气，今天别嫌，赢回合才香。', avoid: '别刀生锈，脑子也生锈。', line: 'Rust Coat签，穷也穷得有态度。', fileSuffixes: ['Rust_Coat'] },
   { key: 'bright-water', name: 'Bright Water', rarity: 'Covert', advice: '澄澈之水签，今天信息也要清楚。', avoid: '别水很亮，人很迷。', line: 'Bright Water签，清爽但要能打。', fileSuffixes: ['Bright_Water'] },
   { key: 'safari-mesh', name: 'Safari Mesh', rarity: 'Covert', advice: '狩猎网格签朴素，朴素不是白给。', avoid: '别被对面当猎物。', line: 'Safari Mesh签，主打实用主义。', fileSuffixes: ['Safari_Mesh'] },
+  { key: 'urban-masked', name: 'Urban Masked', rarity: 'Covert', advice: '都市伪装签适合稳扎稳打，先清近点再动。', avoid: '别伪装了半天，自己先迷路。', line: 'Urban Masked签，城市老兵味。', fileSuffixes: ['Urban_Masked', 'urban_masked'] },
 ];
+
+const legacyKnifeKeys = new Set(['bayonet', 'm9-bayonet', 'karambit', 'butterfly', 'flip', 'gut', 'huntsman', 'falchion', 'bowie', 'shadow-daggers']);
+const limitedKnifeKeys = new Set(['classic', 'kukri']);
+const legacyOnlyKnifeSkinKeys = new Set(['autotronic', 'black-laminate', 'bright-water', 'freehand', 'gamma-doppler', 'lore', 'night']);
+const limitedKnifeSkinKeys = new Set(['vanilla', 'blue-steel', 'boreal-forest', 'case-hardened', 'crimson-web', 'fade', 'forest-ddpat', 'night-stripe', 'safari-mesh', 'scorched', 'slaughter', 'stained', 'urban-masked']);
+
+function knifeSkinAvailableFor(knife: KnifeCard, skin: KnifeSkin): boolean {
+  if (limitedKnifeKeys.has(knife.key)) return limitedKnifeSkinKeys.has(skin.key);
+  if (legacyKnifeKeys.has(knife.key)) return skin.key !== 'night-stripe';
+  return !legacyOnlyKnifeSkinKeys.has(skin.key);
+}
+
+function knifeSkinPoolFor(knife: KnifeCard): KnifeSkin[] {
+  const pool = knifeSkins.filter((skin) => knifeSkinAvailableFor(knife, skin));
+  return pool.length > 0 ? pool : knifeSkins;
+}
 
 const dailyCharacters: DailyCharacter[] = [
   { key: 'tomori', title: '每日木柜子', name: '高松灯 / Takamatsu Tomori', band: 'MyGO!!!!!', role: 'Vocal', voice: '羊宫妃那', note: '今天是灯签，慢热但真诚，别把话说太满。', page: 'Takamatsu Tomori' },
@@ -1069,8 +1094,10 @@ function dailyKnifeFor(userId: number, scopeId: number): KnifeCard {
   return csKnives[dailySeedForKind('csknife', userId, scopeId) % csKnives.length];
 }
 
-function dailyKnifeSkinFor(userId: number, scopeId: number): KnifeSkin {
-  return knifeSkins[dailySeedForKind('csknife_skin', userId, scopeId) % knifeSkins.length];
+function dailyKnifeSkinFor(userId: number, scopeId: number, knife?: KnifeCard): KnifeSkin {
+  const selectedKnife = knife || dailyKnifeFor(userId, scopeId);
+  const pool = knifeSkinPoolFor(selectedKnife);
+  return pool[dailySeedForKind(`csknife_skin_${selectedKnife.key}`, userId, scopeId) % pool.length];
 }
 
 function dailyCharacterFor(userId: number, scopeId: number): DailyCharacter {
@@ -1674,7 +1701,7 @@ async function probeDailyCard(kind: CsImageProbeKind, userId: number, scopeId: n
   }
   if (kind === 'knife') {
     const knife = dailyKnifeFor(userId, scopeId);
-    const skin = dailyKnifeSkinFor(userId, scopeId);
+    const skin = dailyKnifeSkinFor(userId, scopeId, knife);
     const score = dailyScoreForKind('csknife', userId, scopeId);
     const card: DailyCard = {
       key: `probe-${knife.key}-${skin.key}`,
@@ -1723,7 +1750,7 @@ async function probeDailyCard(kind: CsImageProbeKind, userId: number, scopeId: n
       }
       if (item === 'knife') {
         const knife = dailyKnifeFor(userId, scopeId);
-        const skin = dailyKnifeSkinFor(userId, scopeId);
+        const skin = dailyKnifeSkinFor(userId, scopeId, knife);
         const candidates = await buildKnifeImageCandidates(knife, skin);
         let ok = false;
         for (const candidate of candidates.slice(0, 4)) {
@@ -1977,8 +2004,7 @@ async function buildCsPlayerMessage(userId: number, player: CSPlayer, score?: nu
     `真名：${player.name}`,
     `今天打法：${roleAdvice.style}`,
     `别急点：${roleAdvice.avoid}`,
-    `机器短评：${player.note}`,
-    `图源：${sourceName(player.imageSource)}`,
+    `今日短评：${player.note}`,
   ].filter(Boolean).join('\n');
   const message: MessageSegment[] = [
     { type: 'at', data: { qq: String(userId) } },
@@ -2000,7 +2026,7 @@ async function buildDailyCardMessage(userId: number, card: DailyCard, score: num
     `${card.scoreLabel}：${score}/100`,
     `今天打法：${card.advice}`,
     `别急点：${card.avoid}`,
-    `机器短评：${card.line}`,
+    `今日短评：${card.line}`,
   ].join('\n');
   const message: MessageSegment[] = [];
   if (!isPrivate) message.push({ type: 'at', data: { qq: String(userId) } });
@@ -2017,8 +2043,7 @@ async function buildSkinMessage(userId: number, skin: SkinCard, score: number, i
     `${skin.scoreLabel}：${score}/100`,
     `今天打法：${skin.advice}`,
     `别急点：${skin.avoid}`,
-    `机器短评：${skin.line}`,
-    '图源：Steam饰品图/Counter-Strike Wiki真实皮肤图优先；失败才本地签位卡兜底',
+    `今日短评：${skin.line}`,
   ].join('\n');
   const message: MessageSegment[] = [];
   if (!isPrivate) message.push({ type: 'at', data: { qq: String(userId) } });
@@ -2036,7 +2061,7 @@ async function buildWeaponMessage(userId: number, weapon: DailyCard, skin: SkinC
     `今天打法：${weapon.advice}`,
     `皮肤加成：${skin.advice}`,
     `别急点：${weapon.avoid}`,
-    `机器短评：${weapon.line}`,
+    `今日短评：${weapon.line}`,
   ].join('\n');
   const message: MessageSegment[] = [];
   if (!isPrivate) message.push({ type: 'at', data: { qq: String(userId) } });
@@ -2065,9 +2090,7 @@ async function buildKnifeMessage(userId: number, knife: KnifeCard, skin: KnifeSk
     `${card.scoreLabel}：${score}/100`,
     `今天打法：${card.advice}`,
     `别急点：${card.avoid}`,
-    `机器短评：${card.line}`,
-    `覆盖：刀型池 ${csKnives.length} 类，皮肤池 ${knifeSkins.length} 种；今日按 QQ/群/日期固定`,
-    '图源：Steam饰品图/Counter-Strike Wiki刀具刀皮真实图优先；具体刀皮图失败时发对应刀型真实图',
+    `今日短评：${card.line}`,
   ].join('\n');
   const message: MessageSegment[] = [];
   if (!isPrivate) message.push({ type: 'at', data: { qq: String(userId) } });
@@ -2094,8 +2117,6 @@ async function buildMokokoMessage(userId: number, character: DailyCharacter, sco
     `CV：${character.voice}`,
     `木柜子指数：${score}/100`,
     `今日短评：${character.note}`,
-    `覆盖：MyGO!!!!! 5人 + Ave Mujica 5人，共 ${dailyCharacters.length} 人；今日按 QQ/群/日期固定`,
-    '图源：BanG Dream Wiki真实角色图优先；失败才本地签位卡兜底',
   ].join('\n');
   const message: MessageSegment[] = [];
   if (!isPrivate) message.push({ type: 'at', data: { qq: String(userId) } });
@@ -2122,7 +2143,7 @@ async function buildLoadoutMessage(userId: number, scopeId: number, isPrivate: b
     `今天打法：${role.advice} ${weapon.advice}`,
     `皮肤加成：${skin.advice}`,
     `别急点：${map.avoid}`,
-    `机器短评：${score >= 80 ? '这套签有点东西，今天可以稍微主动一点。' : score >= 45 ? '能打，但别把自己当主角。' : '这套先稳住，别上来就送大的。'}`,
+    `今日短评：${score >= 80 ? '这套签有点东西，今天可以稍微主动一点。' : score >= 45 ? '能打，但别把自己当主角。' : '这套先稳住，别上来就送大的。'}`,
   ].join('\n');
   const message: MessageSegment[] = [];
   if (!isPrivate) message.push({ type: 'at', data: { qq: String(userId) } });
@@ -2887,7 +2908,7 @@ export const funPlugin: Plugin = {
     }
     if (isDailyKnifeRequest(ctx.command, raw)) {
       const knife = dailyKnifeFor(ctx.event.user_id, scopeId);
-      const skin = dailyKnifeSkinFor(ctx.event.user_id, scopeId);
+      const skin = dailyKnifeSkinFor(ctx.event.user_id, scopeId, knife);
       const score = dailyScoreForKind('csknife', ctx.event.user_id, scopeId);
       ctx.reply(await buildKnifeMessage(ctx.event.user_id, knife, skin, score, ctx.isPrivate));
       return true;
@@ -2976,6 +2997,8 @@ export const __test = {
   dailySkinForWeapon,
   dailyKnifeFor,
   dailyKnifeSkinFor,
+  knifeSkinAvailableFor,
+  knifeSkinPoolFor,
   dailyCharacterFor,
   dailyScoreForKind,
   isCsPlayerDrawRequest,
